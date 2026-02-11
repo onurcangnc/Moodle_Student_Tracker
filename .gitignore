@@ -1,0 +1,24 @@
+# Credentials & secrets
+.env
+data/.moodle_token
+
+# Data (large, user-specific)
+data/downloads/
+data/chromadb/
+data/memory.db
+data/sync_state.json
+data/profile.md
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
