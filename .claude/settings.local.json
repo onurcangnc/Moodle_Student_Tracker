@@ -10,7 +10,8 @@
       "Bash(ssh:*)",
       "Bash(python:*)",
       "Bash(certutil -hashfile:*)",
-      "Bash(certutil:*)"
+      "Bash(certutil:*)",
+      "Bash(ssh root@46.37.115.3 \"sleep 8 && journalctl -u moodle-bot --no-pager -n 15 --since ''15 sec ago''\")"
     ]
   }
 }

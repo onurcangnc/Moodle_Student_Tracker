@@ -956,7 +956,17 @@ async def cmd_mail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     msg = await update.message.reply_text("🔄 Mailler kontrol ediliyor...")
-    mails = await asyncio.to_thread(webmail_client.check_all_unread)
+    try:
+        mails = await asyncio.wait_for(
+            asyncio.to_thread(webmail_client.check_all_unread),
+            timeout=45,
+        )
+    except asyncio.TimeoutError:
+        await msg.edit_text("⚠️ Mail sunucusu yanıt vermedi. Tekrar dene.")
+        return
+    except Exception as e:
+        await msg.edit_text(f"⚠️ Mail hatası: {e}")
+        return
 
     if not mails:
         await msg.edit_text("📬 Okunmamış AIRS/DAIS maili yok.")
@@ -985,14 +995,6 @@ async def moodle_keepalive_job(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Moodle keepalive error: {e}")
 
 
-async def webmail_keepalive_job(context: ContextTypes.DEFAULT_TYPE):
-    """Keep IMAP connection alive (every 2 min)."""
-    if not webmail_client.authenticated:
-        return
-    try:
-        await asyncio.to_thread(webmail_client.noop)
-    except Exception as e:
-        logger.error(f"Webmail keepalive error: {e}")
 
 
 # ─── Mail Background Job ─────────────────────────────────────────────────────
@@ -1603,7 +1605,6 @@ async def post_init(app: Application):
     app.job_queue.run_repeating(assignment_check_job, interval=1800, first=60, name="assignment_check")
     app.job_queue.run_repeating(mail_check_job, interval=300, first=60, name="mail_check")
     app.job_queue.run_repeating(moodle_keepalive_job, interval=120, first=120, name="moodle_keepalive")
-    app.job_queue.run_repeating(webmail_keepalive_job, interval=120, first=120, name="webmail_keepalive")
 
     from datetime import time as dtime
     app.job_queue.run_daily(deadline_reminder_job, time=dtime(hour=9, minute=0), name="deadline_reminder")
