@@ -8,6 +8,7 @@ No C++ compiler needed — faiss-cpu ships pre-built wheels.
 
 import json
 import logging
+import os
 import pickle
 from pathlib import Path
 from typing import Optional
@@ -41,6 +42,10 @@ class VectorStore:
 
     @property
     def _meta_path(self) -> Path:
+        return self.store_dir / "metadata.json"
+
+    @property
+    def _legacy_pkl_path(self) -> Path:
         return self.store_dir / "metadata.pkl"
 
     # ─── Initialization ──────────────────────────────────────────────────
@@ -60,12 +65,24 @@ class VectorStore:
         # Load existing index or create new
         if self._index_path.exists() and self._meta_path.exists():
             self._index = faiss.read_index(str(self._index_path))
-            with open(self._meta_path, "rb") as f:
-                saved = pickle.load(f)
+            with open(self._meta_path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
             self._ids = saved["ids"]
             self._texts = saved["texts"]
             self._metadatas = saved["metadatas"]
             logger.info(f"Vector store loaded. {len(self._ids)} chunks.")
+        elif self._index_path.exists() and self._legacy_pkl_path.exists():
+            # One-time migration from pickle → JSON
+            logger.info("Migrating metadata from pickle to JSON...")
+            self._index = faiss.read_index(str(self._index_path))
+            with open(self._legacy_pkl_path, "rb") as f:
+                saved = pickle.load(f)
+            self._ids = saved["ids"]
+            self._texts = saved["texts"]
+            self._metadatas = saved["metadatas"]
+            self._save()  # re-save as JSON
+            self._legacy_pkl_path.unlink()  # remove old pickle file
+            logger.info(f"Migration complete. {len(self._ids)} chunks. Pickle file removed.")
         else:
             self._index = faiss.IndexFlatIP(self._dimension)  # inner product (cosine after normalize)
             self._ids = []
@@ -77,12 +94,17 @@ class VectorStore:
         """Persist index and metadata to disk."""
         import faiss
         faiss.write_index(self._index, str(self._index_path))
-        with open(self._meta_path, "wb") as f:
-            pickle.dump({
+        with open(self._meta_path, "w", encoding="utf-8") as f:
+            json.dump({
                 "ids": self._ids,
                 "texts": self._texts,
                 "metadatas": self._metadatas,
-            }, f)
+            }, f, ensure_ascii=False)
+        # Restrict file permissions (owner-only read/write)
+        try:
+            os.chmod(self._meta_path, 0o600)
+        except OSError:
+            pass  # Windows doesn't support POSIX permissions
 
     def _encode(self, texts: list[str]) -> np.ndarray:
         """Encode texts to normalized embeddings."""
@@ -158,6 +180,7 @@ class VectorStore:
         n_results: int = 5,
         course_filter: Optional[str] = None,
         section_filter: Optional[str] = None,
+        filename_filter: Optional[list[str]] = None,
     ) -> list[dict]:
         """Semantic search over indexed documents."""
         if not self._ids:
@@ -167,7 +190,8 @@ class VectorStore:
         query_vec = self._encode([query_text])
 
         # Search more than needed if filtering
-        search_k = min(n_results * 4 if (course_filter or section_filter) else n_results, len(self._ids))
+        has_filter = course_filter or section_filter or filename_filter
+        search_k = min(n_results * 4 if has_filter else n_results, len(self._ids))
         scores, indices = self._index.search(query_vec, search_k)
 
         hits = []
@@ -180,6 +204,8 @@ class VectorStore:
             if course_filter and meta.get("course") != course_filter:
                 continue
             if section_filter and meta.get("section") != section_filter:
+                continue
+            if filename_filter and meta.get("filename") not in filename_filter:
                 continue
 
             hits.append({
@@ -204,6 +230,19 @@ class VectorStore:
             query_text=topic,
             n_results=n_results,
             course_filter=course_name,
+        )
+
+    def get_files_for_course(self, course_name: str = None) -> list[dict]:
+        """Get unique files for a course with chunk counts."""
+        file_counts: dict[str, int] = {}
+        for meta in self._metadatas:
+            if course_name and meta.get("course") != course_name:
+                continue
+            fname = meta.get("filename", "unknown")
+            file_counts[fname] = file_counts.get(fname, 0) + 1
+        return sorted(
+            [{"filename": f, "chunk_count": c} for f, c in file_counts.items()],
+            key=lambda x: x["chunk_count"], reverse=True,
         )
 
     # ─── Stats ───────────────────────────────────────────────────────────

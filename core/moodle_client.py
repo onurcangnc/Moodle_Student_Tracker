@@ -154,9 +154,13 @@ class MoodleClient:
 
                 if "token" in data:
                     token = data["token"]
-                    # Save for future use
+                    # Save for future use (owner-only permissions)
                     self.TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
                     self.TOKEN_FILE.write_text(token)
+                    try:
+                        os.chmod(self.TOKEN_FILE, 0o600)
+                    except OSError:
+                        pass  # Windows doesn't support POSIX permissions
                     logger.info(
                         f"✅ Token obtained and saved to {self.TOKEN_FILE}\n"
                         f"   (You won't need to enter credentials again until token expires)"
@@ -454,36 +458,6 @@ class MoodleClient:
                         lines.append(f"     {clean[:300]}")
 
         return "\n".join(lines)
-
-    # ─── Forum Posts (bonus: discussion content) ─────────────────────────
-
-    def get_forum_discussions(self, course_id: int) -> list[dict]:
-        """Get forum posts from a course (announcements, Q&A, etc.)."""
-        # First get forums in the course
-        forums = self._call("mod_forum_get_forums_by_courses",
-                            **{f"courseids[0]": course_id})
-        if not isinstance(forums, list):
-            return []
-
-        discussions = []
-        for forum in forums:
-            forum_id = forum.get("id")
-            if not forum_id:
-                continue
-            disc_data = self._call("mod_forum_get_forum_discussions",
-                                   forumid=forum_id, sortorder=-1, perpage=10)
-            if not isinstance(disc_data, dict):
-                continue
-            for d in disc_data.get("discussions", []):
-                discussions.append({
-                    "forum": forum.get("name", ""),
-                    "subject": d.get("subject", ""),
-                    "message": self._clean_html(d.get("message", "")),
-                    "author": d.get("userfullname", ""),
-                    "time": d.get("timemodified", 0),
-                })
-
-        return discussions
 
     # ─── URL Module Discovery ─────────────────────────────────────────────
 

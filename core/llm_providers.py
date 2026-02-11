@@ -155,6 +155,7 @@ class TaskRouter:
     """
     # Task → model key mapping (defaults: GLM + OpenAI nano)
     chat: str = "glm-4.7"              # Main conversation (RAG)
+    study: str = "gpt-4.1-mini"        # Study mode (strict grounding, deep teaching)
     extraction: str = "gpt-4.1-nano"   # Memory extraction (cheapest)
     topic_detect: str = "gpt-4.1-nano" # Topic detection (cheapest)
     summary: str = "glm-4.7"           # Weekly summaries
@@ -166,6 +167,7 @@ class TaskRouter:
         """Load task routing from environment variables."""
         return cls(
             chat=os.getenv("MODEL_CHAT", "glm-4.7"),
+            study=os.getenv("MODEL_STUDY", "gpt-4.1-mini"),
             extraction=os.getenv("MODEL_EXTRACTION", "gpt-4.1-nano"),
             topic_detect=os.getenv("MODEL_TOPIC_DETECT", "gpt-4.1-nano"),
             summary=os.getenv("MODEL_SUMMARY", "glm-4.7"),

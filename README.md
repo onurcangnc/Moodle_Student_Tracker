@@ -199,6 +199,16 @@ Two-layer hybrid architecture:
 Total per-turn cost: ~600-1300 tokens (vs 4000-8000 full-context)
 ```
 
+![alt text](./images/3.png)
+
+![alt text](./images/5.png)
+
+![alt text](./images/moodle1.png)
+
+![alt text](./images/moodle2.png)
+
+![alt text](./images/moodle3.png)
+
 ---
 
 ## Features

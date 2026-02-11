@@ -46,6 +46,9 @@ class SyncEngine:
         3. Process and index documents
         4. Store course structure (topics/sections) as text chunks
         """
+        # Purge any leftover forum chunks (user-generated content removed for security)
+        self.vector_store._delete_where(lambda m: m.get("file_type") == "forum")
+
         courses = self.moodle.get_courses()
         if not courses:
             logger.warning("No courses found.")
@@ -158,31 +161,6 @@ class SyncEngine:
                     chunk_count += 1
         except Exception as e:
             logger.debug(f"URL module sync skipped: {e}")
-
-        # 4. Optionally index forum discussions
-        try:
-            discussions = self.moodle.get_forum_discussions(course.id)
-            if discussions:
-                from core.document_processor import DocumentChunk
-                for disc in discussions[:20]:  # Limit
-                    if disc["message"]:
-                        chunk = DocumentChunk(
-                            text=f"[Forum: {disc['forum']}] {disc['subject']}\n{disc['message']}",
-                            metadata={
-                                "source": f"forum_{course.id}_{disc['subject'][:30]}",
-                                "filename": f"forum_{disc['subject'][:40]}",
-                                "course": course.fullname,
-                                "section": "Forum",
-                                "module": disc["forum"],
-                                "file_type": "forum",
-                                "chunk_index": 0,
-                                "total_chunks": 1,
-                            },
-                        )
-                        self.vector_store.add_chunks([chunk])
-                        chunk_count += 1
-        except Exception as e:
-            logger.debug(f"Forum sync skipped: {e}")
 
         self._save_state()
         logger.info(f"[{course.shortname}] Indexed {chunk_count} chunks.")

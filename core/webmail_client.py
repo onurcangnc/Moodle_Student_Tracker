@@ -30,11 +30,12 @@ class WebmailClient:
 
     def login(self, email_addr: str, password: str) -> bool:
         """Validate credentials and seed _last_seen_uids."""
+        # Store credentials BEFORE _connect() since it reads self._email/_password
+        self._email = email_addr
+        self._password = password
         try:
             with self._connect() as imap:
                 pass  # connection succeeded = credentials valid
-            self._email = email_addr
-            self._password = password
             self._authenticated = True
             # Seed: mark existing AIRS/DAIS as seen so we don't spam on first check
             self._last_seen_uids = self._get_airs_dais_uids()
@@ -43,6 +44,8 @@ class WebmailClient:
         except Exception as e:
             logger.error(f"IMAP login failed: {e}")
             self._authenticated = False
+            self._email = ""
+            self._password = ""
             return False
 
     @contextmanager
@@ -132,7 +135,7 @@ class WebmailClient:
                             for uid in data[0].split():
                                 if uid in seen_uids:
                                     continue
-                                mail_data = self._fetch_mail(imap, uid, body=False)
+                                mail_data = self._fetch_mail(imap, uid, body=True)
                                 if mail_data:
                                     mail_data["source"] = label
                                     mails.append(mail_data)
