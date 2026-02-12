@@ -155,7 +155,7 @@ class TaskRouter:
     """
     # Task → model key mapping (defaults: GLM + OpenAI nano)
     chat: str = "glm-4.7"              # Main conversation (RAG)
-    study: str = "gpt-4.1-mini"        # Study mode (strict grounding, deep teaching)
+    study: str = "glm-4.7"             # Study mode (strict grounding, deep teaching)
     extraction: str = "gpt-4.1-nano"   # Memory extraction (cheapest)
     topic_detect: str = "gpt-4.1-nano" # Topic detection (cheapest)
     summary: str = "glm-4.7"           # Weekly summaries

@@ -42,6 +42,7 @@ A **RAG-based personal academic assistant** for Bilkent University students. Ind
 
 ![alt text](./images/4.png)
 
+![alt text](./images/5.png)
 
 ### Hexagonal Architecture (Ports & Adapters)
 
@@ -63,6 +64,9 @@ Different extraction strategies for different file types, common interface for d
 DocumentProcessor._extract_pdf()  / _extract_docx() / _extract_pptx() / _extract_html()
 MultiProviderEngine → GLM / OpenAI / Claude (all OpenAI-compatible)
 ```
+
+![alt text](./images/4.png)
+
 
 ### Repository Pattern
 `VectorStore` and `DynamicMemoryDB` abstract data access. Chunk dedup, FAISS persistence, SQLite memory store:
@@ -93,11 +97,19 @@ Sync pipeline in sequential stages:
 Moodle API → Download → Extract (PDF/DOCX/OCR) → Chunk → Embed → FAISS Index
 ```
 
-### Command Pattern
-Each Telegram command has a separate handler function:
+### Intent Router (NLU)
+Multi-intent classification via LLM replaces traditional command routing. Only 4 explicit commands remain:
 ```
-/menu → cmd_menu()    /sync → cmd_sync()    /odevler → cmd_odevler()
-/stars → cmd_stars()   /mail → cmd_mail()    /login  → cmd_login()
+User Message → _classify_intent() (GPT-4.1-nano, ~200ms)
+  → STUDY       → Progressive study session (6-step deep teaching)
+  → ASSIGNMENTS  → Fetch & format Moodle assignments
+  → MAIL         → IMAP fetch + LLM summary
+  → SUMMARY      → Course overview generation
+  → QUESTIONS    → Practice question generation
+  → CHAT         → RAG conversational chat (default)
+
+Explicit commands: /start  /login  /sync  /temizle
+Hidden admin:      /stats  /maliyet  /modeller
 ```
 
 ### Observer (Job Queue)
@@ -105,9 +117,9 @@ Background tasks via python-telegram-bot job queue:
 ```
 auto_sync_job       → 10 min  → Moodle synchronization
 assignment_check    → 30 min  → New assignment detection
-mail_check          → 5 min   → AIRS/DAIS email check
+mail_check          → 30 min  → AIRS/DAIS email check + LLM summary
 deadline_reminder   → Daily   → 3-day advance warning
-keepalive (x2)      → 2 min   → Moodle + IMAP connection keep-alive
+keepalive           → 2 min   → Moodle session keep-alive
 ```
 
 ### Adapter Pattern
@@ -119,39 +131,41 @@ WebmailClient → IMAP4_SSL (mail.bilkent.edu.tr)
 ```
 
 ### Template Method
-RAG chat flow follows the same template every time:
+Every LLM call follows the same context injection template:
 ```
-query → detect course → vector search (+ fallback) → memory inject → LLM call → save history
+system_prompt += _build_student_context()  →  date + schedule + STARS + assignments (~545 tokens)
+```
+RAG chat flow:
+```
+query → intent classify → detect course → vector search (+ fallback) → LLM call → save history
 ```
 
 ---
 
 ## Data Flow
 
-### RAG Pipeline (User Query)
+### Message Flow (Intent-Routed)
 
 ```
 User Message
   │
-  ├─→ Active course detection (name matching)
+  ├─→ STARS keyword intercept (cached data: exams, grades, attendance)
   │
-  ├─→ VectorStore.query()
-  │   ├─→ Sentence-transformers encode
-  │   ├─→ FAISS cosine similarity (top 15)
-  │   └─→ Course filter + fallback (all courses if filter is weak)
+  ├─→ _classify_intent() → GPT-4.1-nano (~200ms)
+  │   ├─→ STUDY       → _start_study_session() → progressive 6-step teaching
+  │   ├─→ ASSIGNMENTS  → _format_assignments() → Moodle API fetch
+  │   ├─→ MAIL         → _handle_mail_intent() → IMAP + LLM summary
+  │   ├─→ SUMMARY      → _handle_summary_intent() → course overview
+  │   ├─→ QUESTIONS    → _handle_questions_intent() → practice questions
+  │   └─→ CHAT         → RAG pipeline (below)
   │
-  ├─→ HybridMemoryManager.build_memory_context()
-  │   ├─→ Static: profile.md (~300-500 tokens)
-  │   ├─→ Dynamic: SQLite selective fetch (~300-800 tokens)
-  │   └─→ Weak topics + recent messages
-  │
-  ├─→ LLMEngine.chat_with_history()
-  │   └─→ MultiProviderEngine.complete(task="chat")
-  │       └─→ GLM-4.7 (or routed model)
-  │
-  ├─→ Memory update (LLM-based extraction)
-  │   ├─→ Semantic memory → SQLite
-  │   └─→ Topic mastery tracking
+  ├─→ RAG Pipeline (CHAT intent):
+  │   ├─→ Active course detection (name matching)
+  │   ├─→ VectorStore.query() → FAISS cosine similarity (top 15)
+  │   │   └─→ Course filter + fallback (all courses if filter is weak)
+  │   ├─→ _build_student_context() → date, schedule, STARS, assignments (~545 tokens)
+  │   ├─→ LLMEngine.chat_with_history() → GLM-4.7
+  │   └─→ Memory update (semantic memory + topic mastery)
   │
   └─→ Send response to Telegram
 ```
@@ -199,46 +213,44 @@ Two-layer hybrid architecture:
 Total per-turn cost: ~600-1300 tokens (vs 4000-8000 full-context)
 ```
 
-![alt text](./images/3.png)
-
-![alt text](./images/5.png)
-
-![alt text](./images/moodle1.png)
-
-![alt text](./images/moodle2.png)
-
-![alt text](./images/moodle3.png)
-
 ---
 
 ## Features
 
+### Natural Language Interface
+- **Zero-command UX** — 4 essential commands, everything else via natural conversation
+- **Multi-intent classification** — LLM-based intent routing (GPT-4.1-nano, ~200ms)
+- "Ödevlerim ne?" → assignment list, "Maillerimi kontrol et" → IMAP fetch + summary
+- "EDEB çalışacağım" → progressive study session, "Beni test et" → practice questions
+
 ### Academic Assistant (RAG)
-- Automatically indexes Moodle course materials (PDF, DOCX, PPTX, HTML)
+- Automatically indexes Moodle course materials (PDF, DOCX, PPTX, HTML, RTF + OCR)
 - Context-aware answers with course-based filtering + fallback
+- **Progressive study mode** — 6-step deep teaching per subtopic (teach → quiz → reteach → summary card)
+- **Unified student context** — every LLM call knows: date, schedule, grades, exams, assignments
 - Tutor mode (5-step Socratic method)
 - Quiz mode (5 questions + scoring + difficulty selection)
 - Practice question generation
-- Weekly course summary
+- Course overview and weekly summary
 
 ### STARS Integration
 - Automatic login via OAuth + SMS 2FA
-- Grade viewing (per-course assessments)
-- Exam schedule (days remaining info)
+- **Full academic awareness** — CGPA, grades, exams, attendance, schedule injected into all LLM calls
+- Exam schedule with countdown (days remaining)
 - Attendance tracking (percentage + details)
-- Academic standing (CGPA + semester-based)
-- Transcript (all semesters)
+- Natural language queries: "notlarım nedir?", "sınavım ne zaman?"
 
 ### Moodle Tracking
 - Automatic synchronization (10-minute intervals)
-- New assignment notifications
+- Assignment deadline tracking — injected into LLM context
 - Deadline reminders (3 days in advance)
-- File upload + indexing (user-submitted PDF/DOCX)
+- File upload + indexing (user-submitted PDF/DOCX/PPTX)
+- Semester reset detection (MOODLE_URL change → auto-clear + re-sync)
 
 ### Email Monitoring
-- AIRS (instructor) emails
-- DAIS (department) emails
-- New email notifications (5-minute intervals, with LLM summary)
+- AIRS (instructor) and DAIS (department) emails
+- Background check every 30 minutes with LLM-summarized notifications
+- Natural language: "maillerime bak" triggers on-demand check
 
 ### Memory & Personalization
 - Learning progress tracking (topic mastery 0-1.0)

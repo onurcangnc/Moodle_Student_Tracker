@@ -35,6 +35,7 @@ class SyncEngine:
         self.vector_store = vector_store
         self.state_file = config.data_dir / self.SYNC_STATE_FILE
         self.sync_state = self._load_state()
+        self._check_semester_reset()
 
     # ─── Full Sync ───────────────────────────────────────────────────────
 
@@ -165,6 +166,27 @@ class SyncEngine:
         self._save_state()
         logger.info(f"[{course.shortname}] Indexed {chunk_count} chunks.")
         return chunk_count
+
+    # ─── Semester Reset ─────────────────────────────────────────────────
+
+    def _check_semester_reset(self):
+        """Detect MOODLE_URL change → clear old data for new semester."""
+        current_url = config.moodle_url
+        saved_url = self.sync_state.get("moodle_url", "")
+
+        if saved_url and saved_url != current_url:
+            logger.info(f"🔄 Yeni dönem algılandı: {saved_url} → {current_url}")
+            logger.info("Eski veriler temizleniyor...")
+            # Clear vector store
+            self.vector_store.reset()
+            # Clear sync state
+            self.sync_state = {"moodle_url": current_url}
+            self._save_state()
+            logger.info("✅ Dönem sıfırlama tamamlandı.")
+        elif not saved_url:
+            # First run — just record the URL
+            self.sync_state["moodle_url"] = current_url
+            self._save_state()
 
     # ─── State Management ────────────────────────────────────────────────
 

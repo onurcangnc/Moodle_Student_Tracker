@@ -147,6 +147,46 @@ class WebmailClient:
 
         return mails
 
+    def get_recent_airs_dais(self, limit: int = 3) -> list[dict]:
+        """Fetch most recent AIRS/DAIS mails (read or unread)."""
+        if not self._authenticated:
+            return []
+
+        mails = []
+        seen_uids: set[bytes] = set()
+
+        try:
+            with self._connect() as imap:
+                for label, searches in [
+                    ("AIRS", ['FROM "airs"', 'SUBJECT "AIRS"']),
+                    ("DAIS", ['FROM "dais"', 'SUBJECT "DAIS"']),
+                ]:
+                    for criteria in searches:
+                        try:
+                            status, data = imap.search(None, f"({criteria})")
+                            if status != "OK" or not data[0]:
+                                continue
+                            # Take last N UIDs (most recent)
+                            uids = data[0].split()
+                            for uid in reversed(uids):
+                                if uid in seen_uids:
+                                    continue
+                                if len(mails) >= limit:
+                                    break
+                                mail_data = self._fetch_mail(imap, uid, body=True)
+                                if mail_data:
+                                    mail_data["source"] = label
+                                    mails.append(mail_data)
+                                    seen_uids.add(uid)
+                        except Exception as e:
+                            logger.error(f"IMAP search error: {e}")
+                    if len(mails) >= limit:
+                        break
+        except Exception as e:
+            logger.error(f"IMAP connection error (get_recent): {e}")
+
+        return mails[:limit]
+
     @staticmethod
     def _fetch_mail(imap, uid: bytes, body: bool = True) -> dict | None:
         """Fetch single mail headers + optional body preview."""

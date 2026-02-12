@@ -41,6 +41,7 @@ class StarsCache:
     attendance: list = field(default_factory=list)
     exams: list = field(default_factory=list)
     letter_grades: list = field(default_factory=list)
+    schedule: list = field(default_factory=list)
     fetched_at: float = 0
 
 
@@ -488,6 +489,81 @@ class StarsClient:
 
         return exams
 
+    # ── Weekly Schedule ─────────────────────────────────────────────────
+
+    def get_schedule(self, user_id: int) -> list[dict] | None:
+        """Fetch weekly class schedule from STARS srs-v2 endpoint."""
+        ss = self._sessions.get(user_id)
+        if not ss or not ss.authenticated:
+            return None
+        if ss.expired:
+            ss.authenticated = False
+            return None
+
+        url = f"{BASE}/srs-v2/schedule/index/weekly"
+        try:
+            r = ss.session.get(url, timeout=15)
+            if r.status_code != 200:
+                logger.warning(f"STARS schedule: HTTP {r.status_code}")
+                return None
+            soup = BeautifulSoup(r.text, "html.parser")
+        except requests.RequestException as e:
+            logger.error(f"STARS schedule error: {e}")
+            return None
+
+        schedule = []
+
+        # Parse schedule table — look for common table structures
+        table = soup.find("table")
+        if not table:
+            # Try finding schedule in div blocks
+            logger.debug(f"STARS schedule: no table found, raw length={len(r.text)}")
+            return schedule
+
+        rows = table.find_all("tr")
+        # First row might be header with day names
+        headers = []
+        if rows:
+            ths = rows[0].find_all(["th", "td"])
+            headers = [th.get_text(strip=True) for th in ths]
+
+        day_names = {"Monday": "Pazartesi", "Tuesday": "Salı", "Wednesday": "Çarşamba",
+                     "Thursday": "Perşembe", "Friday": "Cuma", "Saturday": "Cumartesi",
+                     "Pazartesi": "Pazartesi", "Salı": "Salı", "Çarşamba": "Çarşamba",
+                     "Perşembe": "Perşembe", "Cuma": "Cuma", "Cumartesi": "Cumartesi"}
+
+        for row in rows[1:]:
+            cells = row.find_all("td")
+            if not cells:
+                continue
+
+            # Try to extract: time slot from first cell, courses from day columns
+            time_slot = cells[0].get_text(strip=True) if cells else ""
+
+            for col_idx, cell in enumerate(cells[1:], 1):
+                text = cell.get_text(strip=True)
+                if not text or text == "-":
+                    continue
+
+                day = headers[col_idx] if col_idx < len(headers) else f"Col{col_idx}"
+                day_tr = day_names.get(day, day)
+
+                # Extract course code and room from cell text
+                parts = text.split()
+                course_code = " ".join(parts[:2]) if len(parts) >= 2 else text
+                room = parts[-1] if len(parts) >= 3 else ""
+
+                schedule.append({
+                    "day": day_tr,
+                    "time": time_slot,
+                    "course": course_code,
+                    "room": room,
+                    "raw": text,
+                })
+
+        logger.info(f"STARS schedule: {len(schedule)} entries parsed")
+        return schedule
+
     # ── Cache System ──────────────────────────────────────────────────────
 
     def fetch_all_data(self, user_id: int) -> StarsCache | None:
@@ -501,12 +577,14 @@ class StarsClient:
         cache.attendance = self.get_attendance(user_id) or []
         cache.exams = self.get_exams(user_id) or []
         cache.letter_grades = self.get_letter_grades(user_id) or []
+        cache.schedule = self.get_schedule(user_id) or []
 
         self._cache[user_id] = cache
         logger.info(
             f"STARS cache built: {len(cache.exams)} exams, "
             f"{len(cache.grades)} course grades, "
-            f"{len(cache.attendance)} attendance records"
+            f"{len(cache.attendance)} attendance records, "
+            f"{len(cache.schedule)} schedule entries"
         )
         return cache
 

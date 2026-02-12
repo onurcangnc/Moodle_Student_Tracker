@@ -257,7 +257,43 @@ class LLMEngine:
         self.vector_store = vector_store
         self.memory = ConversationMemory()  # In-session short-term
         self.mem_manager = HybridMemoryManager()  # Persistent long-term
+        self.schedule_text: str = ""  # Weekly schedule from STARS
+        self.stars_context: str = ""  # All STARS data (grades, exams, attendance)
+        self.assignments_context: str = ""  # Moodle assignment deadlines
         self.active_course: Optional[str] = None
+
+    # ─── Student Context ──────────────────────────────────────────────────
+
+    def _build_student_context(self) -> str:
+        """Build unified student context for system prompt injection.
+        Aggregates: date/time, schedule, STARS data, assignment deadlines.
+        Returns empty string if nothing available.
+        """
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+        parts = []
+
+        # Current date/time (Turkey UTC+3)
+        _tr_tz = _tz(_td(hours=3))
+        _now = _dt.now(_tr_tz)
+        _days_tr = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+        _months_tr = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+                       "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+        parts.append(
+            f"Bugün: {_now.day} {_months_tr[_now.month]} {_now.year}, "
+            f"{_days_tr[_now.weekday()]}, saat {_now.strftime('%H:%M')}."
+        )
+
+        if self.schedule_text:
+            parts.append(f"HAFTALIK DERS PROGRAMI:\n{self.schedule_text}")
+
+        if self.stars_context:
+            parts.append(f"AKADEMİK BİLGİLER:\n{self.stars_context}")
+
+        if self.assignments_context:
+            parts.append(self.assignments_context)
+
+        return "\n\n" + "\n\n".join(parts)
 
     # ─── Relevance Check ─────────────────────────────────────────────────
 
@@ -379,6 +415,10 @@ class LLMEngine:
 
         # Build system prompt — study mode uses strict grounding
         system = SYSTEM_PROMPT_STUDY if study_mode else SYSTEM_PROMPT_CHAT
+
+        # Inject unified student context (date, schedule, STARS, assignments)
+        system += self._build_student_context()
+
         if memory_context:
             system += f"\n\n--- HAFIZA ---\n{memory_context}\n--- /HAFIZA ---"
 
@@ -461,9 +501,10 @@ class LLMEngine:
         prompt += "Based on the above content, create a comprehensive weekly summary."
 
         try:
+            system = SYSTEM_PROMPT_SUMMARY + self._build_student_context()
             return self.engine.complete(
                 task="summary",
-                system=SYSTEM_PROMPT_SUMMARY,
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=4096,
             )
@@ -487,9 +528,10 @@ class LLMEngine:
         )
 
         try:
+            system = SYSTEM_PROMPT_SUMMARY + self._build_student_context()
             return self.engine.complete(
                 task="overview",
-                system=SYSTEM_PROMPT_SUMMARY,
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=4096,
             )
@@ -515,9 +557,10 @@ class LLMEngine:
         )
 
         try:
+            system = SYSTEM_PROMPT_CHAT + self._build_student_context()
             return self.engine.complete(
                 task="questions",
-                system=SYSTEM_PROMPT_CHAT,
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=4096,
             )
@@ -594,6 +637,8 @@ class LLMEngine:
             "why_correct": "", "why_others_wrong": "",
             "next_preview": "",
         }
+
+        system += self._build_student_context()
 
         max_retries = 2
         last_error = None
@@ -683,6 +728,8 @@ class LLMEngine:
             f"Generate {num_questions} multiple-choice questions."
         )
 
+        system += self._build_student_context()
+
         try:
             raw = self.engine.complete(
                 task="chat", system=system,
@@ -712,6 +759,8 @@ class LLMEngine:
             "Each string is a subtopic title, 4-6 items.\n"
             'Example: ["Karakter Analizi: Seniha","Naim Efendi ve Değerler","Anlatım Tekniği","Toplumsal Eleştiri","Sınav Odaklı Özet"]'
         )
+        system += self._build_student_context()
+
         prompt = (
             f"KONU: {topic}\n\n"
             f"MATERYALLER:\n{context_text[:8000]}\n\n"
@@ -744,7 +793,7 @@ class LLMEngine:
         """Teach one subtopic deeply using study mode prompt.
         Returns plain text teaching response.
         """
-        system = SYSTEM_PROMPT_STUDY
+        system = SYSTEM_PROMPT_STUDY + self._build_student_context()
 
         covered_text = ""
         if covered:
@@ -794,6 +843,8 @@ class LLMEngine:
             "1. C — Açıklama\n"
             "2. A — Açıklama\n"
         )
+        system += self._build_student_context()
+
         prompt = (
             f"KONU: {subtopic}\n\n"
             f"MATERYALLER:\n{context_text[:6000]}\n\n"
@@ -828,6 +879,8 @@ class LLMEngine:
             "- Her bilgiye 📖 [dosya_adı] etiketi ekle\n"
             "- Materyalde olmayan bilgi EKLEME"
         )
+        system += self._build_student_context()
+
         prompt = (
             f"KONU: {topic} — {subtopic}\n\n"
             f"MATERYALLER:\n{context_text}\n\n"
