@@ -4,7 +4,7 @@
 
 A **fully-automated, RAG-based personal academic assistant** for Bilkent University students. Indexes Moodle course materials, auto-authenticates STARS (grades/attendance/exams) with email 2FA, monitors university emails — all through a single Telegram bot with zero manual intervention.
 
-![Logo](./images/2.png)
+![Logo](./images/2.jpeg)
 
 ## Architecture
 
@@ -54,6 +54,8 @@ A **fully-automated, RAG-based personal academic assistant** for Bilkent Univers
 | **External Adapters** | `moodle_client.py`, `stars_client.py`, `webmail_client.py`, `llm_providers.py` | External service integrations |
 
 ---
+
+![alt text](./images/6.jpeg)
 
 ## Design Patterns
 
