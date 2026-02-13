@@ -13,7 +13,12 @@
       "Bash(certutil:*)",
       "Bash(ssh root@46.37.115.3 \"sleep 8 && journalctl -u moodle-bot --no-pager -n 15 --since ''15 sec ago''\")",
       "Bash(python -c:*)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(del:*)",
+      "Bash(python3:*)",
+      "Bash(powershell -NoProfile -Command:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(powershell -File:*)"
     ]
   }
 }

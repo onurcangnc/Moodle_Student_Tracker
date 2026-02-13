@@ -1,21 +1,22 @@
 """
 Multi-Provider LLM Adapter
 ============================
-Provider-agnostic LLM interface supporting Claude, OpenAI, and GLM (OpenAI-compatible).
+Provider-agnostic LLM interface supporting Gemini, OpenAI, GLM, and Claude.
 
 Cost optimization strategy:
 ┌────────────────────────────────────────────────────────────────┐
 │  TASK             │ RECOMMENDED        │ WHY                   │
 │──────────────────────────────────────────────────────────────│
-│  Main Chat (RAG)  │ GLM 4.7 / GPT-5m  │ Cheapest with OK quality │
-│  Memory Extract   │ GPT-4.1 nano      │ $0.20/$0.80 - dirt cheap │
-│  Topic Detection  │ GPT-4.1 nano      │ Simple JSON extraction   │
-│  Weekly Summary   │ Claude Sonnet 4.5  │ Best quality for TR text │
-│  Practice Qs      │ GLM 4.7 / Sonnet  │ Good reasoning needed    │
+│  Main Chat (RAG)  │ Gemini 2.5 Flash  │ Fast, cheap, multilingual │
+│  Memory Extract   │ GPT-4.1 nano      │ $0.10/$0.40 - dirt cheap │
+│  Intent Classify  │ GPT-4.1 mini      │ Turkish NLU, context     │
+│  Topic Detection  │ GPT-4.1 nano      │ Simple classification    │
+│  Weekly Summary   │ Gemini 2.5 Flash  │ Good quality, low cost   │
+│  Practice Qs      │ Gemini 2.5 Flash  │ Strong reasoning         │
 └────────────────────────────────────────────────────────────────┘
 
 All providers use OpenAI-compatible chat completion format.
-GLM (Z.ai) natively supports this. Claude uses the Anthropic SDK.
+Gemini/GLM natively support this. Claude uses the Anthropic SDK.
 """
 
 import os
@@ -37,6 +38,7 @@ class Provider(str, Enum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     GLM = "glm"
+    GEMINI = "gemini"
     OPENAI_COMPAT = "openai_compat"  # Any OpenAI-compatible endpoint
 
 
@@ -61,6 +63,7 @@ def _get_presets() -> dict[str, ModelConfig]:
     openai_key = os.getenv("OPENAI_API_KEY", "")
     glm_key = os.getenv("GLM_API_KEY", "")
     glm_base = os.getenv("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
 
     return {
         # ─── Anthropic ──────────────────────────────────
@@ -142,6 +145,26 @@ def _get_presets() -> dict[str, ModelConfig]:
             output_cost_per_mtok=1.55,
             description="Cheaper GLM option",
         ),
+
+        # ─── Google Gemini (OpenAI-compatible) ─────────────
+        "gemini-2.5-flash": ModelConfig(
+            provider=Provider.GEMINI,
+            model_id="gemini-2.5-flash",
+            api_key=gemini_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            input_cost_per_mtok=0.15,
+            output_cost_per_mtok=0.60,
+            description="Fast, cheap, strong multilingual (4.4x faster than GLM)",
+        ),
+        "gemini-2.5-pro": ModelConfig(
+            provider=Provider.GEMINI,
+            model_id="gemini-2.5-pro",
+            api_key=gemini_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            input_cost_per_mtok=1.25,
+            output_cost_per_mtok=10.00,
+            description="Best quality, expensive",
+        ),
     }
 
 
@@ -153,26 +176,28 @@ class TaskRouter:
     Routes tasks to optimal models based on cost/quality tradeoff.
     User configures which model handles which task.
     """
-    # Task → model key mapping (defaults: GLM + OpenAI nano)
-    chat: str = "glm-4.7"              # Main conversation (RAG)
-    study: str = "glm-4.7"             # Study mode (strict grounding, deep teaching)
-    extraction: str = "gpt-4.1-nano"   # Memory extraction (cheapest)
-    topic_detect: str = "gpt-4.1-nano" # Topic detection (cheapest)
-    summary: str = "glm-4.7"           # Weekly summaries
-    questions: str = "glm-4.7"         # Practice questions
-    overview: str = "glm-4.7"          # Course overview
+    # Task → model key mapping (defaults: Gemini Flash + OpenAI nano/mini)
+    chat: str = "gemini-2.5-flash"              # Main conversation (RAG)
+    study: str = "gemini-2.5-flash"             # Study mode (strict grounding, deep teaching)
+    extraction: str = "gpt-4.1-nano"            # Memory extraction (cheapest)
+    intent: str = "gpt-4.1-mini"               # Intent classification (needs Turkish understanding)
+    topic_detect: str = "gpt-4.1-nano"          # Topic detection (cheapest)
+    summary: str = "gemini-2.5-flash"           # Weekly summaries
+    questions: str = "gemini-2.5-flash"         # Practice questions
+    overview: str = "gemini-2.5-flash"          # Course overview
 
     @classmethod
     def from_env(cls) -> "TaskRouter":
         """Load task routing from environment variables."""
         return cls(
-            chat=os.getenv("MODEL_CHAT", "glm-4.7"),
-            study=os.getenv("MODEL_STUDY", "gpt-4.1-mini"),
+            chat=os.getenv("MODEL_CHAT", "gemini-2.5-flash"),
+            study=os.getenv("MODEL_STUDY", "gemini-2.5-flash"),
             extraction=os.getenv("MODEL_EXTRACTION", "gpt-4.1-nano"),
+            intent=os.getenv("MODEL_INTENT", "gpt-4.1-mini"),
             topic_detect=os.getenv("MODEL_TOPIC_DETECT", "gpt-4.1-nano"),
-            summary=os.getenv("MODEL_SUMMARY", "glm-4.7"),
-            questions=os.getenv("MODEL_QUESTIONS", "glm-4.7"),
-            overview=os.getenv("MODEL_OVERVIEW", "glm-4.7"),
+            summary=os.getenv("MODEL_SUMMARY", "gemini-2.5-flash"),
+            questions=os.getenv("MODEL_QUESTIONS", "gemini-2.5-flash"),
+            overview=os.getenv("MODEL_OVERVIEW", "gemini-2.5-flash"),
         )
 
     def estimate_monthly_cost(self, turns_per_day: int = 20) -> dict:
@@ -300,7 +325,7 @@ def create_adapter(model_config: ModelConfig) -> LLMAdapter:
         return AnthropicAdapter(model_config)
     elif model_config.provider == Provider.OPENAI:
         return OpenAIAdapter(model_config)
-    elif model_config.provider in (Provider.GLM, Provider.OPENAI_COMPAT):
+    elif model_config.provider in (Provider.GLM, Provider.GEMINI, Provider.OPENAI_COMPAT):
         return GLMAdapter(model_config)
     else:
         raise ValueError(f"Unknown provider: {model_config.provider}")
@@ -368,7 +393,7 @@ class MultiProviderEngine:
                            max_tokens: int, failed: str) -> str:
         """Try alternative models if the primary fails."""
         # Fallback priority: glm → openai → anthropic (if available)
-        fallback_chain = ["glm-4.7", "glm-4.5", "gpt-5-mini", "gpt-4.1-mini", "claude-haiku", "claude-sonnet"]
+        fallback_chain = ["gemini-2.5-flash", "glm-4.7", "gpt-4.1-mini", "gpt-5-mini", "claude-haiku", "claude-sonnet"]
 
         for model_key in fallback_chain:
             if model_key == failed:

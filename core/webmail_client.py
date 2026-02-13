@@ -8,6 +8,7 @@ does the work, and disconnects. No persistent connection, no keepalive.
 import email
 import imaplib
 import logging
+import re
 from contextlib import contextmanager
 from email.header import decode_header
 
@@ -208,7 +209,15 @@ class WebmailClient:
                 else:
                     subject += part
 
-            from_addr = msg.get("From", "")
+            # Decode from
+            from_addr = ""
+            raw_from = msg.get("From", "")
+            for part, enc in decode_header(raw_from):
+                if isinstance(part, bytes):
+                    from_addr += part.decode(enc or "utf-8", errors="replace")
+                else:
+                    from_addr += part
+
             date_str = msg.get("Date", "")
 
             result = {
@@ -243,6 +252,67 @@ class WebmailClient:
                 charset = msg.get_content_charset() or "utf-8"
                 return payload.decode(charset, errors="replace")[:500].strip()
         return ""
+
+    def fetch_stars_verification_code(self, max_age_seconds: int = 120) -> str | None:
+        """Fetch the latest STARS 2FA verification code from email.
+
+        Searches for emails from starsmsg@bilkent.edu.tr, takes the most recent one,
+        and extracts the numeric verification code using regex.
+        Returns the code string or None if not found.
+        """
+        if not self._authenticated:
+            return None
+
+        try:
+            with self._connect() as imap:
+                # Search for STARS verification emails
+                status, data = imap.search(None, '(FROM "starsmsg@bilkent.edu.tr")')
+                if status != "OK" or not data[0]:
+                    logger.info("No STARS verification emails found")
+                    return None
+
+                # Take the LAST (most recent) UID
+                uids = data[0].split()
+                latest_uid = uids[-1]
+
+                # Fetch the email
+                status, msg_data = imap.fetch(latest_uid, "(RFC822)")
+                if status != "OK" or not msg_data or not msg_data[0]:
+                    return None
+
+                raw = msg_data[0][1] if isinstance(msg_data[0], tuple) else msg_data[0]
+                msg = email.message_from_bytes(raw)
+
+                # Check age — skip if too old
+                from email.utils import parsedate_to_datetime
+                from datetime import datetime, timezone
+                try:
+                    mail_date = parsedate_to_datetime(msg.get("Date", ""))
+                    age = (datetime.now(timezone.utc) - mail_date).total_seconds()
+                    if age > max_age_seconds:
+                        logger.info(f"STARS verification email too old: {age:.0f}s > {max_age_seconds}s")
+                        return None
+                except Exception:
+                    pass  # Can't parse date — try anyway
+
+                # Extract body text
+                body = self._extract_body(msg)
+                if not body:
+                    return None
+
+                # Extract verification code: "Verification Code: 50296"
+                match = re.search(r'Verification Code:\s*(\d{4,6})', body)
+                if match:
+                    code = match.group(1)
+                    logger.info(f"STARS verification code extracted: {code}")
+                    return code
+
+                logger.info(f"No verification code found in email body: {body[:100]}")
+                return None
+
+        except Exception as e:
+            logger.error(f"IMAP STARS verification code fetch error: {e}")
+            return None
 
     def noop(self):
         """No-op — kept for backward compatibility, does nothing now."""

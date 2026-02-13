@@ -60,6 +60,7 @@ logger = logging.getLogger("telegram-bot")
 
 OWNER_ID = int(os.getenv("TELEGRAM_OWNER_ID", "0"))
 AUTO_SYNC_INTERVAL = int(os.getenv("AUTO_SYNC_INTERVAL", "600"))  # 10 min
+ASSIGNMENT_CHECK_INTERVAL = int(os.getenv("ASSIGNMENT_CHECK_INTERVAL", "600"))  # 10 min
 
 # ─── Global Components ──────────────────────────────────────────────────────
 
@@ -76,6 +77,8 @@ last_sync_time: str = "Henüz yapılmadı"
 last_sync_new_files: int = 0
 known_assignment_ids: set = set()
 sync_lock = asyncio.Lock()
+last_stars_notification: float = 0  # timestamp of last STARS summary notification
+STARS_NOTIFY_INTERVAL = 43200  # 12 hours
 
 # ─── Conversation History ────────────────────────────────────────────────────
 
@@ -172,54 +175,76 @@ def save_to_history(
 def detect_active_course(user_msg: str, user_id: int) -> str | None:
     """
     Detect which course the user is talking about.
-    Priority: 1) course name in new message → 2) history's active_course → 3) None
+    Uses cached llm.moodle_courses (no network call per message).
+    Priority: 1) exact code match → 2) number match → 3) LLM → 4) history
     """
-    try:
-        courses = moodle.get_courses()
-    except Exception:
+    courses = llm.moodle_courses  # Cached at startup + refreshed on sync
+    if not courses:
         return get_user_active_course(user_id)
 
-    msg_lower = user_msg.lower().replace("-", " ").replace("_", " ")
+    msg_upper = user_msg.upper().replace("-", " ").replace("_", " ")
 
-    msg_words = msg_lower.split()
-
+    # Tier 1: Exact course code match (instant, free)
     for c in courses:
-        # Match shortname code parts (e.g. "hciv", "edeb", "ctis")
-        short = c.shortname.lower().replace("-", " ")
-        code_parts = short.split()
-        for part in code_parts:
-            if len(part) >= 3 and part.isalpha() and part in msg_lower:
-                return c.fullname
-        # Match full shortname (e.g. "hciv 102")
-        code_key = " ".join(p for p in code_parts if not p.isdigit())[:20]
-        if code_key and code_key in msg_lower:
-            return c.fullname
+        code = c["shortname"].split("-")[0].strip().upper()
+        if code in msg_upper:
+            return c["fullname"]
+        dept = code.split()[0] if " " in code else code
+        if len(dept) >= 3 and dept in msg_upper.split():
+            return c["fullname"]
 
-    # Match course number (e.g. "465" → CTIS 465)
+    # Tier 2: Course number match (e.g. "474" → CTIS 474)
+    msg_words = user_msg.split()
     for c in courses:
-        nums = [p for p in c.shortname.lower().split() if p.isdigit() and len(p) >= 3]
+        nums = [p for p in c["shortname"].split() if p.replace("-", "").isdigit() and len(p) >= 3]
         for num in nums:
-            if num in msg_words:
-                return c.fullname
+            num_clean = num.split("-")[0]
+            if num_clean in msg_words:
+                return c["fullname"]
 
-    # Match fullname keywords (5+ chars, e.g. "microservice" in fullname)
-    for c in courses:
-        full_words = [w for w in c.fullname.lower().replace("-", " ").split()
-                      if len(w) >= 5 and not w.isdigit()]
-        for word in full_words:
-            if word in msg_lower:
-                return c.fullname
+    # Tier 3: LLM-based detection for ambiguous terms (e.g., "audit", "ethics", "roman")
+    try:
+        course_list = "\n".join(f"- {c['shortname']}: {c['fullname']}" for c in courses)
+        result = llm.engine.complete(
+            task="intent",
+            system=(
+                f"Aktif kurslar:\n{course_list}\n\n"
+                "Öğrencinin mesajı hangi kursa ait? Kurs KISA ADINI yaz (ör: CTIS 474-1).\n"
+                "Hiçbir kursla ilgili değilse NONE yaz.\n"
+                "SADECE kurs kısa adı veya NONE yaz, başka bir şey yazma."
+            ),
+            messages=[{"role": "user", "content": user_msg}],
+            max_tokens=20,
+        )
+        result = result.strip()
+        if result and result != "NONE":
+            for c in courses:
+                if c["shortname"] in result or result in c["shortname"]:
+                    return c["fullname"]
+    except Exception:
+        pass
 
-    # No match in new message → keep history course
+    # No match → keep history course
     return get_user_active_course(user_id)
 
 
 def build_smart_query(user_msg: str, history: list[dict]) -> str:
-    """For short/ambiguous messages, prepend recent context."""
-    if len(user_msg.split()) < 5 and history:
-        recent = " ".join(m["content"] for m in history[-4:])
-        return f"{recent} {user_msg}"
-    return user_msg
+    """For short/ambiguous messages, enrich with recent context.
+    Extracts key terms from history instead of raw concat (better embedding quality).
+    """
+    if len(user_msg.split()) >= 5 or not history:
+        return user_msg
+
+    # Extract only user messages from recent history (not bot responses — too long/noisy)
+    recent_user = [m["content"] for m in history[-6:] if m["role"] == "user"]
+    if not recent_user:
+        return user_msg
+
+    # Build focused context: last 2 user messages + current
+    context_msgs = recent_user[-2:]
+    return " ".join(context_msgs) + " " + user_msg
+
+
 
 
 # ─── Sync Blocking ──────────────────────────────────────────────────────────
@@ -280,6 +305,10 @@ def init_components():
     if moodle.connect():
         logger.info("Moodle connected successfully.")
         courses = moodle.get_courses()
+        # Populate LLM with full course list (for awareness of ALL courses)
+        llm.moodle_courses = [
+            {"shortname": c.shortname, "fullname": c.fullname} for c in courses
+        ]
         profile = StaticProfile()
         profile.auto_populate_from_moodle(
             site_info=moodle.site_info,
@@ -653,7 +682,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"───────────────\n"
         f"🔒 Odak: {active or 'Yok'}\n"
         f"🔄 Son sync: {last_sync_time}\n"
-        f"⏱️ Auto-sync: Her {AUTO_SYNC_INTERVAL // 60} dk"
+        f"⏱️ Auto-sync: Her {AUTO_SYNC_INTERVAL // 60} dk | Ödev check: Her {ASSIGNMENT_CHECK_INTERVAL // 60} dk"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_keyboard())
 
@@ -812,7 +841,49 @@ async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await asyncio.to_thread(stars_client.start_login, uid, stars_user, stars_pass)
 
     if result["status"] == "sms_sent":
-        await msg.edit_text("📱 SMS kodu gönderildi. Kodu buraya yaz:")
+        # Auto-verify: try reading code from email via IMAP
+        if webmail_client.authenticated:
+            await msg.edit_text("📧 Doğrulama kodu bekleniyor...")
+            code = None
+            # Poll email for up to 30 seconds (6 attempts × 5s)
+            for attempt in range(6):
+                await asyncio.sleep(5)
+                code = await asyncio.to_thread(
+                    webmail_client.fetch_stars_verification_code, 120
+                )
+                if code:
+                    break
+
+            if code:
+                await msg.edit_text(f"🔑 Kod bulundu, doğrulanıyor...")
+                verify_result = await asyncio.to_thread(stars_client.verify_sms, uid, code)
+                if verify_result["status"] == "ok":
+                    await msg.edit_text("🔄 STARS verileri çekiliyor...")
+                    cache = await asyncio.to_thread(stars_client.fetch_all_data, uid)
+                    if cache:
+                        _inject_schedule(cache)
+                        _inject_stars_context(cache)
+                        await asyncio.to_thread(_inject_assignments_context)
+                        exam_count = len(cache.exams)
+                        await msg.edit_text(
+                            f"✅ STARS verileri güncellendi! (otomatik doğrulama)\n"
+                            f"📊 CGPA: {cache.user_info.get('cgpa', '?')} | {cache.user_info.get('standing', '?')}\n"
+                            f"📅 {exam_count} yaklaşan sınav\n"
+                            f"📋 {len(cache.attendance)} ders takip ediliyor\n"
+                            f"📅 {len(cache.schedule)} ders programı girişi",
+                        )
+                    else:
+                        await msg.edit_text("✅ STARS oturumu açıldı ama veri çekilemedi.")
+                    return
+                else:
+                    await msg.edit_text(
+                        f"⚠️ Otomatik doğrulama başarısız: {verify_result.get('message', '')}\n"
+                        "📱 Kodu manuel olarak buraya yaz:"
+                    )
+            else:
+                await msg.edit_text("⏳ Email'de kod bulunamadı. Kodu manuel olarak buraya yaz:")
+        else:
+            await msg.edit_text("📱 Doğrulama kodu gönderildi. Kodu buraya yaz:")
     elif result["status"] == "ok":
         # No 2FA — fetch data immediately
         await msg.edit_text("🔄 STARS verileri çekiliyor...")
@@ -1145,8 +1216,37 @@ async def _stars_reply_course_detail(update: Update, cache, course_code: str):
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
-async def _stars_reply_schedule(update: Update, cache):
-    """Format and send weekly schedule from STARS cache."""
+def _detect_schedule_day(user_msg: str) -> str | None:
+    """Detect if user asks about a specific day. Returns Turkish day name or None."""
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    _tr_tz = _tz(_td(hours=3))
+    now = _dt.now(_tr_tz)
+    days_tr = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+
+    msg = user_msg.lower().replace("ı", "i").replace("ü", "u").replace("ö", "o").replace("ç", "c").replace("ş", "s")
+
+    # "bugün" / "today"
+    if any(w in msg for w in ["bugun", "today", "simdiki"]):
+        return days_tr[now.weekday()]
+    # "yarın" / "tomorrow"
+    if any(w in msg for w in ["yarin", "tomorrow"]):
+        tmrw = now + _td(days=1)
+        return days_tr[tmrw.weekday()]
+    # Specific day names
+    day_keywords = {
+        "pazartesi": "Pazartesi", "sali": "Salı", "carsamba": "Çarşamba",
+        "persembe": "Perşembe", "cuma": "Cuma", "cumartesi": "Cumartesi", "pazar": "Pazar",
+    }
+    for key, val in day_keywords.items():
+        if key in msg:
+            return val
+    return None
+
+
+async def _stars_reply_schedule(update: Update, cache, user_msg: str = ""):
+    """Format and send weekly schedule from STARS cache.
+    If user_msg specifies a day, show only that day.
+    """
     schedule = cache.schedule or []
     if not schedule:
         await update.message.reply_text("📅 Ders programı bulunamadı. /login ile STARS'a tekrar giriş yap.")
@@ -1166,19 +1266,37 @@ async def _stars_reply_schedule(update: Update, cache):
             by_day[day] = []
         by_day[day].append(entry)
 
-    lines = ["📅 <b>Haftalık Ders Programı</b>\n"]
-    for day in days_tr[:6]:  # Mon-Sat
-        entries = by_day.get(day, [])
-        marker = " 👈" if day == today_name else ""
-        lines.append(f"<b>{day}{marker}</b>")
+    # Check if user asks about a specific day
+    target_day = _detect_schedule_day(user_msg) if user_msg else None
+
+    if target_day:
+        # Show single day
+        entries = by_day.get(target_day, [])
+        is_today = target_day == today_name
+        label = f"{target_day} {'(bugün)' if is_today else ''}"
+        lines = [f"📅 <b>{label}</b>\n"]
         if not entries:
-            lines.append("  —")
+            lines.append("Bugün ders yok! 🎉" if is_today else f"{target_day} günü ders yok.")
         else:
             entries.sort(key=lambda e: e.get("time", ""))
             for e in entries:
                 room = f" ({e['room']})" if e.get("room") else ""
                 lines.append(f"  ⏰ {e['time']} — {e['course']}{room}")
-        lines.append("")
+    else:
+        # Show full week
+        lines = ["📅 <b>Haftalık Ders Programı</b>\n"]
+        for day in days_tr[:6]:  # Mon-Sat
+            entries = by_day.get(day, [])
+            marker = " 👈" if day == today_name else ""
+            lines.append(f"<b>{day}{marker}</b>")
+            if not entries:
+                lines.append("  —")
+            else:
+                entries.sort(key=lambda e: e.get("time", ""))
+                for e in entries:
+                    room = f" ({e['room']})" if e.get("room") else ""
+                    lines.append(f"  ⏰ {e['time']} — {e['course']}{room}")
+            lines.append("")
 
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
@@ -1382,7 +1500,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"───────────────\n"
             f"🔒 Odak: {active or 'Yok'}\n"
             f"🔄 Son sync: {last_sync_time}\n"
-            f"⏱️ Auto-sync: Her {AUTO_SYNC_INTERVAL // 60} dk"
+            f"⏱️ Auto-sync: Her {AUTO_SYNC_INTERVAL // 60} dk | Ödev check: Her {ASSIGNMENT_CHECK_INTERVAL // 60} dk"
         )
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_keyboard())
         return
@@ -1644,39 +1762,104 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─── Intent Classification ────────────────────────────────────────────────────
 
-def _classify_intent(message: str) -> str:
-    """Classify user message intent via LLM (GPT-4.1-nano, ~200ms).
-    Returns one of: STUDY, ASSIGNMENTS, MAIL, SUMMARY, QUESTIONS, CHAT
+def _classify_intent(message: str, recent_history: list[dict] = None) -> str:
+    """Classify user message intent via LLM (GPT-4.1-mini).
+    Returns one of: STUDY, ASSIGNMENTS, MAIL, SUMMARY, QUESTIONS,
+                    EXAM, GRADES, SCHEDULE, ATTENDANCE, CGPA, CHAT
     """
+    valid_intents = {
+        "STUDY", "ASSIGNMENTS", "MAIL", "SYNC", "SUMMARY", "QUESTIONS",
+        "EXAM", "GRADES", "SCHEDULE", "ATTENDANCE", "CGPA",
+    }
+
+    # Build context from recent history for follow-up understanding
+    context_prefix = ""
+    if recent_history:
+        recent_user_msgs = [m["content"] for m in recent_history if m["role"] == "user"][-2:]
+        if recent_user_msgs:
+            context_prefix = "Son mesajlar (bağlam için):\n" + "\n".join(
+                f"- {m}" for m in recent_user_msgs
+            ) + "\n\nŞimdi sınıflandırılacak mesaj:\n"
+
     try:
         result = llm.engine.complete(
-            task="extraction",
+            task="intent",
             system=(
                 "Öğrencinin mesajını analiz et ve TEK KELİME ile sınıflandır.\n\n"
                 "STUDY — Ders çalışma/öğrenme isteği. Örnekler:\n"
                 "  'EDEB çalışacağım', 'bana X konusunu öğret', 'sınava hazırlan',\n"
-                "  'şu dersi anlat', 'bu konuyu çalışalım', 'X dersine başlayalım'\n\n"
+                "  'şu dersi anlat', 'bu konuyu çalışalım', 'X dersine başlayalım'\n"
+                "  ÖNEMLİ: 'çalışmalıyım/çalışayım' → niyet STUDY'dir, başka sinyal olsa bile.\n\n"
                 "ASSIGNMENTS — Ödev durumu sorma. Örnekler:\n"
                 "  'ödevlerim ne', 'bekleyen ödev var mı', 'ödev durumu', 'teslim tarihleri'\n\n"
                 "MAIL — Mail kontrol etme isteği. Örnekler:\n"
-                "  'maillerimi kontrol et', 'yeni mail var mı', 'maillere bak', 'mail özeti'\n\n"
-                "SUMMARY — Ders/hafta özeti isteme. Örnekler:\n"
-                "  'EDEB özeti', 'bu hafta ne işledik', 'ders özeti ver', 'HCIV özetle'\n\n"
+                "  'maillerimi kontrol et', 'yeni mail var mı', 'maillere bak', 'mail özeti'\n"
+                "  DİKKAT: 'moodle kontrol et' veya 'yeni kaynak/materyal' → SYNC, MAIL DEĞİL\n\n"
+                "SYNC — Moodle'a yeni materyal/kaynak yüklenip yüklenmediğini sorma. Örnekler:\n"
+                "  'yeni kaynak var mı', 'moodlea yeni bir şey yüklendi mi', 'yeni materyal',\n"
+                "  'moodle kontrol et', 'yeni dosya var mı', 'moodleyi kontrol et'\n\n"
+                "SUMMARY — Ders İÇERİĞİ özeti isteme. Örnekler:\n"
+                "  'EDEB özeti', 'bu hafta ne işledik', 'ders özeti ver', 'HCIV özetle',\n"
+                "  'derste ne anlattı', 'konu özeti'\n\n"
                 "QUESTIONS — Pratik soru/test isteme. Örnekler:\n"
                 "  'bana soru sor', 'test et', 'pratik soru ver', 'quiz yap'\n\n"
-                "CHAT — Genel sohbet, bilgi sorma, diğer her şey. Örnekler:\n"
-                "  'merhaba', 'X nedir', 'notlarım', 'sınavım ne zaman', 'hava nasıl'\n\n"
-                "SADECE şu kelimelerden birini yaz: STUDY, ASSIGNMENTS, MAIL, SUMMARY, QUESTIONS, CHAT"
+                "EXAM — Sınav bilgisi/takvimi sorma. Örnekler:\n"
+                "  'sınavlarım ne zaman', 'sınav tarihi', 'midterm ne zaman',\n"
+                "  'final ne zaman', 'yaklaşan sınav', 'sınav takvimi'\n\n"
+                "GRADES — Harf notu/puan bilgisi sorma (STARS'tan). Örnekler:\n"
+                "  'notlarım', 'kaç aldım', 'puanlarım', 'not durumu',\n"
+                "  'hangi dersten kaç aldım'\n"
+                "  DİKKAT: 'X notları var mı?', 'ders notları' → CHAT (materyal soruyor, not=notes)\n\n"
+                "SCHEDULE — Ders programı LİSTESİ isteme. Örnekler:\n"
+                "  'yarın ne dersim var', 'bugün hangi ders', 'ders programım',\n"
+                "  'kaçta dersim var', 'haftalık program', 'güncel saate göre',\n"
+                "  'şu anki saate göre', 'şimdi hangisi kaldı', 'bugün kaç dersim kaldı'\n"
+                "  DİKKAT: 'X dersi yarın mı?', 'X kaçta?' gibi evet/hayır soruları → CHAT\n"
+                "  DİKKAT: Önceki mesaj SCHEDULE ise ve takip mesajıysa → SCHEDULE\n\n"
+                "ATTENDANCE — Devamsızlık/yoklama bilgisi. Örnekler:\n"
+                "  'devamsızlığım', 'yoklama durumu', 'kaç devamsızlığım var',\n"
+                "  'katılım oranım'\n\n"
+                "CGPA — Genel akademik durum/ortalama. Örnekler:\n"
+                "  'CGPA nedir', 'not ortalamam', 'GPA kaç', 'akademik durum'\n\n"
+                "CHAT — Genel sohbet, bilgi sorma, takip/açıklama mesajları, diğer her şey.\n"
+                "  Örnekler: 'merhaba', 'X nedir', 'hava nasıl', 'teşekkürler'\n"
+                "  ÖNEMLİ: Öğrenci önceki mesajını açıklıyor/düzeltiyorsa\n"
+                "  (ör: 'X dersini diyorum', 'hayır Y'den bahsediyorum', 'onu kastetmedim')\n"
+                "  → CHAT olarak sınıflandır.\n\n"
+                "SADECE şu kelimelerden birini yaz: STUDY, ASSIGNMENTS, MAIL, SYNC, SUMMARY, "
+                "QUESTIONS, EXAM, GRADES, SCHEDULE, ATTENDANCE, CGPA, CHAT"
             ),
-            messages=[{"role": "user", "content": message}],
+            messages=[{"role": "user", "content": context_prefix + message}],
             max_tokens=10,
         )
         intent = result.strip().upper().split()[0] if result.strip() else "CHAT"
-        if intent in ("STUDY", "ASSIGNMENTS", "MAIL", "SUMMARY", "QUESTIONS"):
+        if intent in valid_intents:
             return intent
         return "CHAT"
     except Exception:
         return "CHAT"
+
+
+def _detect_stars_intents(msg: str, primary: str) -> list[str]:
+    """Detect all STARS-related intents via keywords (multi-intent support).
+
+    Returns deduplicated list starting with the primary LLM-classified intent.
+    """
+    msg_l = msg.lower()
+    found = set()
+    if any(k in msg_l for k in ("sınav", "midterm", "final", "vize")):
+        found.add("EXAM")
+    if any(k in msg_l for k in ("devamsızlık", "yoklama", "katılım")):
+        found.add("ATTENDANCE")
+    if any(k in msg_l for k in ("notum", "puanım", "harf not", "kaç aldım")):
+        found.add("GRADES")
+    if any(k in msg_l for k in ("program", "kaçta ders")):
+        found.add("SCHEDULE")
+    if any(k in msg_l for k in ("cgpa", "ortalama", " gpa")):
+        found.add("CGPA")
+    # Ensure primary intent is first and always included
+    found.discard(primary)
+    return [primary] + sorted(found)
 
 
 # ─── File Upload Handler ─────────────────────────────────────────────────────
@@ -1995,70 +2178,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.edit_text(f"❌ {result.get('message', 'Doğrulama başarısız.')}")
             return
 
-    # ── STARS natural language detection (from cache) ──
+    # ── STARS course-specific query (e.g. "CTIS 465 detay") ──
     cache = stars_client.get_cache(uid)
     if cache and cache.fetched_at:
-        msg_lower = user_msg.lower()
-
-        # Check for course-specific query (e.g. "CTIS 465 detay")
         import re as _re
         course_match = _re.search(r'\b([A-Z]{2,5}\s*\d{3})\b', user_msg)
-        if course_match and any(kw in msg_lower for kw in ["detay", "detail", "bilgi", "info"]):
+        if course_match and any(kw in user_msg.lower() for kw in ["detay", "detail", "bilgi", "info"]):
             await _stars_reply_course_detail(update, cache, course_match.group(1))
             return
 
-        # Only trigger STARS for direct information requests, not study/content questions
-        # "sınava hazırlan" = study request → RAG, "sınavlarım ne" = info request → STARS
-        stars_keywords = {
-            "exam": ["sınavlarım", "sınav tarihi", "sınav takvimi", "sınav ne zaman",
-                     "hangi sınav", "midterm ne zaman", "final ne zaman", "yaklaşan sınav"],
-            "cgpa": ["cgpa", "not ortalam", "gpa", "akademik durum"],
-            "grades": ["notlarım", "kaç aldım", "grade", "puanlarım", "not durumu"],
-            "attendance": ["devamsızlık", "devamsizlik", "yoklama", "attendance",
-                          "devamsızlığım", "katılım"],
-            "schedule": ["ders programı", "hangi dersim", "şimdi hangi ders", "bugün ders",
-                         "yarın ders", "bugün hangi ders", "yarın hangi ders", "hangi derse",
-                         "schedule", "timetable", "ders saatleri", "kaçta dersim"],
-        }
-
-        for intent, keywords in stars_keywords.items():
-            if any(kw in msg_lower for kw in keywords):
-                if intent == "exam":
-                    await _stars_reply_exams(update, cache)
-                    return
-                elif intent == "cgpa":
-                    await _stars_reply_academic(update, cache)
-                    return
-                elif intent == "grades":
-                    await _stars_reply_grades(update, cache)
-                    return
-                elif intent == "attendance":
-                    await _stars_reply_attendance(update, cache)
-                    return
-                elif intent == "schedule":
-                    await _stars_reply_schedule(update, cache)
-                    return
-                break
-
-    # ── Regular RAG chat flow ──
-
-    # Multi-intent classification via LLM
+    # ── Multi-intent classification via LLM ──
     msg_lower = user_msg.lower()
-    intent = await asyncio.to_thread(_classify_intent, user_msg)
+    recent_hist = get_conversation_history(uid, limit=4)
+    intent = await asyncio.to_thread(_classify_intent, user_msg, recent_hist)
     logger.info(f"Intent: {intent} | msg: {user_msg[:50]}")
 
     # ── Check active study session ──
     session = study_sessions.get(uid)
-    if session and msg_lower.strip() in ("devam", "devam et", "sonraki", "next"):
+    if session:
         phase = session.get("phase", "studying")
-        if phase == "completed":
+        # Fuzzy match: "devam" keyword (but not "devamsızlık")
+        has_devam = re.search(r'\bdevam\b', msg_lower) and 'devamsız' not in msg_lower
+        has_continue = msg_lower.strip() in ("sonraki", "next")
+        if (has_devam or has_continue) and phase in ("studying", "paused"):
+            await _study_next_step(update, uid)
+            return
+        if (has_devam or has_continue) and phase == "completed":
             await update.message.reply_text(
                 "✅ Bu çalışma zaten tamamlandı.\n"
                 "Yeni bir konu çalışmak istersen yaz, veya /temizle ile oturumu sıfırla."
             )
-            return
-        if phase in ("studying", "paused"):
-            await _study_next_step(update, uid)
             return
 
     # If user is in file selection phase, ignore non-study messages
@@ -2081,6 +2230,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_mail_intent(update)
         return
 
+    # ── Intent: SYNC — Moodle yeni materyal kontrolü ──
+    if intent == "SYNC":
+        stats = vector_store.get_stats()
+        text = (
+            f"📦 Son sync: {last_sync_time or 'bilinmiyor'}\n"
+            f"📚 {stats.get('unique_files', 0)} dosya, {stats.get('total_chunks', 0)} chunk\n"
+            f"🆕 Son sync'te {last_sync_new_files or 0} yeni chunk\n\n"
+            "Tekrar senkronlamak için /sync yazabilirsin."
+        )
+        await update.message.reply_text(text)
+        return
+
     # ── Intent: SUMMARY ──
     if intent == "SUMMARY":
         await _handle_summary_intent(update, user_msg)
@@ -2090,6 +2251,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if intent == "QUESTIONS":
         await _handle_questions_intent(update, uid, user_msg)
         return
+
+    # ── Intent: STARS data queries ──
+    if intent in ("EXAM", "GRADES", "SCHEDULE", "ATTENDANCE", "CGPA"):
+        cache = stars_client.get_cache(uid)
+        if cache and cache.fetched_at:
+            # Multi-intent: detect all STARS intents in message
+            stars_intents = _detect_stars_intents(user_msg, primary=intent)
+            for si in stars_intents:
+                if si == "EXAM":
+                    await _stars_reply_exams(update, cache)
+                elif si == "GRADES":
+                    await _stars_reply_grades(update, cache)
+                elif si == "SCHEDULE":
+                    await _stars_reply_schedule(update, cache, user_msg)
+                elif si == "ATTENDANCE":
+                    await _stars_reply_attendance(update, cache)
+                elif si == "CGPA":
+                    await _stars_reply_academic(update, cache)
+            return
+        else:
+            await update.message.reply_text(
+                "Bu bilgiyi görmek için önce STARS'a giriş yapmalısın.\n"
+                "/login komutuyla STARS bilgilerini girebilirsin."
+            )
+            return
 
     # Typing indicator
     typing = _TypingIndicator(update.message.get_bot(), chat_id)
@@ -2107,6 +2293,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # ── Intent: STUDY → Progressive study session ──
         if intent == "STUDY":
+            existing = study_sessions.get(uid)
+            if existing and existing.get("phase") in ("studying", "paused"):
+                # Active session exists — resume if same course or no course specified
+                existing_course = existing.get("course")
+                if existing_course == course_filter or not course_filter:
+                    logger.info(f"📚 Study mode: resuming existing session")
+                    typing.stop()
+                    await _study_next_step(update, uid)
+                    return
             logger.info(f"📚 Study mode: starting progressive session")
             typing.stop()
             await _start_study_session(update, uid, user_msg, smart_query, course_filter)
@@ -2114,6 +2309,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # ── Intent: CHAT → RAG chat ──
         n_chunks = 15
+
+        # Check if detected course has ANY indexed materials
+        course_has_materials = True
+        if course_filter:
+            course_files = vector_store.get_files_for_course(course_name=course_filter)
+            course_has_materials = len(course_files) > 0
 
         # RAG: retrieve relevant chunks (filtered by course, with fallback)
         results = vector_store.query(
@@ -2123,16 +2324,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         # Fallback: if filtered results are weak, search all courses
+        # BUT: only fall back if the course actually HAS materials (just weak match)
+        # If course has NO materials at all, don't pull from other courses
         top_score = (1 - results[0]["distance"]) if results else 0
         if course_filter and (len(results) < 2 or top_score < 0.35):
-            all_results = vector_store.query(
-                query_text=smart_query, n_results=n_chunks,
-            )
-            all_top = (1 - all_results[0]["distance"]) if all_results else 0
-            if all_top > top_score:
-                results = all_results
-                top_score = all_top
-                logger.info(f"RAG fallback: filtered score {top_score:.2f} → all-course score {all_top:.2f}")
+            if course_has_materials:
+                # Course has materials but query didn't match well → try all courses
+                all_results = vector_store.query(
+                    query_text=smart_query, n_results=n_chunks,
+                )
+                all_top = (1 - all_results[0]["distance"]) if all_results else 0
+                if all_top > top_score:
+                    results = all_results
+                    top_score = all_top
+                    logger.info(f"RAG fallback: filtered score {top_score:.2f} → all-course score {all_top:.2f}")
+            else:
+                # Course has NO materials → don't use RAG, let LLM use general knowledge
+                results = []
+                top_score = 0
+                logger.info(f"RAG skip: {course_filter} has no indexed materials, using LLM knowledge")
+
+        # Extra fallback: if query has proper nouns not found in results, try cross-course
+        if results and course_filter and top_score < 0.5:
+            key_terms = [w for w in user_msg.split() if len(w) >= 4 and w[0].isupper()]
+            if key_terms:
+                result_text = " ".join(r.get("text", "") for r in results[:5])
+                terms_found = any(t.lower() in result_text.lower() for t in key_terms)
+                if not terms_found:
+                    all_results = vector_store.query(query_text=smart_query, n_results=n_chunks)
+                    all_top = (1 - all_results[0]["distance"]) if all_results else 0
+                    if all_top > top_score:
+                        results = all_results
+                        top_score = all_top
+                        logger.info(f"RAG proper-noun fallback: '{key_terms}' not in {course_filter} → all-course {all_top:.2f}")
 
         low_relevance = not results or top_score < 0.3
 
@@ -2147,12 +2371,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context_chunks=results,
         )
 
-        # Warn user if RAG results were weak
-        if low_relevance:
+        # ── Source attribution ──
+        # Strip any LLM-generated footer (prevents duplicate with programmatic footer)
+        response = re.sub(r'\n*─+\n*📚.*$', '', response, flags=re.DOTALL).rstrip()
+
+        if course_filter and not course_has_materials:
+            # Course has NO materials → warn + LLM general knowledge
+            response = (
+                f"ℹ️ <b>{course_filter}</b> dersinin Moodle'da henüz materyali yok. "
+                "Genel bilgimle yanıtlıyorum:\n\n"
+            ) + response
+        elif low_relevance:
             response = (
                 "⚠️ Materyallerde bu konuyla güçlü bir eşleşme bulamadım. "
                 "Genel bilgiyle yanıtlıyorum.\n\n"
             ) + response
+        elif results:
+            # RAG was used — append source files footer
+            source_files = []
+            seen = set()
+            for r in results[:7]:
+                fname = r.get("metadata", {}).get("filename", "")
+                if fname and fname not in seen:
+                    source_files.append(fname)
+                    seen.add(fname)
+            if source_files:
+                sources = ", ".join(source_files[:4])
+                response += f"\n\n{'─' * 25}\n📚 <i>Kaynak: {sources}</i>"
 
         typing.stop()
 
@@ -2178,6 +2423,14 @@ async def _start_study_session(
     try:
         # Get available files for this course/topic
         files = vector_store.get_files_for_course(course_name=course_filter)
+        if not files and course_filter:
+            # Course explicitly detected but has NO materials — tell user clearly
+            await msg.edit_text(
+                f"📭 <b>{course_filter}</b> dersinin Moodle'da henüz materyali yüklenmemiş.\n\n"
+                "Hoca kaynak yüklediğinde /sync ile senkronlayabilirsin.",
+                parse_mode="HTML",
+            )
+            return
         if not files:
             files = vector_store.get_files_for_course()
 
@@ -2825,14 +3078,119 @@ async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE):
             else:
                 logger.info("Auto-sync: No new materials.")
 
-            # Refresh assignment deadlines for LLM context
+            # Refresh assignment deadlines + course list for LLM context
             try:
                 await asyncio.to_thread(_inject_assignments_context)
+                courses = moodle.get_courses()
+                llm.moodle_courses = [
+                    {"shortname": c.shortname, "fullname": c.fullname} for c in courses
+                ]
             except Exception:
                 pass
 
         except Exception as e:
             logger.error(f"Auto-sync error: {e}")
+
+
+# ─── Auto STARS Login Background Job ─────────────────────────────────────────
+
+async def auto_stars_login_job(context: ContextTypes.DEFAULT_TYPE):
+    """Auto-login to STARS every 10 min if session expired. Uses email 2FA auto-verify."""
+    stars_user = os.getenv("STARS_USERNAME")
+    stars_pass = os.getenv("STARS_PASSWORD")
+    if not stars_user or not stars_pass:
+        return
+
+    uid = OWNER_ID
+    if not uid:
+        return
+
+    # Skip if session is still valid
+    if stars_client.is_authenticated(uid):
+        logger.debug("Auto STARS login: session still valid, skipping.")
+        return
+
+    logger.info("Auto STARS login: session expired, re-authenticating...")
+
+    try:
+        result = await asyncio.to_thread(stars_client.start_login, uid, stars_user, stars_pass)
+
+        if result["status"] == "sms_sent":
+            # Auto-verify via email
+            if not webmail_client.authenticated:
+                logger.warning("Auto STARS login: webmail not authenticated, cannot auto-verify SMS.")
+                return
+
+            code = None
+            for attempt in range(6):
+                await asyncio.sleep(5)
+                code = await asyncio.to_thread(
+                    webmail_client.fetch_stars_verification_code, 120
+                )
+                if code:
+                    break
+
+            if not code:
+                logger.warning("Auto STARS login: verification code not found in email after 30s.")
+                return
+
+            logger.info(f"Auto STARS login: code found, verifying...")
+            verify_result = await asyncio.to_thread(stars_client.verify_sms, uid, code)
+            if verify_result["status"] != "ok":
+                logger.error(f"Auto STARS login: verification failed: {verify_result.get('message', '')}")
+                return
+
+        elif result["status"] != "ok":
+            logger.error(f"Auto STARS login: login failed: {result.get('message', '')}")
+            return
+
+        # Fetch all data + inject context
+        cache = await asyncio.to_thread(stars_client.fetch_all_data, uid)
+        if cache:
+            _inject_schedule(cache)
+            _inject_stars_context(cache)
+            await asyncio.to_thread(_inject_assignments_context)
+            logger.info(
+                f"Auto STARS login OK: CGPA={cache.user_info.get('cgpa', '?')}, "
+                f"{len(cache.exams)} exams, {len(cache.attendance)} attendance, "
+                f"{len(cache.schedule)} schedule"
+            )
+
+            # Send summary notification every 12 hours
+            global last_stars_notification
+            now = time.time()
+            if now - last_stars_notification >= STARS_NOTIFY_INTERVAL:
+                last_stars_notification = now
+                try:
+                    # Build summary
+                    info = cache.user_info or {}
+                    lines = [f"📊 <b>STARS Güncellendi</b> (otomatik)"]
+                    if info.get("cgpa"):
+                        lines.append(f"🎓 CGPA: <b>{info['cgpa']}</b> | {info.get('standing', '?')}")
+                    if cache.exams:
+                        lines.append(f"📅 {len(cache.exams)} yaklaşan sınav:")
+                        for ex in cache.exams[:3]:
+                            lines.append(f"  • {ex.get('course', '?')}: {ex.get('exam_name', '?')} ({ex.get('date', '?')})")
+                    if cache.attendance:
+                        att_summary = ", ".join(
+                            f"{a.get('course', '?').split()[0]}: {a.get('ratio', '?')}"
+                            for a in cache.attendance[:5]
+                        )
+                        lines.append(f"📋 Devamsızlık: {att_summary}")
+                    lines.append(f"\n🔄 Sonraki güncelleme: ~12 saat")
+
+                    await context.bot.send_message(
+                        chat_id=OWNER_ID,
+                        text="\n".join(lines),
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+        else:
+            logger.warning("Auto STARS login: authenticated but data fetch failed.")
+
+    except Exception as e:
+        logger.error(f"Auto STARS login error: {e}")
 
 
 # ─── Auto Assignment Check ───────────────────────────────────────────────────
@@ -2944,9 +3302,10 @@ async def post_init(app: Application):
 
     # ── Background Jobs ──
     app.job_queue.run_repeating(auto_sync_job, interval=AUTO_SYNC_INTERVAL, first=AUTO_SYNC_INTERVAL, name="auto_sync")
-    app.job_queue.run_repeating(assignment_check_job, interval=1800, first=60, name="assignment_check")
+    app.job_queue.run_repeating(assignment_check_job, interval=ASSIGNMENT_CHECK_INTERVAL, first=60, name="assignment_check")
     app.job_queue.run_repeating(mail_check_job, interval=1800, first=60, name="mail_check")
     app.job_queue.run_repeating(moodle_keepalive_job, interval=120, first=120, name="moodle_keepalive")
+    app.job_queue.run_repeating(auto_stars_login_job, interval=600, first=60, name="auto_stars_login")
 
     from datetime import time as dtime
     app.job_queue.run_daily(deadline_reminder_job, time=dtime(hour=9, minute=0), name="deadline_reminder")
@@ -2967,9 +3326,52 @@ async def post_init(app: Application):
         except asyncio.TimeoutError:
             logger.error("Webmail auto-connect timed out (15s)")
 
-    logger.info(f"Auto-sync: every {AUTO_SYNC_INTERVAL // 60} min")
-    logger.info("Moodle/Webmail keepalive: every 2 min")
-    logger.info("Mail check: every 5 min")
+    # ── Initial STARS login at startup (after webmail is ready) ──
+    global last_stars_notification
+    stars_user = os.getenv("STARS_USERNAME")
+    stars_pass = os.getenv("STARS_PASSWORD")
+    if stars_user and stars_pass and OWNER_ID:
+        logger.info("Auto STARS login: initial login at startup...")
+        try:
+            result = await asyncio.to_thread(stars_client.start_login, OWNER_ID, stars_user, stars_pass)
+            if result["status"] == "sms_sent" and webmail_client.authenticated:
+                code = None
+                for _ in range(6):
+                    await asyncio.sleep(5)
+                    code = await asyncio.to_thread(webmail_client.fetch_stars_verification_code, 120)
+                    if code:
+                        break
+                if code:
+                    verify = await asyncio.to_thread(stars_client.verify_sms, OWNER_ID, code)
+                    if verify["status"] == "ok":
+                        cache = await asyncio.to_thread(stars_client.fetch_all_data, OWNER_ID)
+                        if cache:
+                            _inject_schedule(cache)
+                            _inject_stars_context(cache)
+                            await asyncio.to_thread(_inject_assignments_context)
+                            logger.info(f"Auto STARS login at startup: OK (CGPA={cache.user_info.get('cgpa', '?')})")
+                            last_stars_notification = time.time()  # seed so first notify is in 12h
+                        else:
+                            logger.warning("Auto STARS login at startup: auth OK but data fetch failed")
+                    else:
+                        logger.error(f"Auto STARS login at startup: verify failed: {verify.get('message', '')}")
+                else:
+                    logger.warning("Auto STARS login at startup: email code not found in 30s")
+            elif result["status"] == "ok":
+                cache = await asyncio.to_thread(stars_client.fetch_all_data, OWNER_ID)
+                if cache:
+                    _inject_schedule(cache)
+                    _inject_stars_context(cache)
+                    await asyncio.to_thread(_inject_assignments_context)
+                    logger.info(f"Auto STARS login at startup: OK (no 2FA)")
+                    last_stars_notification = time.time()
+            else:
+                logger.error(f"Auto STARS login at startup: {result.get('message', 'failed')}")
+        except Exception as e:
+            logger.error(f"Auto STARS login at startup error: {e}")
+
+    logger.info(f"Auto-sync: every {AUTO_SYNC_INTERVAL // 60} min | Assignment check: every {ASSIGNMENT_CHECK_INTERVAL // 60} min")
+    logger.info(f"STARS auto-login: every 10 min | Mail check: every 30 min")
 
 
 def main():
@@ -3012,8 +3414,8 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print(f"🚀 Bot çalışıyor! (Owner: {OWNER_ID or 'herkes'})")
-    print(f"🔄 Auto-sync: Her {AUTO_SYNC_INTERVAL // 60} dakika | Keepalive: 2 dakika")
-    print(f"📧 Mail kontrolü: Her 5 dakika | STARS: Manuel /login")
+    print(f"🔄 Auto-sync: Her {AUTO_SYNC_INTERVAL // 60} dk | Ödev check: Her {ASSIGNMENT_CHECK_INTERVAL // 60} dk")
+    print(f"📧 Mail: Her 30 dk | STARS auto-login: Her 10 dk")
     print("   Ctrl+C ile durdur")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

@@ -25,7 +25,7 @@ class Config:
     chroma_dir: Path = Path(os.getenv("CHROMA_DIR", "./data/chromadb"))
 
     # Embedding & Chunking
-    embedding_model: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "1000"))
     chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "200"))
 
@@ -56,15 +56,17 @@ class Config:
 
         # At least one LLM provider needed
         has_any_llm = any([
-            os.getenv("ANTHROPIC_API_KEY"),
+            os.getenv("GEMINI_API_KEY"),
             os.getenv("OPENAI_API_KEY"),
             os.getenv("GLM_API_KEY"),
+            os.getenv("ANTHROPIC_API_KEY"),
         ])
         if not has_any_llm:
             errors.append(
                 "No LLM API key configured. Set at least one of:\n"
-                "  - GLM_API_KEY (recommended, cheapest)\n"
+                "  - GEMINI_API_KEY (recommended)\n"
                 "  - OPENAI_API_KEY\n"
+                "  - GLM_API_KEY\n"
                 "  - ANTHROPIC_API_KEY"
             )
 

@@ -129,8 +129,9 @@ class VectorStore:
 
         for i in range(0, len(new_chunks), batch_size):
             batch = new_chunks[i:i + batch_size]
-            texts = [c.text for c in batch]
-            embeddings = self._encode(texts)
+            # Use embedding_text for encoding if available (math-normalized), original text for storage
+            embed_texts = [c.embedding_text or c.text for c in batch]
+            embeddings = self._encode(embed_texts)
 
             self._index.add(embeddings)
             for c in batch:

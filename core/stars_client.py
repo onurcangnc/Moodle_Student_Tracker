@@ -27,6 +27,8 @@ class StarsSession:
     _oauth_token: str = ""
     _phase: str = "idle"  # idle | awaiting_sms | ready
     _sms_hidden: dict = field(default_factory=dict)
+    _verify_url: str = ""  # actual verify endpoint (verifySms or verifyEmail)
+    _verify_field: str = "SmsVerifyForm[verifyCode]"  # form field name
 
     @property
     def expired(self) -> bool:
@@ -121,9 +123,22 @@ class StarsClient:
             logger.info(f"STARS login POST: {r.status_code} url={r.url}")
             logger.info(f"STARS cookies after login: {dict(s.cookies)}")
 
-            # Check if we landed on SMS verify page
-            if "verifySms" in r.url or "verifyCode" in r.text.lower():
+            # Check if we landed on verification page (SMS or Email)
+            is_verify = ("verifySms" in r.url or "verifyEmail" in r.url
+                         or "verifyCode" in r.text.lower())
+            if is_verify:
                 ss._phase = "awaiting_sms"
+
+                # Detect verify type and set URL/field accordingly
+                if "verifyEmail" in r.url:
+                    ss._verify_url = f"{BASE}/accounts/auth/verifyEmail"
+                    ss._verify_field = "EmailVerifyForm[verifyCode]"
+                    logger.info("STARS: Email verification phase")
+                else:
+                    ss._verify_url = f"{BASE}/accounts/auth/verifySms"
+                    ss._verify_field = "SmsVerifyForm[verifyCode]"
+                    logger.info("STARS: SMS verification phase")
+
                 # Extract oauth_token from redirect chain if present
                 for resp in r.history:
                     if "oauth_token" in resp.headers.get("Location", ""):
@@ -135,18 +150,17 @@ class StarsClient:
                 if m:
                     ss._oauth_token = m.group(1)
 
-                # Parse SMS page for hidden fields — store for verify_sms
-                sms_soup = BeautifulSoup(r.text, "html.parser")
-                sms_form = sms_soup.find("form")
-                if sms_form:
+                # Parse verify page for hidden fields
+                verify_soup = BeautifulSoup(r.text, "html.parser")
+                verify_form = verify_soup.find("form")
+                if verify_form:
                     ss._sms_hidden = {}
-                    for inp in sms_form.find_all("input", {"type": "hidden"}):
+                    for inp in verify_form.find_all("input", {"type": "hidden"}):
                         name = inp.get("name")
                         if name:
                             ss._sms_hidden[name] = inp.get("value", "")
-                    logger.info(f"STARS SMS form hidden fields: {ss._sms_hidden}")
+                    logger.info(f"STARS verify form hidden fields: {ss._sms_hidden}")
 
-                logger.info("STARS: SMS verification phase")
                 return {"status": "sms_sent"}
 
             # If we ended up authenticated (no 2FA?)
@@ -179,22 +193,22 @@ class StarsClient:
         s = ss.session
 
         try:
-            # Build SMS form data including hidden fields
-            sms_data = {"SmsVerifyForm[verifyCode]": code, "yt0": ""}
+            # Build verify form data — use stored field name (SMS or Email)
+            verify_data = {ss._verify_field: code, "yt0": ""}
             if ss._sms_hidden:
-                sms_data.update(ss._sms_hidden)
+                verify_data.update(ss._sms_hidden)
 
-            # POST SMS code with Referer (browser-like) — follow all redirects
-            sms_url = f"{BASE}/accounts/auth/verifySms"
-            s.headers["Referer"] = sms_url
+            # POST code with Referer (browser-like)
+            verify_url = ss._verify_url or f"{BASE}/accounts/auth/verifySms"
+            s.headers["Referer"] = verify_url
             s.headers["Origin"] = BASE
 
-            r = s.post(sms_url, data=sms_data, allow_redirects=False, timeout=15)
-            logger.info(f"STARS SMS verify: {r.status_code} Location={r.headers.get('Location', 'none')}")
+            r = s.post(verify_url, data=verify_data, allow_redirects=False, timeout=15)
+            logger.info(f"STARS verify: {r.status_code} Location={r.headers.get('Location', 'none')}")
 
             # If 200 with verify page → wrong code
             if r.status_code == 200:
-                if "verifySms" in r.url or "verify" in r.text.lower():
+                if "verify" in r.url.lower():
                     return {"status": "error", "message": "Yanlış doğrulama kodu."}
 
             # Remove stale verification cookie
@@ -210,7 +224,7 @@ class StarsClient:
                 loc = f"{BASE}{loc}"
             logger.info(f"STARS cookies for redirect: {list(s.cookies.keys())}")
 
-            prev_url = sms_url
+            prev_url = verify_url
             max_hops = 15
             r2 = None
             while loc and max_hops > 0:
