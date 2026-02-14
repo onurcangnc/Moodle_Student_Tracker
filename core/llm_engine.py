@@ -379,6 +379,7 @@ class LLMEngine:
         messages: list[dict],
         context_chunks: list[dict] | None = None,
         study_mode: bool = False,
+        extra_context: str = "",
     ) -> str:
         """
         Pure conversational chat: takes full message history + RAG chunks.
@@ -387,9 +388,17 @@ class LLMEngine:
         messages: list of {"role": "user"/"assistant", "content": "..."}
         context_chunks: raw results from vector_store.query()
         study_mode: if True, use strict grounding prompt + study task route
+        extra_context: prepended to RAG context (e.g. file summaries)
         """
         # Format RAG context
         context_text = self._format_context(context_chunks) if context_chunks else ""
+
+        # Prepend extra context (file summaries etc.)
+        if extra_context:
+            if context_text:
+                context_text = extra_context + "\n\n── DETAYLI İÇERİK ──\n" + context_text
+            else:
+                context_text = extra_context
 
         # DEBUG: Log RAG results
         if context_chunks:

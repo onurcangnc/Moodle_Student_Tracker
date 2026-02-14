@@ -88,11 +88,15 @@ _prev_stars_snapshot: dict = {}  # previous STARS state for diff-based notificat
 conversation_history: dict[int, dict] = {}
 CONV_HISTORY_FILE = Path(os.getenv("DATA_DIR", "./data")) / "conversation_history.json"
 
-# ─── Progressive Study Sessions ─────────────────────────────────────────────
-# user_id → {"phase", "topic", "subtopics", "step", "course", "covered",
-#             "selected_files", "available_files", "quiz_answers"}
+# ─── Conversational Study Sessions ──────────────────────────────────────────
+# user_id → {"phase", "topic", "smart_query", "course", "selected_files", "quiz_answers"}
 study_sessions: dict[int, dict] = {}
 STUDY_SESSIONS_FILE = Path(os.getenv("DATA_DIR", "./data")) / "study_sessions.json"
+
+# ─── Document Summaries (per-file LLM-generated overviews) ─────────────────
+# filename → {"summary": "...", "course": "...", "chunk_count": N, "generated_at": "..."}
+file_summaries: dict[str, dict] = {}
+FILE_SUMMARIES_PATH = Path(os.getenv("DATA_DIR", "./data")) / "file_summaries.json"
 
 # ─── Rate Limiting ──────────────────────────────────────────────────────────
 # Prevent API cost abuse: max 30 messages per 60 seconds per user
@@ -174,6 +178,130 @@ def _load_conversation_history():
 def get_conversation_history(user_id: int, limit: int = 5) -> list[dict]:
     entry = conversation_history.get(user_id, {})
     return entry.get("messages", [])[-limit:]
+
+
+# ─── File Summaries Persistence ────────────────────────────────────────────
+
+def _save_file_summaries():
+    try:
+        FILE_SUMMARIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        FILE_SUMMARIES_PATH.write_text(
+            json.dumps(file_summaries, ensure_ascii=False, indent=2)
+        )
+    except Exception as e:
+        logger.debug(f"File summaries save error: {e}")
+
+
+def _load_file_summaries():
+    global file_summaries
+    if FILE_SUMMARIES_PATH.exists():
+        try:
+            file_summaries.update(
+                json.loads(FILE_SUMMARIES_PATH.read_text(encoding="utf-8"))
+            )
+            logger.info(f"Loaded {len(file_summaries)} file summaries")
+        except Exception as e:
+            logger.error(f"Failed to load file summaries: {e}")
+
+
+async def _generate_missing_summaries():
+    """Generate LLM summaries for files that don't have one yet."""
+    all_files = vector_store.get_files_for_course()
+    missing = [f for f in all_files if f["filename"] not in file_summaries]
+    if not missing:
+        logger.info("File summaries: all files already have summaries.")
+        return 0
+
+    logger.info(f"Generating summaries for {len(missing)} files...")
+    generated = 0
+
+    for i, f_info in enumerate(missing):
+        fname = f_info["filename"]
+        try:
+            # Rate limit: 5 RPM on Gemini free tier → wait between calls
+            if i > 0:
+                await asyncio.sleep(15)
+
+            # Get chunks for this file (first 30 non-empty to cover the document)
+            chunks = []
+            course = None
+            for idx, meta in enumerate(vector_store._metadatas):
+                if meta.get("filename") == fname:
+                    if not course:
+                        course = meta.get("course", "")
+                    text = vector_store._texts[idx] if idx < len(vector_store._texts) else ""
+                    if text and len(text.strip()) > 20:
+                        chunks.append(text)
+                    if len(chunks) >= 30:
+                        break
+
+            if not chunks:
+                continue
+
+            # Build document sample (~30K chars max)
+            doc_sample = "\n\n---\n\n".join(chunks)[:30000]
+
+            summary = await asyncio.to_thread(
+                llm.engine.complete,
+                task="summary",
+                system=(
+                    "Sen akademik bir içerik özetleyicisisin. "
+                    "Verilen döküman parçalarından dökümanın bütünsel bir özetini yaz.\n\n"
+                    "Kurallar:\n"
+                    "- Materyalin dilinde yaz (Türkçe ise Türkçe, İngilizce ise İngilizce)\n"
+                    "- 300-500 kelime arası kapsamlı özet yaz\n"
+                    "- Ana argümanı/tezi belirt\n"
+                    "- Temel kavramları ve bağlantıları vurgula\n"
+                    "- Sınav için önemli noktaları belirt\n"
+                    "- Yazar(lar)ın yaklaşımını açıkla\n"
+                    "- KISA YAZMA, detaylı ve kapsamlı yaz"
+                ),
+                messages=[{
+                    "role": "user",
+                    "content": f"DOSYA: {fname}\nKURS: {course}\n\nDÖKÜMAN İÇERİĞİ:\n{doc_sample}",
+                }],
+                max_tokens=8192,
+            )
+
+            if summary and len(summary) > 100:
+                file_summaries[fname] = {
+                    "summary": summary,
+                    "course": course,
+                    "chunk_count": f_info["chunk_count"],
+                    "generated_at": datetime.now().isoformat(),
+                }
+                generated += 1
+                logger.info(f"Summary generated: {fname} ({len(summary)} chars)")
+            elif summary:
+                logger.warning(f"Summary too short for {fname}: {len(summary)} chars, skipping")
+
+        except Exception as e:
+            logger.error(f"Summary generation failed for {fname}: {e}")
+
+    if generated:
+        _save_file_summaries()
+        logger.info(f"Generated {generated} new file summaries.")
+
+    return generated
+
+
+def _build_file_summaries_context(selected_files: list[str] | None = None, course: str | None = None) -> str:
+    """Build a context block of file summaries for study mode."""
+    if not file_summaries:
+        return ""
+    relevant = {}
+    for fname, info in file_summaries.items():
+        if selected_files and fname not in selected_files:
+            continue
+        if course and info.get("course") and course.lower() not in info["course"].lower():
+            continue
+        relevant[fname] = info
+    if not relevant:
+        return ""
+    parts = ["── DÖKÜMAN ÖZETLERİ (bütünsel bakış) ──\n"]
+    for fname, info in relevant.items():
+        parts.append(f"📄 {fname}:\n{info['summary']}\n")
+    return "\n".join(parts)
 
 
 def get_user_active_course(user_id: int) -> str | None:
@@ -329,6 +457,7 @@ def init_components():
     # Load persisted state
     _load_study_sessions()
     _load_conversation_history()
+    _load_file_summaries()
 
     if moodle.connect():
         logger.info("Moodle connected successfully.")
@@ -1687,32 +1816,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Yükleme iptal edildi.", reply_markup=back_keyboard())
         return
 
-    # ─── Progressive Study callbacks ──────────────────────────────────
-    if data == "study_next":
-        uid = query.from_user.id
-        session = study_sessions.get(uid)
-        if not session:
-            await query.edit_message_text("📚 Aktif çalışma oturumu yok.")
-            return
-        session["step"] += 1
-        if session["step"] >= len(session["subtopics"]):
-            session["phase"] = "completed"
-            _save_study_sessions()
-            await query.edit_message_text(
-                "✅ <b>Çalışma tamamlandı!</b>\n\n"
-                "Tüm alt konular öğretildi. Sınavda başarılar! 🎓",
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📋 Adım Seç (Tekrar)", callback_data="sp")],
-                    [InlineKeyboardButton("🗑️ Oturumu Kapat", callback_data="study_end")],
-                ]),
-            )
-            return
-        _save_study_sessions()
-        await query.edit_message_text("📖 Sonraki konu yükleniyor...")
-        await _study_teach_step_from_callback(query, uid)
-        return
-
+    # ─── Conversational Study callbacks ──────────────────────────────
     if data == "study_end":
         uid = query.from_user.id
         session = study_sessions.get(uid)
@@ -1721,23 +1825,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _save_study_sessions()
         await query.edit_message_text(
             "✋ Çalışma oturumu duraklatıldı.\n\n"
-            "\"devam\" yazarak kaldığın yerden devam edebilirsin.\n"
+            "Mesaj yazarak kaldığın yerden devam edebilirsin.\n"
             "/temizle ile oturumu tamamen silebilirsin.",
-        )
-        return
-
-    if data == "study_back":
-        # Back from plan view — show last step's buttons
-        uid = query.from_user.id
-        session = study_sessions.get(uid)
-        if not session:
-            return
-        step = session["step"]
-        keyboard = _build_study_buttons(session, step)
-        subtopic = session["subtopics"][step] if step < len(session["subtopics"]) else "?"
-        await query.edit_message_text(
-            f"📚 Adım {step+1}: {subtopic}",
-            reply_markup=keyboard,
         )
         return
 
@@ -1754,17 +1843,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "sr":
         uid = query.from_user.id
         await _study_retry_callback(query, uid)
-        return
-
-    if data == "sp":
-        uid = query.from_user.id
-        await _study_plan_callback(query, uid)
-        return
-
-    if data.startswith("sj_"):
-        uid = query.from_user.id
-        target = int(data[3:])
-        await _study_jump_callback(query, uid, target)
         return
 
 
@@ -2264,22 +2342,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_user_intent[uid] = intent
     logger.info(f"Intent: {intent} | msg: {user_msg[:50]}")
 
-    # ── Check active study session ──
+    # ── Check active study session — conversational routing ──
     session = study_sessions.get(uid)
-    if session:
-        phase = session.get("phase", "studying")
-        # Fuzzy match: "devam" keyword (but not "devamsızlık")
-        has_devam = re.search(r'\bdevam\b', msg_lower) and 'devamsız' not in msg_lower
-        has_continue = msg_lower.strip() in ("sonraki", "next")
-        if (has_devam or has_continue) and phase in ("studying", "paused"):
-            await _study_next_step(update, uid)
-            return
-        if (has_devam or has_continue) and phase == "completed":
-            await update.message.reply_text(
-                "✅ Bu çalışma zaten tamamlandı.\n"
-                "Yeni bir konu çalışmak istersen yaz, veya /temizle ile oturumu sıfırla."
-            )
-            return
+    if session and session.get("phase") in ("studying", "paused"):
+        if intent in ("CHAT", "STUDY"):
+            # Check if switching to a different course
+            if intent == "STUDY":
+                new_course = llm.active_course or detect_active_course(user_msg, uid)
+                if new_course and new_course != session.get("course"):
+                    pass  # Different course → fall through to start new session
+                else:
+                    # Same course or resuming → route through study chat
+                    if session.get("phase") == "paused":
+                        session["phase"] = "studying"
+                        _save_study_sessions()
+                    await _study_handle_message(update, uid, user_msg, session)
+                    return
+            else:
+                # CHAT intent during study → route through study chat
+                if session.get("phase") == "paused":
+                    session["phase"] = "studying"
+                    _save_study_sessions()
+                await _study_handle_message(update, uid, user_msg, session)
+                return
+        # Other intents (ASSIGNMENTS, MAIL, etc.) fall through to normal routing
 
     # ── Intent: ASSIGNMENTS ──
     if intent == "ASSIGNMENTS":
@@ -2361,18 +2447,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Build smart query (enriches short messages with recent context)
         smart_query = build_smart_query(user_msg, history)
 
-        # ── Intent: STUDY → Progressive study session ──
+        # ── Intent: STUDY → Start new conversational study session ──
         if intent == "STUDY":
-            existing = study_sessions.get(uid)
-            if existing and existing.get("phase") in ("studying", "paused"):
-                # Active session exists — resume if same course or no course specified
-                existing_course = existing.get("course")
-                if existing_course == course_filter or not course_filter:
-                    logger.info(f"📚 Study mode: resuming existing session")
-                    typing.stop()
-                    await _study_next_step(update, uid)
-                    return
-            logger.info(f"📚 Study mode: starting progressive session")
+            logger.info(f"📚 Study mode: starting conversational session")
             typing.stop()
             await _start_study_session(update, uid, user_msg, smart_query, course_filter)
             return
@@ -2482,12 +2559,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Hata: {e}")
 
 
-# ─── Progressive Study Session Helpers ────────────────────────────────────────
+# ─── Conversational Study Session Helpers ──────────────────────────────────────
 
 async def _start_study_session(
     update: Update, uid: int, user_msg: str, smart_query: str, course_filter: str | None
 ):
-    """Start a progressive study session: show file selection → plan → teach."""
+    """Start a conversational study session: auto-select files → start teaching."""
     msg = await update.message.reply_text("📚 Kaynaklar taranıyor...")
 
     try:
@@ -2508,7 +2585,7 @@ async def _start_study_session(
             await msg.edit_text("❌ Hiç materyal bulunamadı. Önce /sync yap.")
             return
 
-        # Auto-select all course files, skip file selection UI
+        # Auto-select all course files, start conversational study
         all_filenames = [f["filename"] for f in files[:8]]
         study_sessions[uid] = {
             "phase": "studying",
@@ -2516,21 +2593,18 @@ async def _start_study_session(
             "smart_query": smart_query,
             "course": course_filter,
             "selected_files": all_filenames,
-            "subtopics": [],
-            "step": 0,
-            "covered": [],
         }
         _save_study_sessions()
-        await msg.edit_text(f"📚 Çalışma planı hazırlanıyor... ({len(all_filenames)} kaynak)")
-        await _study_generate_plan_and_start(update, uid, msg)
+        await msg.edit_text(f"📚 Çalışma başlatılıyor... ({len(all_filenames)} kaynak)")
+        await _study_start_conversation(update, uid, msg)
 
     except Exception as e:
         logger.error(f"Study session start error: {e}")
         await msg.edit_text(f"❌ Çalışma planı oluşturulamadı: {e}")
 
 
-async def _study_generate_plan_and_start(update: Update, uid: int, status_msg):
-    """Generate study plan from selected files and teach first step."""
+async def _study_start_conversation(update: Update, uid: int, status_msg):
+    """Start conversational study with overview and initial teaching."""
     session = study_sessions.get(uid)
     if not session:
         return
@@ -2539,334 +2613,196 @@ async def _study_generate_plan_and_start(update: Update, uid: int, status_msg):
         selected = session.get("selected_files")
         course = session.get("course")
         topic = session["topic"]
-        smart_query = session.get("smart_query", topic)
 
-        # RAG with file filter
+        # Build file summaries for holistic view
+        summaries_ctx = _build_file_summaries_context(selected, course)
+
+        # Get initial RAG chunks
+        smart_query = session.get("smart_query", topic)
         results = vector_store.query(
             query_text=smart_query, n_results=50,
             course_filter=course, filename_filter=selected,
         )
         if not results or len(results) < 3:
             results = vector_store.query(
-                query_text=smart_query, n_results=50, filename_filter=selected,
+                query_text=smart_query, n_results=50,
+                filename_filter=selected,
             )
-        if not results:
-            results = vector_store.query(query_text=smart_query, n_results=50)
 
-        context_text = llm._format_context(results)
+        # Build LLM history
+        history = get_conversation_history(uid, limit=3)
+        history.append({"role": "user", "content": topic})
 
-        # Generate plan
-        subtopics = await asyncio.to_thread(
-            llm.generate_study_plan, topic, context_text,
-        )
-
-        if not subtopics or len(subtopics) < 2:
-            # Fallback: single deep response
-            await status_msg.edit_text("📖 Materyalden derinlemesine öğretiyorum...")
-            llm_history = get_conversation_history(uid, limit=3)
-            llm_history.append({"role": "user", "content": topic})
-            response = await asyncio.to_thread(
-                llm.chat_with_history,
-                messages=llm_history, context_chunks=results, study_mode=True,
-            )
-            await status_msg.delete()
-            await send_long_message(update, response, parse_mode=ParseMode.HTML)
-            save_to_history(uid, topic, response, active_course=course, intent="STUDY")
-            study_sessions.pop(uid, None)
-            _save_study_sessions()
-            return
-
-        # Update session
-        session["phase"] = "studying"
-        session["subtopics"] = subtopics
-        session["step"] = 0
-        session["covered"] = []
-        _save_study_sessions()
-
-        # Show plan
-        plan_text = f"📚 <b>Çalışma Planı</b> ({len(subtopics)} adım)\n\n"
-        for i, st in enumerate(subtopics, 1):
-            plan_text += f"{'▶️' if i == 1 else '⬜'} {i}. {st}\n"
-        if selected:
-            plan_text += f"\n📄 Kaynaklar: {len(selected)} dosya"
-        plan_text += "\n\n<i>İlk konu yükleniyor...</i>"
-        await status_msg.edit_text(plan_text, parse_mode=ParseMode.HTML)
-
-        # Teach first step
-        await _study_teach_step(update, uid, status_msg)
-
-    except Exception as e:
-        logger.error(f"Study plan generation error: {e}")
-        await status_msg.edit_text(f"❌ Çalışma planı oluşturulamadı: {e}")
-
-
-async def _study_next_step(update: Update, uid: int):
-    """Continue to next subtopic in an active study session."""
-    session = study_sessions.get(uid)
-    if not session:
-        return
-
-    session["step"] += 1
-    if session["step"] >= len(session["subtopics"]):
-        # All done — mark completed but DON'T delete
-        session["phase"] = "completed"
-        _save_study_sessions()
-        await update.message.reply_text(
-            "✅ <b>Çalışma tamamlandı!</b>\n\n"
-            "Tüm alt konular öğretildi. Sınavda başarılar! 🎓\n\n"
-            "<i>Herhangi bir adıma geri dönmek istersen /temizle yazmadan önce "
-            "aşağıdaki butonlardan adım seçebilirsin.</i>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📋 Adım Seç (Tekrar)", callback_data="sp")],
-                [InlineKeyboardButton("🗑️ Oturumu Kapat", callback_data="study_end")],
-            ]),
-        )
-        return
-
-    session["phase"] = "studying"
-    _save_study_sessions()
-    msg = await update.message.reply_text("📖 Sonraki konu yükleniyor...")
-    await _study_teach_step(update, uid, msg)
-
-
-def _build_study_buttons(session: dict, step: int) -> InlineKeyboardMarkup | None:
-    """Build enhanced study buttons: devam, quiz, retry, jump, end."""
-    total = len(session["subtopics"])
-    is_last = (step + 1 >= total)
-
-    buttons = []
-    if is_last:
-        buttons.append([InlineKeyboardButton("📝 Test Et!", callback_data="sq")])
-        buttons.append([InlineKeyboardButton("🔄 Anlamadım, tekrar anlat", callback_data="sr")])
-        buttons.append([
-            InlineKeyboardButton("📋 Adım Seç", callback_data="sp"),
-            InlineKeyboardButton("✋ Bitir", callback_data="study_end"),
-        ])
-    else:
-        next_topic = session["subtopics"][step + 1]
-        buttons.append([InlineKeyboardButton(
-            f"Devam ▶️ ({step+2}/{total}): {next_topic[:25]}",
-            callback_data="study_next",
-        )])
-        buttons.append([
-            InlineKeyboardButton("📝 Test Et!", callback_data="sq"),
-            InlineKeyboardButton("🔄 Anlamadım", callback_data="sr"),
-        ])
-        buttons.append([
-            InlineKeyboardButton("📋 Adım Seç", callback_data="sp"),
-            InlineKeyboardButton("✋ Bitir", callback_data="study_end"),
-        ])
-    return InlineKeyboardMarkup(buttons)
-
-
-def _build_progress_bar(session: dict, current_step: int) -> str:
-    """Build progress bar text."""
-    lines = []
-    for i, st in enumerate(session["subtopics"]):
-        if i < current_step:
-            lines.append(f"✅ {i+1}. {st}")
-        elif i == current_step:
-            lines.append(f"▶️ {i+1}. {st}")
-        else:
-            lines.append(f"⬜ {i+1}. {st}")
-    return "\n".join(lines)
-
-
-async def _study_teach_step(update: Update, uid: int, status_msg):
-    """Teach the current step's subtopic with dedicated RAG retrieval."""
-    session = study_sessions.get(uid)
-    if not session:
-        return
-
-    step = session["step"]
-    subtopic = session["subtopics"][step]
-    topic = session["topic"]
-    course = session["course"]
-    total = len(session["subtopics"])
-    selected_files = session.get("selected_files")
-
-    try:
-        # Dedicated RAG for this subtopic (filtered by selected files)
-        sub_query = f"{topic} {subtopic}"
-        results = vector_store.query(
-            query_text=sub_query, n_results=50,
-            course_filter=course, filename_filter=selected_files,
-        )
-        if not results or len(results) < 3:
-            results = vector_store.query(
-                query_text=sub_query, n_results=50, filename_filter=selected_files,
-            )
-        if not results or len(results) < 3:
-            results = vector_store.query(query_text=sub_query, n_results=50)
-
-        context_text = llm._format_context(results)
-        logger.info(f"📚 Study step {step+1}/{total}: '{subtopic}' — {len(results)} chunks")
-
-        # Teach
+        # Call LLM with study mode + file summaries
         response = await asyncio.to_thread(
-            llm.teach_subtopic,
-            context_text=context_text,
-            topic=topic,
-            subtopic=subtopic,
-            step=step + 1,
-            total_steps=total,
-            covered=session["covered"],
+            llm.chat_with_history,
+            messages=history,
+            context_chunks=results,
+            study_mode=True,
+            extra_context=summaries_ctx,
         )
 
-        session["covered"].append(subtopic)
+        # Strip LLM-generated source footer
+        response = re.sub(r'\n*─+\n*📚.*$', '', response, flags=re.DOTALL).rstrip()
+
+        # Add source attribution
+        if results:
+            source_files = []
+            seen = set()
+            for r in results[:7]:
+                fname = r.get("metadata", {}).get("filename", "")
+                if fname and fname not in seen:
+                    source_files.append(fname)
+                    seen.add(fname)
+            if source_files:
+                sources = ", ".join(source_files[:4])
+                response += f"\n\n{'─' * 25}\n📚 <i>Kaynak: {sources}</i>"
+
+        session["phase"] = "studying"
         _save_study_sessions()
-
-        progress = _build_progress_bar(session, step)
-        header = f"📚 <b>Adım {step+1}/{total}: {subtopic}</b>\n{'─'*30}\n\n"
-        footer = f"\n\n{'─'*30}\n📋 <b>İlerleme:</b>\n{progress}"
-        keyboard = _build_study_buttons(session, step)
-
-        full_response = header + response + footer
 
         await status_msg.delete()
-        await send_long_message(
-            update, full_response, parse_mode=ParseMode.HTML, reply_markup=keyboard,
-        )
 
-        save_to_history(uid, f"[Çalışma {step+1}/{total}] {subtopic}", response, active_course=course, intent="STUDY")
+        keyboard = _build_study_buttons()
+        await send_long_message(update, response, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+        save_to_history(uid, topic, response, active_course=course, intent="STUDY")
 
     except Exception as e:
-        logger.error(f"Study teach error: {e}")
-        await status_msg.edit_text(f"❌ Öğretim hatası: {e}")
+        logger.error(f"Study start error: {e}")
+        await status_msg.edit_text(f"❌ Çalışma başlatılamadı: {e}")
 
 
-async def _study_teach_step_from_callback(query, uid: int):
-    """Teach step triggered from inline button callback."""
-    session = study_sessions.get(uid)
-    if not session:
-        return
+def _build_study_buttons() -> InlineKeyboardMarkup:
+    """Build conversational study buttons: quiz, re-explain, end."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📝 Test Et!", callback_data="sq"),
+            InlineKeyboardButton("🔄 Anlamadım", callback_data="sr"),
+        ],
+        [InlineKeyboardButton("✋ Çalışmayı Bitir", callback_data="study_end")],
+    ])
 
-    step = session["step"]
-    subtopic = session["subtopics"][step]
-    topic = session["topic"]
-    course = session["course"]
-    total = len(session["subtopics"])
+
+async def _study_handle_message(update: Update, uid: int, user_msg: str, session: dict):
+    """Handle a message during active conversational study session."""
+    course = session.get("course")
     selected_files = session.get("selected_files")
 
+    typing = _TypingIndicator(update.message.get_bot(), update.message.chat_id)
+    typing.start()
+
     try:
-        sub_query = f"{topic} {subtopic}"
+        # Build file summaries for holistic view
+        summaries_ctx = _build_file_summaries_context(selected_files, course)
+
+        # Smart query for RAG
+        history = get_conversation_history(uid, limit=5)
+        smart_query = build_smart_query(user_msg, history)
+
+        # Enhanced RAG (50 chunks, filtered by course + files)
         results = vector_store.query(
-            query_text=sub_query, n_results=50,
+            query_text=smart_query, n_results=50,
             course_filter=course, filename_filter=selected_files,
         )
         if not results or len(results) < 3:
             results = vector_store.query(
-                query_text=sub_query, n_results=50, filename_filter=selected_files,
+                query_text=smart_query, n_results=50,
+                filename_filter=selected_files,
             )
         if not results or len(results) < 3:
-            results = vector_store.query(query_text=sub_query, n_results=50)
+            results = vector_store.query(query_text=smart_query, n_results=50)
 
-        context_text = llm._format_context(results)
-        logger.info(f"📚 Study step {step+1}/{total}: '{subtopic}' — {len(results)} chunks")
+        # Build LLM history
+        llm_history = history.copy()
+        llm_history.append({"role": "user", "content": user_msg})
 
+        # Call LLM with study mode + file summaries
         response = await asyncio.to_thread(
-            llm.teach_subtopic,
-            context_text=context_text,
-            topic=topic,
-            subtopic=subtopic,
-            step=step + 1,
-            total_steps=total,
-            covered=session["covered"],
+            llm.chat_with_history,
+            messages=llm_history,
+            context_chunks=results,
+            study_mode=True,
+            extra_context=summaries_ctx,
         )
 
-        session["covered"].append(subtopic)
-        _save_study_sessions()
+        # Strip LLM-generated source footer
+        response = re.sub(r'\n*─+\n*📚.*$', '', response, flags=re.DOTALL).rstrip()
 
-        progress = _build_progress_bar(session, step)
-        header = f"📚 <b>Adım {step+1}/{total}: {subtopic}</b>\n{'─'*30}\n\n"
-        footer = f"\n\n{'─'*30}\n📋 <b>İlerleme:</b>\n{progress}"
-        keyboard = _build_study_buttons(session, step)
+        # Add source attribution
+        if results:
+            source_files = []
+            seen = set()
+            for r in results[:7]:
+                fname = r.get("metadata", {}).get("filename", "")
+                if fname and fname not in seen:
+                    source_files.append(fname)
+                    seen.add(fname)
+            if source_files:
+                sources = ", ".join(source_files[:4])
+                response += f"\n\n{'─' * 25}\n📚 <i>Kaynak: {sources}</i>"
 
-        full_text = header + format_for_telegram(response) + footer
+        typing.stop()
 
-        # Send as new messages (callback edit has 4096 char limit)
-        await query.edit_message_text("✅ Yüklendi — aşağıda 👇")
+        keyboard = _build_study_buttons()
+        await send_long_message(update, response, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
-        chunks = []
-        text = full_text
-        while text:
-            if len(text) <= 4000:
-                chunks.append(text)
-                break
-            split_at = text.rfind("\n", 0, 4000)
-            if split_at < 2000:
-                split_at = 4000
-            chunks.append(text[:split_at])
-            text = text[split_at:].lstrip("\n")
-
-        for i, chunk in enumerate(chunks):
-            kwargs = {"parse_mode": ParseMode.HTML}
-            if i == len(chunks) - 1 and keyboard:
-                kwargs["reply_markup"] = keyboard
-            try:
-                await query.message.reply_text(chunk, **kwargs)
-            except Exception:
-                kwargs.pop("parse_mode", None)
-                await query.message.reply_text(chunk, **kwargs)
-
-        save_to_history(uid, f"[Çalışma {step+1}/{total}] {subtopic}", response, active_course=course, intent="STUDY")
+        save_to_history(uid, user_msg, response, active_course=course, intent="STUDY")
 
     except Exception as e:
-        logger.error(f"Study callback teach error: {e}")
-        await query.edit_message_text(f"❌ Öğretim hatası: {e}")
+        typing.stop()
+        logger.error(f"Study chat error: {e}")
+        await update.message.reply_text(f"❌ Hata: {e}")
 
 
 # ─── Study Callback Helpers ──────────────────────────────────────────────────
 
 async def _study_quiz_callback(query, uid: int):
-    """Generate and show mini-quiz for current subtopic."""
+    """Generate and show mini-quiz based on recent conversation topic."""
     session = study_sessions.get(uid)
     if not session:
         await query.edit_message_text("📚 Aktif çalışma oturumu yok.")
         return
 
-    step = session["step"]
-    subtopic = session["subtopics"][step]
     topic = session["topic"]
-    course = session["course"]
+    course = session.get("course")
     selected_files = session.get("selected_files")
 
-    await query.edit_message_text(f"📝 Mini test hazırlanıyor: {subtopic}...")
+    # Determine quiz topic from recent conversation
+    history = get_conversation_history(uid, limit=4)
+    quiz_topic = topic
+    for msg in reversed(history):
+        if msg["role"] == "user" and len(msg["content"]) > 5:
+            quiz_topic = msg["content"][:150]
+            break
+
+    await query.edit_message_text(f"📝 Mini test hazırlanıyor...")
 
     try:
-        sub_query = f"{topic} {subtopic}"
+        smart_query = build_smart_query(quiz_topic, history)
         results = vector_store.query(
-            query_text=sub_query, n_results=30,
+            query_text=smart_query, n_results=30,
             course_filter=course, filename_filter=selected_files,
         )
         if not results:
-            results = vector_store.query(query_text=sub_query, n_results=30)
+            results = vector_store.query(query_text=smart_query, n_results=30)
 
         context_text = llm._format_context(results)
 
         questions_text, answers_text = await asyncio.to_thread(
-            llm.generate_mini_quiz, context_text, subtopic,
+            llm.generate_mini_quiz, context_text, quiz_topic,
         )
 
         # Store answers for later reveal
         session["quiz_answers"] = answers_text
 
-        header = f"📝 <b>Mini Test: {subtopic}</b>\n{'─'*30}\n\n"
+        header = f"📝 <b>Mini Test</b>\n{'─'*30}\n\n"
         full_text = header + format_for_telegram(questions_text)
 
-        buttons = [[InlineKeyboardButton("👁️ Cevapları Göster", callback_data="sq_ans")]]
-
-        # Add continue button
-        total = len(session["subtopics"])
-        is_last = (step + 1 >= total)
-        if not is_last:
-            next_topic = session["subtopics"][step + 1]
-            buttons.append([InlineKeyboardButton(
-                f"Devam ▶️ ({step+2}/{total}): {next_topic[:25]}",
-                callback_data="study_next",
-            )])
-        buttons.append([InlineKeyboardButton("📋 Adım Seç", callback_data="sp")])
+        buttons = [
+            [InlineKeyboardButton("👁️ Cevapları Göster", callback_data="sq_ans")],
+            [InlineKeyboardButton("✋ Çalışmayı Bitir", callback_data="study_end")],
+        ]
 
         await query.edit_message_text("📝 Test aşağıda 👇")
 
@@ -2909,21 +2845,9 @@ async def _study_quiz_answers_callback(query, uid: int):
         await query.edit_message_text("❌ Cevaplar bulunamadı.")
         return
 
-    step = session["step"]
-    total = len(session["subtopics"])
-    is_last = (step + 1 >= total)
-
-    buttons = []
-    if not is_last:
-        next_topic = session["subtopics"][step + 1]
-        buttons.append([InlineKeyboardButton(
-            f"Devam ▶️ ({step+2}/{total}): {next_topic[:25]}",
-            callback_data="study_next",
-        )])
-    buttons.append([
-        InlineKeyboardButton("📋 Adım Seç", callback_data="sp"),
-        InlineKeyboardButton("✋ Bitir", callback_data="study_end"),
-    ])
+    buttons = [
+        [InlineKeyboardButton("✋ Çalışmayı Bitir", callback_data="study_end")],
+    ]
 
     formatted = format_for_telegram(answers)
     try:
@@ -2938,38 +2862,43 @@ async def _study_quiz_answers_callback(query, uid: int):
 
 
 async def _study_retry_callback(query, uid: int):
-    """Re-explain current subtopic in simpler terms."""
+    """Re-explain last discussed topic in simpler terms using conversation history."""
     session = study_sessions.get(uid)
     if not session:
         await query.edit_message_text("📚 Aktif çalışma oturumu yok.")
         return
 
-    step = session["step"]
-    subtopic = session["subtopics"][step]
     topic = session["topic"]
-    course = session["course"]
+    course = session.get("course")
     selected_files = session.get("selected_files")
-    total = len(session["subtopics"])
 
-    await query.edit_message_text(f"🔄 {subtopic} daha basit anlatılıyor...")
+    # Determine what to re-explain from conversation history
+    history = get_conversation_history(uid, limit=4)
+    retry_topic = topic
+    for msg in reversed(history):
+        if msg["role"] == "user" and len(msg["content"]) > 5:
+            retry_topic = msg["content"][:150]
+            break
+
+    await query.edit_message_text(f"🔄 Daha basit anlatılıyor...")
 
     try:
-        sub_query = f"{topic} {subtopic}"
+        smart_query = build_smart_query(retry_topic, history)
         results = vector_store.query(
-            query_text=sub_query, n_results=40,
+            query_text=smart_query, n_results=40,
             course_filter=course, filename_filter=selected_files,
         )
         if not results:
-            results = vector_store.query(query_text=sub_query, n_results=40)
+            results = vector_store.query(query_text=smart_query, n_results=40)
 
         context_text = llm._format_context(results)
 
         response = await asyncio.to_thread(
-            llm.reteach_simpler, context_text, topic, subtopic,
+            llm.reteach_simpler, context_text, topic, retry_topic,
         )
 
-        header = f"🔄 <b>Basit Anlatım: {subtopic}</b>\n{'─'*30}\n\n"
-        keyboard = _build_study_buttons(session, step)
+        header = f"🔄 <b>Basit Anlatım</b>\n{'─'*30}\n\n"
+        keyboard = _build_study_buttons()
 
         full_text = header + format_for_telegram(response)
 
@@ -3000,61 +2929,6 @@ async def _study_retry_callback(query, uid: int):
     except Exception as e:
         logger.error(f"Study retry error: {e}")
         await query.edit_message_text(f"❌ Hata: {e}")
-
-
-async def _study_plan_callback(query, uid: int):
-    """Show study plan with jump buttons."""
-    session = study_sessions.get(uid)
-    if not session:
-        await query.edit_message_text("📚 Aktif çalışma oturumu yok.")
-        return
-
-    step = session["step"]
-    total = len(session["subtopics"])
-    progress = _build_progress_bar(session, step)
-
-    text = f"📋 <b>Çalışma Planı</b>\n\n{progress}\n\n<i>Bir adıma atlamak için butonlara bas:</i>"
-
-    buttons = []
-    row = []
-    for i, st in enumerate(session["subtopics"]):
-        icon = "✅" if i < step else ("▶️" if i == step else "⬜")
-        label = f"{icon} {i+1}. {st[:20]}"
-        row.append(InlineKeyboardButton(label, callback_data=f"sj_{i}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    buttons.append([InlineKeyboardButton("◀️ Geri", callback_data="study_back")])
-
-    try:
-        await query.edit_message_text(
-            text, parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-    except Exception:
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-
-
-async def _study_jump_callback(query, uid: int, target_step: int):
-    """Jump to a specific study step."""
-    session = study_sessions.get(uid)
-    if not session:
-        return
-
-    if target_step < 0 or target_step >= len(session["subtopics"]):
-        await query.edit_message_text("❌ Geçersiz adım.")
-        return
-
-    session["step"] = target_step
-    session["phase"] = "studying"
-    _save_study_sessions()
-
-    await query.edit_message_text(
-        f"📖 Adım {target_step + 1} yükleniyor: {session['subtopics'][target_step]}..."
-    )
-    await _study_teach_step_from_callback(query, uid)
 
 
 # ─── Auto-Sync Background Job ───────────────────────────────────────────────
@@ -3103,6 +2977,15 @@ async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE):
                 ]
             except Exception:
                 pass
+
+            # Generate summaries for any new files
+            if new_chunks > 0:
+                try:
+                    n = await _generate_missing_summaries()
+                    if n:
+                        logger.info(f"Auto-sync: generated {n} new file summaries.")
+                except Exception as e:
+                    logger.error(f"Auto-sync summary generation error: {e}")
 
         except Exception as e:
             logger.error(f"Auto-sync error: {e}")
@@ -3469,6 +3352,17 @@ async def post_init(app: Application):
 
     logger.info(f"Auto-sync: every {AUTO_SYNC_INTERVAL // 60} min | Assignment check: every {ASSIGNMENT_CHECK_INTERVAL // 60} min")
     logger.info(f"STARS auto-login: every 10 min | Mail check: every 30 min")
+
+    # ── Generate missing file summaries (non-blocking, runs in background) ──
+    async def _startup_summaries():
+        try:
+            await asyncio.sleep(30)  # wait for sync/init to settle
+            n = await _generate_missing_summaries()
+            if n:
+                logger.info(f"Startup: generated {n} file summaries.")
+        except Exception as e:
+            logger.error(f"Startup summary generation error: {e}")
+    asyncio.create_task(_startup_summaries())
 
 
 def main():
