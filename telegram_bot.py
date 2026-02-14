@@ -840,9 +840,9 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await owner_only(update):
         return
     uid = update.effective_user.id
-    llm.memory.clear()
     llm.active_course = None
     conversation_history.pop(uid, None)
+    _save_conversation_history()
     study_sessions.pop(uid, None)
     _save_study_sessions()
     logger.info(f"Cleared history, study session, and course focus for user {uid}")
