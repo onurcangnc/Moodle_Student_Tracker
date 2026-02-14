@@ -202,7 +202,7 @@ class VectorStore:
             meta = self._metadatas[idx]
 
             # Apply filters
-            if course_filter and meta.get("course") != course_filter:
+            if course_filter and course_filter.lower() not in meta.get("course", "").lower():
                 continue
             if section_filter and meta.get("section") != section_filter:
                 continue
@@ -237,7 +237,7 @@ class VectorStore:
         """Get unique files for a course with chunk counts."""
         file_counts: dict[str, int] = {}
         for meta in self._metadatas:
-            if course_name and meta.get("course") != course_name:
+            if course_name and course_name.lower() not in meta.get("course", "").lower():
                 continue
             fname = meta.get("filename", "unknown")
             file_counts[fname] = file_counts.get(fname, 0) + 1

@@ -1830,20 +1830,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if data == "sq":
-        uid = query.from_user.id
-        await _study_quiz_callback(query, uid)
-        return
-
-    if data == "sq_ans":
-        uid = query.from_user.id
-        await _study_quiz_answers_callback(query, uid)
-        return
-
-    if data == "sr":
-        uid = query.from_user.id
-        await _study_retry_callback(query, uid)
-        return
 
 
 # ─── Intent Classification ────────────────────────────────────────────────────
@@ -2695,8 +2681,7 @@ async def _study_start_conversation(update: Update, uid: int, status_msg):
 
         await status_msg.delete()
 
-        keyboard = _build_study_buttons()
-        await send_long_message(update, response, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        await send_long_message(update, response, parse_mode=ParseMode.HTML)
 
         save_to_history(uid, topic, response, active_course=course, intent="STUDY")
 
@@ -2712,19 +2697,22 @@ async def _study_start_conversation(update: Update, uid: int, status_msg):
         await status_msg.edit_text(f"❌ Çalışma başlatılamadı: {e}")
 
 
-def _build_study_buttons() -> InlineKeyboardMarkup:
-    """Build conversational study buttons: quiz, re-explain, end."""
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📝 Test Et!", callback_data="sq"),
-            InlineKeyboardButton("🔄 Anlamadım", callback_data="sr"),
-        ],
-        [InlineKeyboardButton("✋ Çalışmayı Bitir", callback_data="study_end")],
-    ])
 
+_STUDY_END_PHRASES = {"bitir", "bitirdim", "çalışmayı bitir", "oturumu bitir", "kapat", "yeter", "son"}
 
 async def _study_handle_message(update: Update, uid: int, user_msg: str, session: dict):
     """Handle a message during active conversational study session."""
+    # Text-based session end detection
+    if user_msg.strip().lower() in _STUDY_END_PHRASES:
+        session["phase"] = "paused"
+        _save_study_sessions()
+        await update.message.reply_text(
+            "✋ Çalışma oturumu duraklatıldı.\n\n"
+            "Mesaj yazarak kaldığın yerden devam edebilirsin.\n"
+            "/temizle ile oturumu tamamen silebilirsin.",
+        )
+        return
+
     course = session.get("course")
     selected_files = session.get("selected_files")
 
@@ -2785,8 +2773,7 @@ async def _study_handle_message(update: Update, uid: int, user_msg: str, session
 
         typing.stop()
 
-        keyboard = _build_study_buttons()
-        await send_long_message(update, response, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        await send_long_message(update, response, parse_mode=ParseMode.HTML)
 
         save_to_history(uid, user_msg, response, active_course=course, intent="STUDY")
 
@@ -2803,181 +2790,6 @@ async def _study_handle_message(update: Update, uid: int, user_msg: str, session
         logger.error(f"Study chat error: {e}")
         await update.message.reply_text(f"❌ Hata: {e}")
 
-
-# ─── Study Callback Helpers ──────────────────────────────────────────────────
-
-async def _study_quiz_callback(query, uid: int):
-    """Generate and show mini-quiz based on recent conversation topic."""
-    session = study_sessions.get(uid)
-    if not session:
-        await query.edit_message_text("📚 Aktif çalışma oturumu yok.")
-        return
-
-    topic = session["topic"]
-    course = session.get("course")
-    selected_files = session.get("selected_files")
-
-    # Determine quiz topic from recent conversation
-    history = get_conversation_history(uid, limit=4)
-    quiz_topic = topic
-    for msg in reversed(history):
-        if msg["role"] == "user" and len(msg["content"]) > 5:
-            quiz_topic = msg["content"][:150]
-            break
-
-    await query.edit_message_text(f"📝 Mini test hazırlanıyor...")
-
-    try:
-        smart_query = build_smart_query(quiz_topic, history)
-        results = vector_store.query(
-            query_text=smart_query, n_results=30,
-            course_filter=course, filename_filter=selected_files,
-        )
-        if not results:
-            results = vector_store.query(query_text=smart_query, n_results=30)
-
-        context_text = llm._format_context(results)
-
-        questions_text, answers_text = await asyncio.to_thread(
-            llm.generate_mini_quiz, context_text, quiz_topic,
-        )
-
-        # Store answers for later reveal
-        session["quiz_answers"] = answers_text
-
-        header = f"📝 <b>Mini Test</b>\n{'─'*30}\n\n"
-        full_text = header + format_for_telegram(questions_text)
-
-        buttons = [
-            [InlineKeyboardButton("👁️ Cevapları Göster", callback_data="sq_ans")],
-            [InlineKeyboardButton("✋ Çalışmayı Bitir", callback_data="study_end")],
-        ]
-
-        await query.edit_message_text("📝 Test aşağıda 👇")
-
-        # Send quiz as new message
-        chunks = []
-        text = full_text
-        while text:
-            if len(text) <= 4000:
-                chunks.append(text)
-                break
-            split_at = text.rfind("\n", 0, 4000)
-            if split_at < 2000:
-                split_at = 4000
-            chunks.append(text[:split_at])
-            text = text[split_at:].lstrip("\n")
-
-        for i, chunk in enumerate(chunks):
-            kwargs = {"parse_mode": ParseMode.HTML}
-            if i == len(chunks) - 1:
-                kwargs["reply_markup"] = InlineKeyboardMarkup(buttons)
-            try:
-                await query.message.reply_text(chunk, **kwargs)
-            except Exception:
-                kwargs.pop("parse_mode", None)
-                await query.message.reply_text(chunk, **kwargs)
-
-    except Exception as e:
-        logger.error(f"Study quiz error: {e}")
-        await query.edit_message_text(f"❌ Test oluşturulamadı: {e}")
-
-
-async def _study_quiz_answers_callback(query, uid: int):
-    """Show quiz answers."""
-    session = study_sessions.get(uid)
-    if not session:
-        return
-
-    answers = session.get("quiz_answers", "")
-    if not answers:
-        await query.edit_message_text("❌ Cevaplar bulunamadı.")
-        return
-
-    buttons = [
-        [InlineKeyboardButton("✋ Çalışmayı Bitir", callback_data="study_end")],
-    ]
-
-    formatted = format_for_telegram(answers)
-    try:
-        await query.edit_message_text(
-            formatted[:4000], parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-    except Exception:
-        await query.edit_message_text(
-            formatted[:4000], reply_markup=InlineKeyboardMarkup(buttons),
-        )
-
-
-async def _study_retry_callback(query, uid: int):
-    """Re-explain last discussed topic in simpler terms using conversation history."""
-    session = study_sessions.get(uid)
-    if not session:
-        await query.edit_message_text("📚 Aktif çalışma oturumu yok.")
-        return
-
-    topic = session["topic"]
-    course = session.get("course")
-    selected_files = session.get("selected_files")
-
-    # Determine what to re-explain from conversation history
-    history = get_conversation_history(uid, limit=4)
-    retry_topic = topic
-    for msg in reversed(history):
-        if msg["role"] == "user" and len(msg["content"]) > 5:
-            retry_topic = msg["content"][:150]
-            break
-
-    await query.edit_message_text(f"🔄 Daha basit anlatılıyor...")
-
-    try:
-        smart_query = build_smart_query(retry_topic, history)
-        results = vector_store.query(
-            query_text=smart_query, n_results=40,
-            course_filter=course, filename_filter=selected_files,
-        )
-        if not results:
-            results = vector_store.query(query_text=smart_query, n_results=40)
-
-        context_text = llm._format_context(results)
-
-        response = await asyncio.to_thread(
-            llm.reteach_simpler, context_text, topic, retry_topic,
-        )
-
-        header = f"🔄 <b>Basit Anlatım</b>\n{'─'*30}\n\n"
-        keyboard = _build_study_buttons()
-
-        full_text = header + format_for_telegram(response)
-
-        await query.edit_message_text("🔄 Basit anlatım aşağıda 👇")
-
-        chunks = []
-        text = full_text
-        while text:
-            if len(text) <= 4000:
-                chunks.append(text)
-                break
-            split_at = text.rfind("\n", 0, 4000)
-            if split_at < 2000:
-                split_at = 4000
-            chunks.append(text[:split_at])
-            text = text[split_at:].lstrip("\n")
-
-        for i, chunk in enumerate(chunks):
-            kwargs = {"parse_mode": ParseMode.HTML}
-            if i == len(chunks) - 1 and keyboard:
-                kwargs["reply_markup"] = keyboard
-            try:
-                await query.message.reply_text(chunk, **kwargs)
-            except Exception:
-                kwargs.pop("parse_mode", None)
-                await query.message.reply_text(chunk, **kwargs)
-
-    except Exception as e:
-        logger.error(f"Study retry error: {e}")
-        await query.edit_message_text(f"❌ Hata: {e}")
 
 
 # ─── Auto-Sync Background Job ───────────────────────────────────────────────
