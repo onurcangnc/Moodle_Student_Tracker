@@ -2561,6 +2561,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Hata: {e}")
 
 
+# ─── Study Session Memory ──────────────────────────────────────────────────────
+
+async def _extract_study_topics(user_msg: str, response: str) -> str:
+    """Extract covered topics from a study exchange for session memory."""
+    try:
+        result = await asyncio.to_thread(
+            llm.engine.complete,
+            task="extraction",
+            system=(
+                "Öğrenci-asistan konuşmasından ÖĞRETİLEN konuları çıkar. "
+                "Sadece konu adlarını ve anahtar kavramları yaz. "
+                "Max 3 madde, kısa ve öz. Türkçe yaz. Her maddeyi • ile başlat."
+            ),
+            messages=[{"role": "user", "content": f"Öğrenci: {user_msg}\nAsistan: {response[:1500]}"}],
+            max_tokens=150,
+        )
+        return result.strip()
+    except Exception as e:
+        logger.error(f"Study topic extraction error: {e}")
+        return ""
+
+
+def _build_session_memory(session: dict) -> str:
+    """Build session memory context block from covered topics."""
+    covered = session.get("covered_summary", "")
+    if not covered:
+        return ""
+    return f"── OTURUM HAFIZASI (bugüne kadar işlenen konular) ──\n{covered}\n── /OTURUM HAFIZASI ──\n"
+
+
 # ─── Conversational Study Session Helpers ──────────────────────────────────────
 
 async def _start_study_session(
@@ -2670,6 +2700,13 @@ async def _study_start_conversation(update: Update, uid: int, status_msg):
 
         save_to_history(uid, topic, response, active_course=course, intent="STUDY")
 
+        # Extract initial session memory
+        topics = await _extract_study_topics(topic, response)
+        if topics:
+            session["covered_summary"] = topics
+            _save_study_sessions()
+            logger.info(f"📝 Initial session memory: {len(topics)} chars")
+
     except Exception as e:
         logger.error(f"Study start error: {e}")
         await status_msg.edit_text(f"❌ Çalışma başlatılamadı: {e}")
@@ -2695,8 +2732,10 @@ async def _study_handle_message(update: Update, uid: int, user_msg: str, session
     typing.start()
 
     try:
-        # Build file summaries for holistic view
+        # Build session memory + file summaries for full context
+        session_memory = _build_session_memory(session)
         summaries_ctx = _build_file_summaries_context(selected_files, course)
+        extra_ctx = session_memory + summaries_ctx if session_memory else summaries_ctx
 
         # Smart query for RAG
         history = get_conversation_history(uid, limit=5)
@@ -2719,13 +2758,13 @@ async def _study_handle_message(update: Update, uid: int, user_msg: str, session
         llm_history = history.copy()
         llm_history.append({"role": "user", "content": user_msg})
 
-        # Call LLM with study mode + file summaries
+        # Call LLM with study mode + session memory + file summaries
         response = await asyncio.to_thread(
             llm.chat_with_history,
             messages=llm_history,
             context_chunks=results,
             study_mode=True,
-            extra_context=summaries_ctx,
+            extra_context=extra_ctx,
         )
 
         # Strip LLM-generated source footer
@@ -2750,6 +2789,14 @@ async def _study_handle_message(update: Update, uid: int, user_msg: str, session
         await send_long_message(update, response, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
         save_to_history(uid, user_msg, response, active_course=course, intent="STUDY")
+
+        # Update session memory — extract covered topics (async, non-blocking)
+        topics = await _extract_study_topics(user_msg, response)
+        if topics:
+            prev = session.get("covered_summary", "")
+            session["covered_summary"] = (prev + "\n" + topics).strip() if prev else topics
+            _save_study_sessions()
+            logger.info(f"📝 Session memory updated: +{len(topics)} chars")
 
     except Exception as e:
         typing.stop()
