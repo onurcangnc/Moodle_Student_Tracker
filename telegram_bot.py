@@ -82,6 +82,10 @@ STARS_NOTIFY_INTERVAL = 43200  # 12 hours
 last_user_intent: dict[int, str] = {}  # uid → last classified intent (for follow-up detection)
 _prev_stars_snapshot: dict = {}  # previous STARS state for diff-based notifications
 
+# ─── Study Focus (lightweight file targeting for study mode) ─────────────────
+# uid → {"course": str, "file": str|None, "available": list[str]}
+study_focus: dict[int, dict] = {}
+
 # ─── Conversation History ────────────────────────────────────────────────────
 
 # user_id → {"messages": [...], "active_course": "fullname" | None}
@@ -266,6 +270,42 @@ def _build_file_summaries_context(selected_files: list[str] | None = None, cours
     for fname, info in relevant.items():
         parts.append(f"📄 {fname}:\n{info['summary']}\n")
     return "\n".join(parts)
+
+
+async def _show_study_files(update: Update, uid: int, course_filter: str):
+    """Show available course files for student to pick which material to study."""
+    files = vector_store.get_files_for_course(course_name=course_filter)
+    if not files:
+        await update.message.reply_text(
+            f"📭 <b>{course_filter}</b> dersinde henüz indekslenmiş materyal yok.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    filenames = [f["filename"] for f in files[:10]]
+    study_focus[uid] = {"course": course_filter, "file": None, "available": filenames}
+
+    # Build message with summaries
+    parts = [f"📚 <b>{course_filter}</b> materyalleri:\n"]
+    buttons = []
+    for i, fname in enumerate(filenames):
+        info = file_summaries.get(fname, {})
+        summary = info.get("summary", "")
+        # First sentence or truncate
+        short = summary.split(".")[0][:120] if summary else "Özet yok"
+        chunks = files[i]["chunk_count"]
+        parts.append(f"<b>{i+1}.</b> 📄 {fname} ({chunks} parça)\n<i>{short}</i>\n")
+        btn_text = fname[:35] + "…" if len(fname) > 35 else fname
+        buttons.append([InlineKeyboardButton(f"{i+1}. {btn_text}", callback_data=f"stf_{i}")])
+
+    buttons.append([InlineKeyboardButton("📖 Tüm materyallerden öğret", callback_data="stf_all")])
+    parts.append("\nHangi materyalden çalışmak istersin?")
+
+    await update.message.reply_text(
+        "\n".join(parts),
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 def get_user_active_course(user_id: int) -> str | None:
@@ -935,8 +975,9 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     llm.active_course = None
     conversation_history.pop(uid, None)
+    study_focus.pop(uid, None)
     _save_conversation_history()
-    logger.info(f"Cleared history and course focus for user {uid}")
+    logger.info(f"Cleared history, course focus and study focus for user {uid}")
     await update.message.reply_text(
         "🗑️ Sohbet geçmişi temizlendi.", reply_markup=back_keyboard()
     )
@@ -1778,6 +1819,79 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Yükleme iptal edildi.", reply_markup=back_keyboard())
         return
 
+    # ── Study file selection callback ──
+    if data.startswith("stf_"):
+        uid = query.from_user.id
+        if uid not in study_focus:
+            await query.answer("Oturum süresi doldu. Tekrar dene.")
+            return
+
+        focus = study_focus[uid]
+        if data == "stf_all":
+            focus["file"] = None
+            selected_label = "Tüm materyaller"
+            filename_filter = None
+        else:
+            idx = int(data.split("_")[1])
+            if idx >= len(focus["available"]):
+                await query.answer("Geçersiz seçim")
+                return
+            focus["file"] = focus["available"][idx]
+            selected_label = focus["file"]
+            filename_filter = [focus["file"]]
+
+        await query.answer()
+        await query.edit_message_text(
+            f"📚 <b>{selected_label}</b> yükleniyor...",
+            parse_mode=ParseMode.HTML,
+        )
+
+        # Fetch chunks from selected file
+        course = focus["course"]
+        query_text = selected_label if filename_filter else course
+        results = vector_store.query(
+            query_text=query_text,
+            n_results=25,
+            course_filter=course,
+            filename_filter=filename_filter,
+        )
+
+        # Build file summaries context (so LLM knows about other files too)
+        extra_ctx = _build_file_summaries_context(course=course)
+
+        # Initial LLM call: teach overview of selected material
+        initial_msg = (
+            f"{selected_label} materyalini genel hatlarıyla öğret. "
+            "Ana konuları, önemli kavramları ve sınav için kritik noktaları anlat."
+        )
+        llm_history = get_conversation_history(uid, limit=3)
+        llm_history.append({"role": "user", "content": initial_msg})
+
+        response = await asyncio.to_thread(
+            llm.chat_with_history,
+            messages=llm_history,
+            context_chunks=results,
+            study_mode=True,
+            extra_context=extra_ctx,
+        )
+
+        # Source attribution
+        response = re.sub(r'\n*─+\n*📚.*$', '', response, flags=re.DOTALL).rstrip()
+        if results:
+            source_files = []
+            seen = set()
+            for r in results[:7]:
+                fname = r.get("metadata", {}).get("filename", "")
+                if fname and fname not in seen:
+                    source_files.append(fname)
+                    seen.add(fname)
+            if source_files:
+                sources = ", ".join(source_files[:4])
+                response += f"\n\n{'─' * 25}\n📚 <i>Kaynak: {sources}</i>"
+
+        await send_long_message(update, response, parse_mode=ParseMode.HTML)
+        save_to_history(uid, initial_msg, response, active_course=course, intent="STUDY")
+        return
 
 
 # ─── Intent Classification ────────────────────────────────────────────────────
@@ -2360,23 +2474,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_study = intent == "STUDY"
         n_chunks = 25 if is_study else 15
 
+        # STUDY: show file picker if no focus yet (or different course / wants switch)
+        if is_study and course_filter:
+            switch_kw = ["başka", "diğer", "değiştir", "farklı", "dosya seç", "materyal seç", "liste"]
+            msg_lower = user_msg.lower()
+            wants_switch = any(kw in msg_lower for kw in switch_kw)
+            has_focus = (
+                uid in study_focus
+                and study_focus[uid].get("course") == course_filter
+                and not wants_switch
+            )
+            if not has_focus:
+                typing.stop()
+                await _show_study_files(update, uid, course_filter)
+                return
+
+        # If student has study focus, prefer their selected file
+        filename_filter = None
+        if is_study and uid in study_focus and study_focus[uid].get("file"):
+            filename_filter = [study_focus[uid]["file"]]
+
         # Check if detected course has ANY indexed materials
         course_has_materials = True
         if course_filter:
             course_files = vector_store.get_files_for_course(course_name=course_filter)
             course_has_materials = len(course_files) > 0
 
-        # RAG: retrieve relevant chunks (filtered by course, with fallback)
+        # RAG: retrieve relevant chunks (filtered by course + optional file focus)
         results = vector_store.query(
             query_text=smart_query,
             n_results=n_chunks,
             course_filter=course_filter,
+            filename_filter=filename_filter,
         )
 
-        # Fallback: if filtered results are weak, search all courses
+        # Fallback 0: if file-focused results are weak, try all course files
+        top_score = (1 - results[0]["distance"]) if results else 0
+        if filename_filter and (len(results) < 2 or top_score < 0.35):
+            course_results = vector_store.query(
+                query_text=smart_query, n_results=n_chunks, course_filter=course_filter,
+            )
+            course_top = (1 - course_results[0]["distance"]) if course_results else 0
+            if course_top > top_score:
+                results = course_results
+                top_score = course_top
+                logger.info(f"Study focus fallback: file score {top_score:.2f} → course-wide {course_top:.2f}")
+
+        # Fallback 1: if course-filtered results are weak, search all courses
         # BUT: only fall back if the course actually HAS materials (just weak match)
         # If course has NO materials at all, don't pull from other courses
-        top_score = (1 - results[0]["distance"]) if results else 0
         if course_filter and (len(results) < 2 or top_score < 0.35):
             if course_has_materials:
                 # Course has materials but query didn't match well → try all courses
@@ -2414,12 +2560,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         llm_history = history.copy()
         llm_history.append({"role": "user", "content": user_msg})
 
+        # Build file summaries for STUDY (so LLM knows ALL available course materials)
+        extra_ctx = ""
+        if is_study and course_filter:
+            extra_ctx = _build_file_summaries_context(course=course_filter)
+
         # Call LLM with history + RAG context (study gets higher token limit)
         response = await asyncio.to_thread(
             llm.chat_with_history,
             messages=llm_history,
             context_chunks=results,
             study_mode=is_study,
+            extra_context=extra_ctx,
         )
 
         # ── Source attribution ──
@@ -2455,7 +2607,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_long_message(update, response, parse_mode=ParseMode.HTML)
 
         # Save to history (with active course + intent)
-        save_to_history(uid, user_msg, response, active_course=course_filter, intent="CHAT")
+        save_to_history(uid, user_msg, response, active_course=course_filter, intent=intent)
 
     except Exception as e:
         typing.stop()
