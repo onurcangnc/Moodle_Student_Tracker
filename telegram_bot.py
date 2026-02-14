@@ -327,6 +327,43 @@ def save_to_history(
     _save_conversation_history()
 
 
+def _detect_course_explicit(user_msg: str) -> str | None:
+    """Detect course ONLY from explicit keywords in message (instant, no LLM, no history).
+    Used in study routing to avoid false bypasses. Zero latency."""
+    courses = llm.moodle_courses
+    if not courses:
+        return None
+    msg_upper = user_msg.upper().replace("-", " ").replace("_", " ")
+    msg_lower = user_msg.lower()
+    # Tier 1: Exact course code (e.g. "EDEB", "CTIS", "HCIV")
+    for c in courses:
+        code = c["shortname"].split("-")[0].strip().upper()
+        if code in msg_upper:
+            return c["fullname"]
+        dept = code.split()[0] if " " in code else code
+        if len(dept) >= 3 and dept in msg_upper.split():
+            return c["fullname"]
+    # Tier 2: Course number (e.g. "363", "201")
+    msg_words = user_msg.split()
+    for c in courses:
+        nums = [p for p in c["shortname"].split() if p.replace("-", "").isdigit() and len(p) >= 3]
+        for num in nums:
+            num_clean = num.split("-")[0]
+            if num_clean in msg_words:
+                return c["fullname"]
+    # Tier 3: Common keyword aliases (instant, no LLM)
+    _kw = {"etik": "CTIS 363", "ethics": "CTIS 363", "ethical": "CTIS 363",
+            "hciv": "HCIV 102", "civilization": "HCIV 102", "medeniyet": "HCIV 102",
+            "edebiyat": "EDEB 201", "fiction": "EDEB 201", "turkish fiction": "EDEB 201"}
+    for kw, prefix in _kw.items():
+        if kw in msg_lower:
+            dept, num = prefix.split()
+            for c in courses:
+                if dept in c["shortname"] and num in c["shortname"]:
+                    return c["fullname"]
+    return None
+
+
 def detect_active_course(user_msg: str, user_id: int) -> str | None:
     """
     Detect which course the user is talking about.
@@ -2336,8 +2373,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if session and session.get("phase") in ("studying", "paused"):
         if intent not in _STUDY_ESCAPE_INTENTS:
             # Detect if user EXPLICITLY mentions a different course in THIS message
-            # Do NOT use llm.active_course — it's sticky and causes false bypasses
-            mentioned_course = detect_active_course(user_msg, uid)
+            # Do NOT use llm.active_course or history fallback — only explicit mention
+            mentioned_course = _detect_course_explicit(user_msg)
             if mentioned_course and mentioned_course != session.get("course"):
                 # Different course mentioned → fall through to normal routing
                 # Study session stays intact for when user returns to original topic
