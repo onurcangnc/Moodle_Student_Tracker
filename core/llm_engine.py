@@ -294,36 +294,53 @@ class LLMEngine:
         if self.assignments_context:
             parts.append(self.assignments_context)
 
-        # Course material awareness — full Moodle course list + indexed chunk stats
+        # Course material awareness — full Moodle course list + indexed file names
         try:
-            # Build per-course chunk count from vector store
-            course_chunks: dict[str, int] = {}
+            # Build per-course file lists from vector store
+            course_files: dict[str, dict[str, int]] = {}
             for meta in self.vector_store._metadatas:
                 c = meta.get("course", "")
                 if c:
-                    course_chunks[c] = course_chunks.get(c, 0) + 1
-            total_chunks = sum(course_chunks.values())
+                    fname = meta.get("filename", "")
+                    if c not in course_files:
+                        course_files[c] = {}
+                    course_files[c][fname] = course_files[c].get(fname, 0) + 1
+            total_chunks = sum(
+                sum(files.values()) for files in course_files.values()
+            )
 
             lines = []
             if self.moodle_courses:
-                # Show ALL enrolled courses, with chunk counts where available
                 for mc in self.moodle_courses:
                     sn = mc.get("shortname", "")
                     fn = mc.get("fullname", "")
-                    # Find matching chunk count
-                    count = 0
-                    for indexed_name, cnt in course_chunks.items():
+                    # Find matching course files
+                    matched_files: dict[str, int] = {}
+                    for indexed_name, fmap in course_files.items():
                         if sn in indexed_name or indexed_name in fn:
-                            count = cnt
+                            matched_files = fmap
                             break
-                    if count > 0:
-                        lines.append(f"- {sn} ({fn}): {count} parça materyal indexed")
+                    if matched_files:
+                        count = sum(matched_files.values())
+                        file_names = ", ".join(
+                            f.replace(".pdf", "").replace(".docx", "")[:40]
+                            for f in sorted(matched_files.keys())
+                        )
+                        lines.append(
+                            f"- {sn} ({fn}): {count} parça, {len(matched_files)} dosya\n"
+                            f"  Dosyalar: {file_names}"
+                        )
                     else:
                         lines.append(f"- {sn} ({fn}): ❌ Henüz materyal yüklenmemiş")
             else:
-                # Fallback: only show indexed courses
-                for c in sorted(course_chunks.keys()):
-                    lines.append(f"- {c}: {course_chunks[c]} parça indexed")
+                for c in sorted(course_files.keys()):
+                    fmap = course_files[c]
+                    count = sum(fmap.values())
+                    file_names = ", ".join(
+                        f.replace(".pdf", "").replace(".docx", "")[:40]
+                        for f in sorted(fmap.keys())
+                    )
+                    lines.append(f"- {c}: {count} parça, {len(fmap)} dosya\n  Dosyalar: {file_names}")
 
             if lines:
                 parts.append(
