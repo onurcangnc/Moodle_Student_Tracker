@@ -1,5 +1,5 @@
 """
-RAG Quality Eval — iterative optimization.
+RAG Quality Eval — semantic vs hybrid comparison.
 Loads vector store, runs test queries, scores results.
 Run on server: cd /opt/moodle-bot && source venv/bin/activate && python tests/test_rag_quality.py
 """
@@ -100,13 +100,24 @@ TEST_QUERIES = [
 ]
 
 
-def eval_single(query_info, n_results=15, threshold=0.30, max_chunks=7, course_filter=None):
-    """Evaluate a single query."""
-    results = vs.query(
-        query_text=query_info["query"],
-        n_results=n_results,
-        course_filter=course_filter,
-    )
+def eval_single(query_info, n_results=15, threshold=0.25, max_chunks=10, search_fn=None):
+    """Evaluate a single query using the given search function."""
+    if search_fn is None:
+        search_fn = vs.query
+
+    # Determine the right call signature
+    if search_fn == vs.query:
+        results = search_fn(
+            query_text=query_info["query"],
+            n_results=n_results,
+            course_filter=query_info.get("course"),
+        )
+    else:
+        results = search_fn(
+            query=query_info["query"],
+            n_results=n_results,
+            course_filter=query_info.get("course"),
+        )
 
     if not results:
         return {
@@ -156,11 +167,11 @@ def eval_single(query_info, n_results=15, threshold=0.30, max_chunks=7, course_f
     }
 
 
-def eval_all(n_results=15, threshold=0.30, max_chunks=7, verbose=True):
+def eval_all(n_results=15, threshold=0.25, max_chunks=10, verbose=True, search_fn=None):
     """Run all queries, return aggregate scores."""
     results = []
     for q in TEST_QUERIES:
-        r = eval_single(q, n_results, threshold, max_chunks)
+        r = eval_single(q, n_results, threshold, max_chunks, search_fn=search_fn)
         results.append(r)
         if verbose:
             status = "✅" if r["keyword_precision"] >= 0.6 else "⚠️" if r["keyword_precision"] >= 0.3 else "❌"
@@ -182,7 +193,6 @@ def eval_all(n_results=15, threshold=0.30, max_chunks=7, verbose=True):
     print(f"\n{'='*70}")
     print(f"AGGREGATE: kw_precision={avg_precision:.0%}  top_score={avg_top:.3f}  "
           f"chunks={avg_chunks:.1f}  pass_rate={pass_rate:.0%}")
-    print(f"PARAMS: n_results={n_results}  threshold={threshold}  max_chunks={max_chunks}")
 
     return {
         "results": results,
@@ -193,67 +203,55 @@ def eval_all(n_results=15, threshold=0.30, max_chunks=7, verbose=True):
     }
 
 
-def param_sweep():
-    """Try multiple parameter combinations, find the best."""
-    combos = []
-    for threshold in [0.20, 0.25, 0.30, 0.35, 0.40]:
-        for max_chunks in [5, 7, 10]:
-            for n_results in [10, 15, 20, 25]:
-                combos.append((n_results, threshold, max_chunks))
+def compare():
+    """Run semantic-only vs hybrid, print side-by-side comparison."""
+    print("=" * 70)
+    print("=== SEMANTIC ONLY (FAISS) ===")
+    print("=" * 70)
+    sem = eval_all(search_fn=vs.query)
 
-    print(f"Running {len(combos)} combinations...\n")
-    best = None
-    best_score = -1
-    all_results = []
+    print(f"\n\n{'=' * 70}")
+    print("=== HYBRID (BM25 + FAISS via RRF) ===")
+    print("=" * 70)
+    hyb = eval_all(search_fn=vs.hybrid_search)
 
-    for n_results, threshold, max_chunks in combos:
-        r = eval_all(n_results, threshold, max_chunks, verbose=False)
-        score = r["avg_precision"] * 0.6 + r["pass_rate"] * 0.3 + r["avg_top"] * 0.1
-        all_results.append({
-            "n_results": n_results,
-            "threshold": threshold,
-            "max_chunks": max_chunks,
-            "avg_precision": round(r["avg_precision"], 3),
-            "pass_rate": round(r["pass_rate"], 3),
-            "avg_top": round(r["avg_top"], 3),
-            "avg_chunks": round(r["avg_chunks"], 1),
-            "combined_score": round(score, 4),
-        })
-        if score > best_score:
-            best_score = score
-            best = all_results[-1]
-
-    # Sort by combined score
-    all_results.sort(key=lambda x: x["combined_score"], reverse=True)
-
-    print(f"\n{'='*70}")
-    print("TOP 10 COMBINATIONS:")
-    print(f"{'n_res':>5} {'thresh':>6} {'max_ch':>6} | {'kw_prec':>7} {'pass%':>6} {'top_sc':>6} {'chunks':>6} | {'score':>6}")
-    print("-" * 70)
-    for r in all_results[:10]:
+    # Per-query delta
+    print(f"\n\n{'=' * 70}")
+    print("=== PER-QUERY DELTA (hybrid - semantic) ===")
+    print(f"{'query':<40} {'sem_kw':>6} {'hyb_kw':>6} {'delta':>6}")
+    print("-" * 60)
+    for s, h in zip(sem["results"], hyb["results"]):
+        delta = h["keyword_precision"] - s["keyword_precision"]
+        marker = "⬆️" if delta > 0 else "⬇️" if delta < 0 else "  "
         print(
-            f"{r['n_results']:>5} {r['threshold']:>6.2f} {r['max_chunks']:>6} | "
-            f"{r['avg_precision']:>6.0%} {r['pass_rate']:>6.0%} {r['avg_top']:>6.3f} "
-            f"{r['avg_chunks']:>6.1f} | {r['combined_score']:>6.4f}"
+            f"{s['query']:<40} "
+            f"{s['keyword_precision']:>5.0%} "
+            f"{h['keyword_precision']:>5.0%} "
+            f"{delta:>+5.0%} {marker}"
         )
 
-    print(f"\n🏆 BEST: n_results={best['n_results']} threshold={best['threshold']} "
-          f"max_chunks={best['max_chunks']} → score={best['combined_score']:.4f}")
-
-    return best, all_results
+    print(f"\n{'=' * 70}")
+    dp = hyb["avg_precision"] - sem["avg_precision"]
+    dr = hyb["pass_rate"] - sem["pass_rate"]
+    print(f"SUMMARY: kw_precision {sem['avg_precision']:.0%} → {hyb['avg_precision']:.0%} ({dp:+.0%})")
+    print(f"         pass_rate   {sem['pass_rate']:.0%} → {hyb['pass_rate']:.0%} ({dr:+.0%})")
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--sweep", action="store_true", help="Run full parameter sweep")
-    parser.add_argument("--threshold", type=float, default=0.30)
-    parser.add_argument("--max-chunks", type=int, default=7)
+    parser.add_argument("--compare", action="store_true", help="Compare semantic vs hybrid")
+    parser.add_argument("--hybrid", action="store_true", help="Run eval with hybrid search")
+    parser.add_argument("--threshold", type=float, default=0.25)
+    parser.add_argument("--max-chunks", type=int, default=10)
     parser.add_argument("--n-results", type=int, default=15)
     args = parser.parse_args()
 
-    if args.sweep:
-        param_sweep()
+    if args.compare:
+        compare()
+    elif args.hybrid:
+        print(f"=== Hybrid Eval: n={args.n_results} t={args.threshold} mc={args.max_chunks} ===\n")
+        eval_all(args.n_results, args.threshold, args.max_chunks, search_fn=vs.hybrid_search)
     else:
-        print(f"=== Eval: n_results={args.n_results} threshold={args.threshold} max_chunks={args.max_chunks} ===\n")
-        eval_all(args.n_results, args.threshold, args.max_chunks)
+        print(f"=== Semantic Eval: n={args.n_results} t={args.threshold} mc={args.max_chunks} ===\n")
+        eval_all(args.n_results, args.threshold, args.max_chunks, search_fn=vs.query)

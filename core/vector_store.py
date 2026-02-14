@@ -10,10 +10,13 @@ import json
 import logging
 import os
 import pickle
+import re
+import time
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
+from rank_bm25 import BM25Okapi
 
 from core import config
 from core.document_processor import DocumentChunk
@@ -33,6 +36,7 @@ class VectorStore:
         self._texts: list[str] = []
         self._metadatas: list[dict] = []
         self._dimension: int = 0
+        self._bm25_index: Optional[BM25Okapi] = None
 
     # ─── Persistence paths ───────────────────────────────────────────────
 
@@ -90,6 +94,9 @@ class VectorStore:
             self._metadatas = []
             logger.info("Created new empty vector store.")
 
+        # Build BM25 keyword index
+        self._build_bm25_index()
+
     def _save(self):
         """Persist index and metadata to disk."""
         import faiss
@@ -113,6 +120,87 @@ class VectorStore:
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         norms[norms == 0] = 1
         return (embeddings / norms).astype("float32")
+
+    # ─── BM25 Keyword Search ──────────────────────────────────────────────
+
+    def _build_bm25_index(self):
+        """Build BM25 index from current chunks. Called after FAISS load/update."""
+        if not self._texts:
+            self._bm25_index = None
+            return
+        t0 = time.time()
+        tokenized = []
+        for text in self._texts:
+            tokens = [w.lower() for w in re.split(r"\W+", text) if len(w) >= 2]
+            tokenized.append(tokens)
+        self._bm25_index = BM25Okapi(tokenized)
+        logger.info(f"BM25 index built: {len(self._texts)} chunks in {time.time()-t0:.2f}s")
+
+    def bm25_search(
+        self,
+        query: str,
+        n_results: int = 15,
+        course_filter: Optional[str] = None,
+    ) -> list[dict]:
+        """BM25 keyword search. Returns same format as query()."""
+        if not self._bm25_index:
+            return []
+        tokens = [w.lower() for w in re.split(r"\W+", query) if len(w) >= 2]
+        if not tokens:
+            return []
+
+        scores = self._bm25_index.get_scores(tokens)
+        # Indices with score > 0, sorted descending
+        scored = [(i, scores[i]) for i in range(len(scores)) if scores[i] > 0]
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        results = []
+        for idx, score in scored[: n_results * 3]:
+            meta = self._metadatas[idx]
+            if course_filter and course_filter.lower() not in meta.get("course", "").lower():
+                continue
+            results.append({
+                "id": self._ids[idx],
+                "text": self._texts[idx],
+                "metadata": meta,
+                "distance": 1.0 - min(score / 20.0, 1.0),
+                "bm25_score": score,
+            })
+            if len(results) >= n_results:
+                break
+        return results
+
+    def hybrid_search(
+        self,
+        query: str,
+        n_results: int = 15,
+        course_filter: Optional[str] = None,
+    ) -> list[dict]:
+        """RRF fusion of semantic (FAISS) + keyword (BM25) search."""
+        semantic = self.query(query_text=query, n_results=n_results, course_filter=course_filter)
+        bm25 = self.bm25_search(query, n_results=n_results, course_filter=course_filter)
+
+        if not bm25:
+            return semantic
+        if not semantic:
+            return bm25
+
+        k = 60  # RRF constant
+        rrf: dict[str, dict] = {}
+
+        for rank, r in enumerate(semantic):
+            key = r["text"][:150]
+            rrf[key] = {"score": 1.0 / (k + rank), "result": r}
+
+        for rank, r in enumerate(bm25):
+            key = r["text"][:150]
+            if key in rrf:
+                rrf[key]["score"] += 1.0 / (k + rank)
+            else:
+                rrf[key] = {"score": 1.0 / (k + rank), "result": r}
+
+        combined = sorted(rrf.values(), key=lambda x: x["score"], reverse=True)
+        return [item["result"] for item in combined[:n_results]]
 
     # ─── Indexing ────────────────────────────────────────────────────────
 
@@ -140,6 +228,7 @@ class VectorStore:
                 self._metadatas.append(c.metadata)
 
         self._save()
+        self._build_bm25_index()
         logger.info(f"Indexed {len(new_chunks)} new chunks ({len(chunks) - len(new_chunks)} duplicates skipped).")
 
     def delete_by_source(self, source_path: str):

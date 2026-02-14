@@ -1883,8 +1883,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # File-level pre-filtering
                     relevant_files = _get_relevant_files(smart_query, course=course_filter, top_k=5)
 
-                    results = vector_store.query(
-                        query_text=smart_query,
+                    results = vector_store.hybrid_search(
+                        query=smart_query,
                         n_results=15,
                         course_filter=course_filter,
                     )
@@ -1900,8 +1900,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                     # Fallback: weak results → try all courses
                     if len(results) < 2 or top_score < 0.35:
-                        all_results = vector_store.query(
-                            query_text=smart_query, n_results=15,
+                        all_results = vector_store.hybrid_search(
+                            query=smart_query, n_results=15,
                         )
                         all_top = (1 - all_results[0]["distance"]) if all_results else 0
                         if all_top > top_score:
@@ -1909,7 +1909,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             top_score = all_top
                             logger.info(f"RAG fallback: course → all ({all_top:.2f})")
             else:
-                results = vector_store.query(query_text=smart_query, n_results=10)
+                results = vector_store.hybrid_search(query=smart_query, n_results=10)
                 top_score = (1 - results[0]["distance"]) if results else 0
 
             # Chunk quality filter: only keep >0.25 similarity, max 10
