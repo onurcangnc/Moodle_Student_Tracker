@@ -88,10 +88,6 @@ _prev_stars_snapshot: dict = {}  # previous STARS state for diff-based notificat
 conversation_history: dict[int, dict] = {}
 CONV_HISTORY_FILE = Path(os.getenv("DATA_DIR", "./data")) / "conversation_history.json"
 
-# ─── Conversational Study Sessions ──────────────────────────────────────────
-# user_id → {"phase", "topic", "smart_query", "course", "selected_files", "quiz_answers"}
-study_sessions: dict[int, dict] = {}
-STUDY_SESSIONS_FILE = Path(os.getenv("DATA_DIR", "./data")) / "study_sessions.json"
 
 # ─── Document Summaries (per-file LLM-generated overviews) ─────────────────
 # filename → {"summary": "...", "course": "...", "chunk_count": N, "generated_at": "..."}
@@ -119,38 +115,6 @@ def _check_rate_limit(uid: int) -> bool:
     dq.append(now)
     return True
 
-
-def _save_study_sessions():
-    """Persist study sessions to disk."""
-    try:
-        STUDY_SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        serializable = {}
-        for uid, s in study_sessions.items():
-            serializable[str(uid)] = {
-                k: (list(v) if isinstance(v, set) else v)
-                for k, v in s.items()
-                if k != "quiz_answers"  # don't persist quiz text
-            }
-        STUDY_SESSIONS_FILE.write_text(json.dumps(serializable, ensure_ascii=False, indent=2))
-        try:
-            os.chmod(STUDY_SESSIONS_FILE, 0o600)
-        except OSError:
-            pass  # Windows doesn't support POSIX permissions
-    except Exception as e:
-        logger.error(f"Failed to save study sessions: {e}")
-
-
-def _load_study_sessions():
-    """Load study sessions from disk."""
-    global study_sessions
-    if STUDY_SESSIONS_FILE.exists():
-        try:
-            data = json.loads(STUDY_SESSIONS_FILE.read_text())
-            for uid_str, session in data.items():
-                study_sessions[int(uid_str)] = session
-            logger.info(f"Loaded {len(study_sessions)} study sessions from disk")
-        except Exception as e:
-            logger.error(f"Failed to load study sessions: {e}")
 
 
 def _save_conversation_history():
@@ -327,42 +291,6 @@ def save_to_history(
     _save_conversation_history()
 
 
-def _detect_course_explicit(user_msg: str) -> str | None:
-    """Detect course ONLY from explicit keywords in message (instant, no LLM, no history).
-    Used in study routing to avoid false bypasses. Zero latency."""
-    courses = llm.moodle_courses
-    if not courses:
-        return None
-    msg_upper = user_msg.upper().replace("-", " ").replace("_", " ")
-    msg_lower = user_msg.lower()
-    # Tier 1: Exact course code (e.g. "EDEB", "CTIS", "HCIV")
-    for c in courses:
-        code = c["shortname"].split("-")[0].strip().upper()
-        if code in msg_upper:
-            return c["fullname"]
-        dept = code.split()[0] if " " in code else code
-        if len(dept) >= 3 and dept in msg_upper.split():
-            return c["fullname"]
-    # Tier 2: Course number (e.g. "363", "201")
-    msg_words = user_msg.split()
-    for c in courses:
-        nums = [p for p in c["shortname"].split() if p.replace("-", "").isdigit() and len(p) >= 3]
-        for num in nums:
-            num_clean = num.split("-")[0]
-            if num_clean in msg_words:
-                return c["fullname"]
-    # Tier 3: Common keyword aliases (instant, no LLM)
-    _kw = {"etik": "CTIS 363", "ethics": "CTIS 363", "ethical": "CTIS 363",
-            "hciv": "HCIV 102", "civilization": "HCIV 102", "medeniyet": "HCIV 102",
-            "edebiyat": "EDEB 201", "fiction": "EDEB 201", "turkish fiction": "EDEB 201"}
-    for kw, prefix in _kw.items():
-        if kw in msg_lower:
-            dept, num = prefix.split()
-            for c in courses:
-                if dept in c["shortname"] and num in c["shortname"]:
-                    return c["fullname"]
-    return None
-
 
 def detect_active_course(user_msg: str, user_id: int) -> str | None:
     """
@@ -492,7 +420,6 @@ def init_components():
     memory = MemoryManager()
 
     # Load persisted state
-    _load_study_sessions()
     _load_conversation_history()
     _load_file_summaries()
 
@@ -1009,11 +936,9 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     llm.active_course = None
     conversation_history.pop(uid, None)
     _save_conversation_history()
-    study_sessions.pop(uid, None)
-    _save_study_sessions()
-    logger.info(f"Cleared history, study session, and course focus for user {uid}")
+    logger.info(f"Cleared history and course focus for user {uid}")
     await update.message.reply_text(
-        "🗑️ Sohbet geçmişi ve çalışma oturumu temizlendi.", reply_markup=back_keyboard()
+        "🗑️ Sohbet geçmişi temizlendi.", reply_markup=back_keyboard()
     )
 
 
@@ -1853,20 +1778,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Yükleme iptal edildi.", reply_markup=back_keyboard())
         return
 
-    # ─── Conversational Study callbacks ──────────────────────────────
-    if data == "study_end":
-        uid = query.from_user.id
-        session = study_sessions.get(uid)
-        if session:
-            session["phase"] = "paused"
-            _save_study_sessions()
-        await query.edit_message_text(
-            "✋ Çalışma oturumu duraklatıldı.\n\n"
-            "Mesaj yazarak kaldığın yerden devam edebilirsin.\n"
-            "/temizle ile oturumu tamamen silebilirsin.",
-        )
-        return
-
 
 
 # ─── Intent Classification ────────────────────────────────────────────────────
@@ -2365,29 +2276,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_user_intent[uid] = intent
     logger.info(f"Intent: {intent} | msg: {user_msg[:50]}")
 
-    # ── Check active study session — conversational routing ──
-    # During study: only let data-query intents escape (ödev, mail, sınav, etc.)
-    # Everything else (CHAT, STUDY, SYNC, SUMMARY, QUESTIONS) → study chat
-    _STUDY_ESCAPE_INTENTS = {"ASSIGNMENTS", "MAIL", "EXAM", "GRADES", "SCHEDULE", "ATTENDANCE", "CGPA"}
-    session = study_sessions.get(uid)
-    if session and session.get("phase") in ("studying", "paused"):
-        if intent not in _STUDY_ESCAPE_INTENTS:
-            # Detect if user EXPLICITLY mentions a different course in THIS message
-            # Do NOT use llm.active_course or history fallback — only explicit mention
-            mentioned_course = _detect_course_explicit(user_msg)
-            if mentioned_course and mentioned_course != session.get("course"):
-                # Different course mentioned → fall through to normal routing
-                # Study session stays intact for when user returns to original topic
-                logger.info(f"📚 Study bypass: {session.get('course')} session, but user asked about {mentioned_course}")
-                pass
-            else:
-                if session.get("phase") == "paused":
-                    session["phase"] = "studying"
-                    _save_study_sessions()
-                await _study_handle_message(update, uid, user_msg, session)
-                return
-        # ASSIGNMENTS, MAIL, EXAM, etc. fall through to normal routing
-
     # ── Intent: ASSIGNMENTS ──
     if intent == "ASSIGNMENTS":
         await update.message.chat.send_action(ChatAction.TYPING)
@@ -2468,15 +2356,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Build smart query (enriches short messages with recent context)
         smart_query = build_smart_query(user_msg, history)
 
-        # ── Intent: STUDY → Start new conversational study session ──
-        if intent == "STUDY":
-            logger.info(f"📚 Study mode: starting conversational session")
-            typing.stop()
-            await _start_study_session(update, uid, user_msg, smart_query, course_filter)
-            return
-
-        # ── Intent: CHAT → RAG chat ──
-        n_chunks = 15
+        # ── Intent: CHAT / STUDY → RAG chat (STUDY gets more chunks + file summaries) ──
+        is_study = intent == "STUDY"
+        n_chunks = 50 if is_study else 15
 
         # Check if detected course has ANY indexed materials
         course_has_materials = True
@@ -2532,11 +2414,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         llm_history = history.copy()
         llm_history.append({"role": "user", "content": user_msg})
 
-        # Call LLM with history + RAG context
+        # For STUDY intent: inject file summaries as extra context
+        extra_ctx = ""
+        if is_study and course_filter:
+            extra_ctx = _build_file_summaries_context(None, course_filter)
+
+        # Call LLM with history + RAG context (study gets file summaries + higher token limit)
         response = await asyncio.to_thread(
             llm.chat_with_history,
             messages=llm_history,
             context_chunks=results,
+            study_mode=is_study,
+            extra_context=extra_ctx,
         )
 
         # ── Source attribution ──
@@ -2577,249 +2466,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         typing.stop()
         logger.error(f"Chat error: {e}")
-        await update.message.reply_text(f"❌ Hata: {e}")
-
-
-# ─── Study Session Memory ──────────────────────────────────────────────────────
-
-async def _extract_study_topics(user_msg: str, response: str) -> str:
-    """Extract covered topics from a study exchange for session memory."""
-    try:
-        result = await asyncio.to_thread(
-            llm.engine.complete,
-            task="extraction",
-            system=(
-                "Öğrenci-asistan konuşmasından ÖĞRETİLEN konuları çıkar. "
-                "Sadece konu adlarını ve anahtar kavramları yaz. "
-                "Max 3 madde, kısa ve öz. Türkçe yaz. Her maddeyi • ile başlat."
-            ),
-            messages=[{"role": "user", "content": f"Öğrenci: {user_msg}\nAsistan: {response[:1500]}"}],
-            max_tokens=150,
-        )
-        return result.strip()
-    except Exception as e:
-        logger.error(f"Study topic extraction error: {e}")
-        return ""
-
-
-def _build_session_memory(session: dict) -> str:
-    """Build session memory context block from covered topics."""
-    covered = session.get("covered_summary", "")
-    if not covered:
-        return ""
-    return f"── OTURUM HAFIZASI (bugüne kadar işlenen konular) ──\n{covered}\n── /OTURUM HAFIZASI ──\n"
-
-
-# ─── Conversational Study Session Helpers ──────────────────────────────────────
-
-async def _start_study_session(
-    update: Update, uid: int, user_msg: str, smart_query: str, course_filter: str | None
-):
-    """Start a conversational study session: auto-select files → start teaching."""
-    msg = await update.message.reply_text("📚 Kaynaklar taranıyor...")
-
-    try:
-        # Get available files for this course/topic
-        files = vector_store.get_files_for_course(course_name=course_filter)
-        if not files and course_filter:
-            # Course explicitly detected but has NO materials — tell user clearly
-            await msg.edit_text(
-                f"📭 <b>{course_filter}</b> dersinin Moodle'da henüz materyali yüklenmemiş.\n\n"
-                "Hoca kaynak yüklediğinde /sync ile senkronlayabilirsin.",
-                parse_mode="HTML",
-            )
-            return
-        if not files:
-            files = vector_store.get_files_for_course()
-
-        if not files:
-            await msg.edit_text("❌ Hiç materyal bulunamadı. Önce /sync yap.")
-            return
-
-        # Auto-select all course files, start conversational study
-        all_filenames = [f["filename"] for f in files[:8]]
-        study_sessions[uid] = {
-            "phase": "studying",
-            "topic": user_msg,
-            "smart_query": smart_query,
-            "course": course_filter,
-            "selected_files": all_filenames,
-        }
-        _save_study_sessions()
-        await msg.edit_text(f"📚 Çalışma başlatılıyor... ({len(all_filenames)} kaynak)")
-        await _study_start_conversation(update, uid, msg)
-
-    except Exception as e:
-        logger.error(f"Study session start error: {e}")
-        await msg.edit_text(f"❌ Çalışma planı oluşturulamadı: {e}")
-
-
-async def _study_start_conversation(update: Update, uid: int, status_msg):
-    """Start conversational study with overview and initial teaching."""
-    session = study_sessions.get(uid)
-    if not session:
-        return
-
-    try:
-        selected = session.get("selected_files")
-        course = session.get("course")
-        topic = session["topic"]
-
-        # Build file summaries for holistic view
-        summaries_ctx = _build_file_summaries_context(selected, course)
-
-        # Get initial RAG chunks
-        smart_query = session.get("smart_query", topic)
-        results = vector_store.query(
-            query_text=smart_query, n_results=50,
-            course_filter=course, filename_filter=selected,
-        )
-        if not results or len(results) < 3:
-            results = vector_store.query(
-                query_text=smart_query, n_results=50,
-                filename_filter=selected,
-            )
-
-        # Build LLM history
-        history = get_conversation_history(uid, limit=3)
-        history.append({"role": "user", "content": topic})
-
-        # Call LLM with study mode + file summaries
-        response = await asyncio.to_thread(
-            llm.chat_with_history,
-            messages=history,
-            context_chunks=results,
-            study_mode=True,
-            extra_context=summaries_ctx,
-        )
-
-        # Strip LLM-generated source footer
-        response = re.sub(r'\n*─+\n*📚.*$', '', response, flags=re.DOTALL).rstrip()
-
-        # Add source attribution
-        if results:
-            source_files = []
-            seen = set()
-            for r in results[:7]:
-                fname = r.get("metadata", {}).get("filename", "")
-                if fname and fname not in seen:
-                    source_files.append(fname)
-                    seen.add(fname)
-            if source_files:
-                sources = ", ".join(source_files[:4])
-                response += f"\n\n{'─' * 25}\n📚 <i>Kaynak: {sources}</i>"
-
-        session["phase"] = "studying"
-        _save_study_sessions()
-
-        await status_msg.delete()
-
-        await send_long_message(update, response, parse_mode=ParseMode.HTML)
-
-        save_to_history(uid, topic, response, active_course=course, intent="STUDY")
-
-        # Extract initial session memory
-        topics = await _extract_study_topics(topic, response)
-        if topics:
-            session["covered_summary"] = topics
-            _save_study_sessions()
-            logger.info(f"📝 Initial session memory: {len(topics)} chars")
-
-    except Exception as e:
-        logger.error(f"Study start error: {e}")
-        await status_msg.edit_text(f"❌ Çalışma başlatılamadı: {e}")
-
-
-
-_STUDY_END_PHRASES = {"bitir", "bitirdim", "çalışmayı bitir", "oturumu bitir", "kapat", "yeter", "son"}
-
-async def _study_handle_message(update: Update, uid: int, user_msg: str, session: dict):
-    """Handle a message during active conversational study session."""
-    # Text-based session end detection
-    if user_msg.strip().lower() in _STUDY_END_PHRASES:
-        session["phase"] = "paused"
-        _save_study_sessions()
-        await update.message.reply_text(
-            "✋ Çalışma oturumu duraklatıldı.\n\n"
-            "Mesaj yazarak kaldığın yerden devam edebilirsin.\n"
-            "/temizle ile oturumu tamamen silebilirsin.",
-        )
-        return
-
-    course = session.get("course")
-    selected_files = session.get("selected_files")
-
-    typing = _TypingIndicator(update.message.get_bot(), update.message.chat_id)
-    typing.start()
-
-    try:
-        # Build session memory + file summaries for full context
-        session_memory = _build_session_memory(session)
-        summaries_ctx = _build_file_summaries_context(selected_files, course)
-        extra_ctx = session_memory + summaries_ctx if session_memory else summaries_ctx
-
-        # Smart query for RAG
-        history = get_conversation_history(uid, limit=5)
-        smart_query = build_smart_query(user_msg, history)
-
-        # Enhanced RAG (50 chunks, strictly within course — no cross-course leakage)
-        results = vector_store.query(
-            query_text=smart_query, n_results=50,
-            course_filter=course, filename_filter=selected_files,
-        )
-        if not results or len(results) < 3:
-            results = vector_store.query(
-                query_text=smart_query, n_results=50,
-                course_filter=course,
-            )
-
-        # Build LLM history
-        llm_history = history.copy()
-        llm_history.append({"role": "user", "content": user_msg})
-
-        # Call LLM with study mode + session memory + file summaries
-        response = await asyncio.to_thread(
-            llm.chat_with_history,
-            messages=llm_history,
-            context_chunks=results,
-            study_mode=True,
-            extra_context=extra_ctx,
-        )
-
-        # Strip LLM-generated source footer
-        response = re.sub(r'\n*─+\n*📚.*$', '', response, flags=re.DOTALL).rstrip()
-
-        # Add source attribution (skip if LLM said "not in materials")
-        _not_found = "materyallerde" in response.lower() and ("geçmiyor" in response.lower() or "bulunmuyor" in response.lower())
-        if results and not _not_found:
-            source_files = []
-            seen = set()
-            for r in results[:7]:
-                fname = r.get("metadata", {}).get("filename", "")
-                if fname and fname not in seen:
-                    source_files.append(fname)
-                    seen.add(fname)
-            if source_files:
-                sources = ", ".join(source_files[:4])
-                response += f"\n\n{'─' * 25}\n📚 <i>Kaynak: {sources}</i>"
-
-        typing.stop()
-
-        await send_long_message(update, response, parse_mode=ParseMode.HTML)
-
-        save_to_history(uid, user_msg, response, active_course=course, intent="STUDY")
-
-        # Update session memory — extract covered topics (async, non-blocking)
-        topics = await _extract_study_topics(user_msg, response)
-        if topics:
-            prev = session.get("covered_summary", "")
-            session["covered_summary"] = (prev + "\n" + topics).strip() if prev else topics
-            _save_study_sessions()
-            logger.info(f"📝 Session memory updated: +{len(topics)} chars")
-
-    except Exception as e:
-        typing.stop()
-        logger.error(f"Study chat error: {e}")
         await update.message.reply_text(f"❌ Hata: {e}")
 
 
