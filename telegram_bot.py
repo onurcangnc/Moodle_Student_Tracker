@@ -2335,19 +2335,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = study_sessions.get(uid)
     if session and session.get("phase") in ("studying", "paused"):
         if intent not in _STUDY_ESCAPE_INTENTS:
-            # Check if switching to a different course
-            if intent == "STUDY":
-                new_course = llm.active_course or detect_active_course(user_msg, uid)
-                if new_course and new_course != session.get("course"):
-                    pass  # Different course → fall through to start new session
+            # Detect course switch for ANY intent (not just STUDY)
+            mentioned_course = llm.active_course or detect_active_course(user_msg, uid)
+            if mentioned_course and mentioned_course != session.get("course"):
+                if intent == "STUDY":
+                    pass  # Different course + STUDY intent → fall through to start new session
                 else:
-                    if session.get("phase") == "paused":
-                        session["phase"] = "studying"
+                    # User mentioned a different course mid-study (e.g. "bu hciv dersinde")
+                    # Switch study session to the new course
+                    old_course = session.get("course", "?")
+                    files = vector_store.get_files_for_course(course_name=mentioned_course)
+                    if files:
+                        all_filenames = [f["filename"] for f in files[:8]]
+                        session["course"] = mentioned_course
+                        session["selected_files"] = all_filenames
+                        session["covered_summary"] = ""
                         _save_study_sessions()
+                        logger.info(f"📚 Study session switched: {old_course} → {mentioned_course}")
                     await _study_handle_message(update, uid, user_msg, session)
                     return
             else:
-                # CHAT/SYNC/SUMMARY/QUESTIONS during study → route through study chat
                 if session.get("phase") == "paused":
                     session["phase"] = "studying"
                     _save_study_sessions()
@@ -2729,7 +2736,7 @@ async def _study_handle_message(update: Update, uid: int, user_msg: str, session
         history = get_conversation_history(uid, limit=5)
         smart_query = build_smart_query(user_msg, history)
 
-        # Enhanced RAG (50 chunks, filtered by course + files)
+        # Enhanced RAG (50 chunks, strictly within course — no cross-course leakage)
         results = vector_store.query(
             query_text=smart_query, n_results=50,
             course_filter=course, filename_filter=selected_files,
@@ -2737,10 +2744,8 @@ async def _study_handle_message(update: Update, uid: int, user_msg: str, session
         if not results or len(results) < 3:
             results = vector_store.query(
                 query_text=smart_query, n_results=50,
-                filename_filter=selected_files,
+                course_filter=course,
             )
-        if not results or len(results) < 3:
-            results = vector_store.query(query_text=smart_query, n_results=50)
 
         # Build LLM history
         llm_history = history.copy()
@@ -2758,8 +2763,9 @@ async def _study_handle_message(update: Update, uid: int, user_msg: str, session
         # Strip LLM-generated source footer
         response = re.sub(r'\n*─+\n*📚.*$', '', response, flags=re.DOTALL).rstrip()
 
-        # Add source attribution
-        if results:
+        # Add source attribution (skip if LLM said "not in materials")
+        _not_found = "materyallerde" in response.lower() and ("geçmiyor" in response.lower() or "bulunmuyor" in response.lower())
+        if results and not _not_found:
             source_files = []
             seen = set()
             for r in results[:7]:
