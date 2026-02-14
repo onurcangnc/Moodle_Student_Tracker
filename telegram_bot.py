@@ -1900,9 +1900,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = None
         if focus["file"] and focus["total_steps"] > 1:
             response += f"\n\n{'─' * 25}\n{step_label}"
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Devam →", callback_data="study_next")],
-            ])
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("Devam →", callback_data="study_next"),
+                InlineKeyboardButton("Bitir ✕", callback_data="study_end"),
+            ]])
 
         await send_long_message(update, response, parse_mode=ParseMode.HTML, reply_markup=kb)
         save_to_history(uid, prompt, response, active_course=course, intent="STUDY")
@@ -1956,18 +1957,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = re.sub(r'\n*─+\n*📚.*$', '', response, flags=re.DOTALL).rstrip()
         response += f"\n\n{'─' * 25}\n{step_label}"
 
-        kb = None
         if step + 1 < total_steps:
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Devam →", callback_data="study_next")],
-            ])
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("Devam →", callback_data="study_next"),
+                InlineKeyboardButton("Bitir ✕", callback_data="study_end"),
+            ]])
         else:
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Tamamla", callback_data="study_next")],
-            ])
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Tamamla", callback_data="study_end"),
+            ]])
 
         await send_long_message(update, response, parse_mode=ParseMode.HTML, reply_markup=kb)
         save_to_history(uid, prompt, response, active_course=focus["course"], intent="STUDY")
+        return
+
+    # ── Study "Bitir" button callback ──
+    if data == "study_end":
+        uid = query.from_user.id
+        await query.answer("Çalışma bitirildi")
+        await query.edit_message_reply_markup(reply_markup=None)
+        study_focus.pop(uid, None)
+        await query.message.reply_text(
+            "📕 Çalışma bitirildi. Yeni çalışma başlatmak için ders adı yaz.",
+        )
         return
 
 
