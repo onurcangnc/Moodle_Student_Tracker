@@ -1862,13 +1862,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             filename_filter=filename_filter,
         )
 
-        # Build file summaries context (so LLM knows about other files too)
-        extra_ctx = _build_file_summaries_context(course=course)
-
-        # Initial LLM call: teach overview of selected material
+        # Initial LLM call: concise overview of selected material
         initial_msg = (
-            f"{selected_label} materyalini genel hatlarıyla öğret. "
-            "Ana konuları, önemli kavramları ve sınav için kritik noktaları anlat."
+            f"{selected_label} materyalinin kısa özetini ver. "
+            "Ana başlıkları listele, her birini 1-2 cümleyle açıkla."
         )
         llm_history = get_conversation_history(uid, limit=3)
         llm_history.append({"role": "user", "content": initial_msg})
@@ -1878,22 +1875,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages=llm_history,
             context_chunks=results,
             study_mode=True,
-            extra_context=extra_ctx,
         )
 
-        # Source attribution
+        # Strip duplicate source footers — student already knows the file
         response = re.sub(r'\n*─+\n*📚.*$', '', response, flags=re.DOTALL).rstrip()
-        if results:
-            source_files = []
-            seen = set()
-            for r in results[:7]:
-                fname = r.get("metadata", {}).get("filename", "")
-                if fname and fname not in seen:
-                    source_files.append(fname)
-                    seen.add(fname)
-            if source_files:
-                sources = ", ".join(source_files[:4])
-                response += f"\n\n{'─' * 25}\n📚 <i>Kaynak: {sources}</i>"
 
         await send_long_message(update, response, parse_mode=ParseMode.HTML)
         save_to_history(uid, initial_msg, response, active_course=course, intent="STUDY")
@@ -2583,8 +2568,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "⚠️ Materyallerde bu konuyla güçlü bir eşleşme bulamadım. "
                 "Genel bilgiyle yanıtlıyorum.\n\n"
             ) + response
-        elif results:
-            # RAG was used — append source files footer
+        elif results and not filename_filter:
+            # RAG was used (no focused file) — append source files footer
             source_files = []
             seen = set()
             for r in results[:7]:
