@@ -177,8 +177,10 @@ class VectorStore:
         course_filter: Optional[str] = None,
     ) -> list[dict]:
         """RRF fusion of semantic (FAISS) + keyword (BM25) search."""
-        semantic = self.query(query_text=query, n_results=n_results, course_filter=course_filter)
-        bm25 = self.bm25_search(query, n_results=n_results, course_filter=course_filter)
+        # Fetch wider candidate pool; RRF will rank and trim to n_results
+        fetch_k = n_results * 2
+        semantic = self.query(query_text=query, n_results=fetch_k, course_filter=course_filter)
+        bm25 = self.bm25_search(query, n_results=fetch_k, course_filter=course_filter)
 
         if not bm25:
             return semantic
