@@ -1896,12 +1896,78 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         response = re.sub(r'\n*─+\n*📚.*$', '', response, flags=re.DOTALL).rstrip()
 
-        # Add progress footer
+        # Add progress footer + "Devam" button
+        kb = None
         if focus["file"] and focus["total_steps"] > 1:
-            response += f"\n\n{'─' * 25}\n{step_label} | \"devam\" yaz → sonraki bölüm"
+            response += f"\n\n{'─' * 25}\n{step_label}"
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Devam →", callback_data="study_next")],
+            ])
 
-        await send_long_message(update, response, parse_mode=ParseMode.HTML)
+        await send_long_message(update, response, parse_mode=ParseMode.HTML, reply_markup=kb)
         save_to_history(uid, prompt, response, active_course=course, intent="STUDY")
+        return
+
+    # ── Study "Devam" button callback ──
+    if data == "study_next":
+        uid = query.from_user.id
+        if uid not in study_focus or not study_focus[uid].get("file"):
+            await query.answer("Aktif çalışma yok.")
+            return
+
+        focus = study_focus[uid]
+        step = focus.get("step", 0) + 1
+        total_steps = focus["total_steps"]
+
+        if step >= total_steps:
+            await query.answer("Tamamlandı!")
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text(
+                f"🎉 <b>{focus['file']}</b> tamamlandı!\n\n"
+                "\"başka dosya\" yaz → yeni materyal seç",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        focus["step"] = step
+        await query.answer(f"Bölüm {step + 1}/{total_steps}")
+        await query.edit_message_reply_markup(reply_markup=None)
+
+        # Get next batch
+        batch_size = 25
+        all_chunks = vector_store.get_file_chunks(focus["file"])
+        batch = all_chunks[step * batch_size : (step + 1) * batch_size]
+        step_label = f"📖 Bölüm {step + 1}/{total_steps}"
+
+        msg = await query.message.reply_text(
+            f"{step_label} yükleniyor...",
+        )
+
+        prompt = "Bu bölümü detaylıca öğret. Kavramları açıkla, örnekler ver."
+        history = get_conversation_history(uid, limit=3)
+        history.append({"role": "user", "content": prompt})
+
+        response = await asyncio.to_thread(
+            llm.chat_with_history,
+            messages=history,
+            context_chunks=batch,
+            study_mode=True,
+        )
+        response = re.sub(r'\n*─+\n*📚.*$', '', response, flags=re.DOTALL).rstrip()
+        response += f"\n\n{'─' * 25}\n{step_label}"
+
+        kb = None
+        if step + 1 < total_steps:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Devam →", callback_data="study_next")],
+            ])
+        else:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Tamamla", callback_data="study_next")],
+            ])
+
+        await send_long_message(update, response, parse_mode=ParseMode.HTML, reply_markup=kb)
+        save_to_history(uid, prompt, response, active_course=focus["course"], intent="STUDY")
         return
 
 
@@ -2500,56 +2566,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await _show_study_files(update, uid, course_filter)
                 return
 
-        # STUDY: detect "devam" → advance to next batch
+        # If student has study focus, filter to their selected file
         filename_filter = None
         if is_study and uid in study_focus and study_focus[uid].get("file"):
-            focus = study_focus[uid]
-            filename_filter = [focus["file"]]
-
-            devam_kw = ["devam", "sonraki", "ilerle", "next", "devam et", "sonraki bölüm"]
-            is_devam = any(kw in user_msg.lower() for kw in devam_kw)
-
-            if is_devam and focus.get("total_steps", 1) > 1:
-                step = focus.get("step", 0) + 1
-                total_steps = focus["total_steps"]
-
-                if step >= total_steps:
-                    typing.stop()
-                    await update.message.reply_text(
-                        f"🎉 <b>{focus['file']}</b> tamamlandı!\n\n"
-                        "Başka dosya seçmek için \"başka dosya\" yaz.",
-                        parse_mode=ParseMode.HTML,
-                    )
-                    save_to_history(uid, user_msg, "[Materyal tamamlandı]", active_course=course_filter, intent="STUDY")
-                    return
-
-                focus["step"] = step
-                batch_size = 25
-                all_chunks = vector_store.get_file_chunks(focus["file"])
-                batch = all_chunks[step * batch_size : (step + 1) * batch_size]
-                step_label = f"📖 Bölüm {step + 1}/{total_steps}"
-
-                prompt = f"Bu bölümü detaylıca öğret. Kavramları açıkla, örnekler ver."
-                llm_history = history.copy()
-                llm_history.append({"role": "user", "content": prompt})
-
-                response = await asyncio.to_thread(
-                    llm.chat_with_history,
-                    messages=llm_history,
-                    context_chunks=batch,
-                    study_mode=True,
-                )
-                response = re.sub(r'\n*─+\n*📚.*$', '', response, flags=re.DOTALL).rstrip()
-
-                if step + 1 < total_steps:
-                    response += f"\n\n{'─' * 25}\n{step_label} | \"devam\" yaz → sonraki bölüm"
-                else:
-                    response += f"\n\n{'─' * 25}\n{step_label} | Son bölüm! \"devam\" yaz → tamamla"
-
-                typing.stop()
-                await send_long_message(update, response, parse_mode=ParseMode.HTML)
-                save_to_history(uid, user_msg, response, active_course=course_filter, intent="STUDY")
-                return
+            filename_filter = [study_focus[uid]["file"]]
 
         # Check if detected course has ANY indexed materials
         course_has_materials = True
