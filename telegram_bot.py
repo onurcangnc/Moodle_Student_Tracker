@@ -285,16 +285,20 @@ async def _show_study_files(update: Update, uid: int, course_filter: str):
     filenames = [f["filename"] for f in files[:10]]
     study_focus[uid] = {"course": course_filter, "file": None, "available": filenames}
 
-    # Build message with summaries
+    # Build message with summaries, grouped by section (week)
     parts = [f"📚 <b>{course_filter}</b> materyalleri:\n"]
     buttons = []
+    current_section = None
     for i, fname in enumerate(filenames):
+        section = files[i].get("section", "")
+        if section and section != current_section:
+            current_section = section
+            parts.append(f"📅 <b>{section}</b>")
         info = file_summaries.get(fname, {})
         summary = info.get("summary", "")
-        # First sentence or truncate
         short = summary.split(".")[0][:120] if summary else "Özet yok"
         chunks = files[i]["chunk_count"]
-        parts.append(f"<b>{i+1}.</b> 📄 {fname} ({chunks} parça)\n<i>{short}</i>\n")
+        parts.append(f"  <b>{i+1}.</b> 📄 {fname} ({chunks} parça)\n  <i>{short}</i>\n")
         btn_text = fname[:35] + "…" if len(fname) > 35 else fname
         buttons.append([InlineKeyboardButton(f"{i+1}. {btn_text}", callback_data=f"stf_{i}")])
 

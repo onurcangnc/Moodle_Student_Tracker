@@ -234,16 +234,25 @@ class VectorStore:
         )
 
     def get_files_for_course(self, course_name: str = None) -> list[dict]:
-        """Get unique files for a course with chunk counts."""
-        file_counts: dict[str, int] = {}
-        for meta in self._metadatas:
+        """Get unique files for a course with chunk counts and section info.
+        Returns list sorted by first appearance order (Moodle chronological).
+        """
+        file_info: dict[str, dict] = {}
+        for idx, meta in enumerate(self._metadatas):
             if course_name and course_name.lower() not in meta.get("course", "").lower():
                 continue
             fname = meta.get("filename", "unknown")
-            file_counts[fname] = file_counts.get(fname, 0) + 1
+            if fname not in file_info:
+                file_info[fname] = {
+                    "filename": fname,
+                    "chunk_count": 0,
+                    "section": meta.get("section", ""),
+                    "first_idx": idx,
+                }
+            file_info[fname]["chunk_count"] += 1
         return sorted(
-            [{"filename": f, "chunk_count": c} for f, c in file_counts.items()],
-            key=lambda x: x["chunk_count"], reverse=True,
+            file_info.values(),
+            key=lambda x: x["first_idx"],
         )
 
     # ─── Stats ───────────────────────────────────────────────────────────
