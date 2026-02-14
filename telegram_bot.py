@@ -516,8 +516,12 @@ async def send_long_message(update, text: str, reply_markup=None, parse_mode=Non
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("📚 Kurslar", callback_data="cmd_kurslar"),
+            InlineKeyboardButton("📝 Ödevler", callback_data="cmd_odevler"),
+        ],
+        [
             InlineKeyboardButton("🔄 Sync", callback_data="cmd_sync"),
-            InlineKeyboardButton("📊 Durum", callback_data="cmd_stats"),
+            InlineKeyboardButton("📊 İstatistikler", callback_data="cmd_stats"),
         ],
     ])
 
@@ -530,9 +534,7 @@ def courses_keyboard():
             short = c.shortname.split("-")[0].strip() if "-" in c.shortname else c.shortname
             buttons.append([
                 InlineKeyboardButton(f"📋 {short} Özet", callback_data=f"ozet_{c.shortname}"),
-                InlineKeyboardButton(f"🔒 Odaklan", callback_data=f"focus_{c.shortname}"),
             ])
-        buttons.append([InlineKeyboardButton("🔓 Odağı Kaldır", callback_data="focus_clear")])
         buttons.append([InlineKeyboardButton("◀️ Ana Menü", callback_data="main_menu")])
         return InlineKeyboardMarkup(buttons)
     except Exception:
@@ -605,20 +607,25 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await owner_only(update):
         return
     await update.message.reply_text(
-        "📖 *Nasıl Kullanılır?*\n\n"
-        "Direkt mesaj yaz → Ders materyallerinden cevap alırsın.\n\n"
-        "*Örnek mesajlar:*\n"
-        "• \"Columbian Exchange nedir?\"\n"
-        "• \"HCIV 102 öğret\"\n"
-        "• \"Beni test et\"\n"
-        "• \"Özet ver\"\n"
-        "• \"Anlamadım, daha basit anlat\"\n\n"
-        "*Komutlar:*\n"
-        "/menu — Kurs listesi ve kısayollar\n"
-        "/odevler — Ödev durumu\n"
-        "/sync — Materyalleri güncelle\n"
+        "📖 <b>Nasıl Kullanılır?</b>\n\n"
+        "Doğal konuşarak her şeyi yapabilirsin:\n\n"
+        "<b>Ders çalışma:</b>\n"
+        '• "CTIS 353 çalışacağım" → Konu konu öğretir\n'
+        '• "devam et" → Sonraki kavrama geçer\n'
+        '• "anlamadım" → Farklı açıdan anlatır\n\n'
+        "<b>Akademik bilgi:</b>\n"
+        '• "notlarım nasıl?" → STARS verilerinden cevaplar\n'
+        '• "sınavlarım ne zaman?" → Sınav takvimi\n'
+        '• "bugün dersim var mı?" → Ders programı\n\n'
+        "<b>Hızlı işlemler:</b>\n"
+        '• "maillerimi kontrol et" → Son mailler\n'
+        '• "ödevlerim ne?" → Bekleyen ödevler\n'
+        '• "sync yap" → Materyalleri güncelle\n\n'
+        "<b>Komutlar:</b>\n"
+        "/menu — Kurs listesi + özet\n"
+        "/login — STARS giriş\n"
         "/temizle — Sohbet geçmişini sıfırla",
-        parse_mode=ParseMode.MARKDOWN,
+        parse_mode=ParseMode.HTML,
         reply_markup=main_menu_keyboard(),
     )
 
@@ -628,14 +635,14 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         courses = moodle.get_courses()
-        lines = ["📚 *Kursların*\n"]
+        lines = ["📚 <b>Kursların</b>\n"]
         for c in courses:
             short = c.shortname.split("-")[0].strip() if "-" in c.shortname else c.shortname
             lines.append(f"• {short} — {c.fullname}")
-        lines.append("\n💡 Ders hakkında soru sormak için direkt yaz.")
+        lines.append('\n💡 Ders çalışmak için kurs kodunu yaz (örn: "CTIS 353 çalışacağım")')
         await update.message.reply_text(
             "\n".join(lines),
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
             reply_markup=courses_keyboard(),
         )
     except Exception as e:
@@ -647,30 +654,6 @@ async def cmd_courses(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await cmd_menu(update, context)
 
-
-async def cmd_focus_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await owner_only(update):
-        return
-    if not context.args:
-        await update.message.reply_text(
-            "Kullanım: /kurs <kurs adı>\nÖrnek: /kurs CTIS 465",
-            reply_markup=courses_keyboard(),
-        )
-        return
-
-    query = " ".join(context.args).lower()
-    courses = moodle.get_courses()
-    match = next((c for c in courses if query in c.fullname.lower() or query in c.shortname.lower()), None)
-
-    if match:
-        llm.active_course = match.fullname
-        await update.message.reply_text(
-            f"🔒 Odak: *{match.fullname}*\n\nArtık tüm sorular bu derse odaklanacak.",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=back_keyboard(),
-        )
-    else:
-        await update.message.reply_text(f"❌ Kurs bulunamadı: {' '.join(context.args)}")
 
 
 async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -729,7 +712,7 @@ async def cmd_questions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     topic = " ".join(context.args)
-    course = getattr(llm, "active_course", None)
+    course = get_user_active_course(update.effective_user.id)
     msg = await update.message.reply_text(f"⏳ Sorular: *{topic}*...", parse_mode=ParseMode.MARKDOWN)
     await update.message.chat.send_action(ChatAction.TYPING)
 
@@ -787,7 +770,6 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     stats = vector_store.get_stats()
     mem_stats = memory.get_stats()
-    active = getattr(llm, "active_course", None)
 
     text = (
         f"📊 *İstatistikler*\n\n"
@@ -800,7 +782,6 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🧠 Anılar: {mem_stats.get('memories', 0)}\n"
         f"📈 Konular: {mem_stats.get('topics', 0)}\n"
         f"───────────────\n"
-        f"🔒 Odak: {active or 'Yok'}\n"
         f"🔄 Son sync: {last_sync_time}\n"
         f"⏱️ Auto-sync: Her {AUTO_SYNC_INTERVAL // 60} dk | Ödev check: Her {ASSIGNMENT_CHECK_INTERVAL // 60} dk"
     )
@@ -932,7 +913,6 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await owner_only(update):
         return
     uid = update.effective_user.id
-    llm.active_course = None
     conversation_history.pop(uid, None)
     _save_conversation_history()
     logger.info(f"Cleared history and course focus for user {uid}")
@@ -1349,14 +1329,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "cmd_stats":
         stats = vector_store.get_stats()
         mem_stats = memory.get_stats()
-        active = getattr(llm, "active_course", None)
         text = (
             f"📊 *İstatistikler*\n\n"
             f"📦 Chunks: {stats.get('total_chunks', 0)}\n"
             f"📚 Kurslar: {stats.get('unique_courses', 0)}\n"
             f"📄 Dosyalar: {stats.get('unique_files', 0)}\n"
             f"───────────────\n"
-            f"🔒 Odak: {active or 'Yok'}\n"
             f"🔄 Son sync: {last_sync_time}\n"
             f"⏱️ Auto-sync: Her {AUTO_SYNC_INTERVAL // 60} dk | Ödev check: Her {ASSIGNMENT_CHECK_INTERVAL // 60} dk"
         )
@@ -1423,23 +1401,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ {e}", reply_markup=back_keyboard())
         return
 
-    if data.startswith("focus_"):
-        if data == "focus_clear":
-            llm.active_course = None
-            await query.edit_message_text("🔓 Odak kaldırıldı.", reply_markup=back_keyboard())
-        else:
-            shortname = data[6:]
-            courses = moodle.get_courses()
-            match = next((c for c in courses if c.shortname == shortname), None)
-            if match:
-                llm.active_course = match.fullname
-                await query.edit_message_text(
-                    f"🔒 Odak: *{match.fullname}*",
-                    parse_mode=ParseMode.MARKDOWN, reply_markup=back_keyboard(),
-                )
-            else:
-                await query.edit_message_text(f"❌ Bulunamadı: {shortname}", reply_markup=back_keyboard())
-        return
 
     # ─── Upload callbacks ──────────────────────────────────────────
     if data.startswith("upassign_"):
@@ -1904,7 +1865,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 extra_parts.append("── ÖDEV DURUMU ──\n" + assign_ctx)
 
         # C. Course detection (rule-based, NO LLM CALL)
-        course_filter = llm.active_course or detect_active_course(user_msg, uid)
+        course_filter = detect_active_course(user_msg, uid)
 
         # D. RAG search with file-level pre-filtering
         results = []
@@ -2463,13 +2424,19 @@ def main():
 
     # Essential commands (visible to user)
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("odevler", cmd_assignments))
     app.add_handler(CommandHandler("login", cmd_login))
+    app.add_handler(CommandHandler("stars", cmd_stars))
+    app.add_handler(CommandHandler("mail", cmd_mail))
     app.add_handler(CommandHandler("sync", cmd_sync))
     app.add_handler(CommandHandler("temizle", cmd_clear))
     # Admin/debug commands (hidden — not in help/menu)
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("maliyet", cmd_cost))
     app.add_handler(CommandHandler("modeller", cmd_models))
+    app.add_handler(CommandHandler("memory", cmd_memory))
 
     # Button callbacks
     app.add_handler(CallbackQueryHandler(handle_callback))
