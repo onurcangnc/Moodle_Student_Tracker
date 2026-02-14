@@ -2335,25 +2335,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = study_sessions.get(uid)
     if session and session.get("phase") in ("studying", "paused"):
         if intent not in _STUDY_ESCAPE_INTENTS:
-            # Detect course switch for ANY intent (not just STUDY)
+            # Detect if user mentions a different course
             mentioned_course = llm.active_course or detect_active_course(user_msg, uid)
             if mentioned_course and mentioned_course != session.get("course"):
-                if intent == "STUDY":
-                    pass  # Different course + STUDY intent → fall through to start new session
-                else:
-                    # User mentioned a different course mid-study (e.g. "bu hciv dersinde")
-                    # Switch study session to the new course
-                    old_course = session.get("course", "?")
-                    files = vector_store.get_files_for_course(course_name=mentioned_course)
-                    if files:
-                        all_filenames = [f["filename"] for f in files[:8]]
-                        session["course"] = mentioned_course
-                        session["selected_files"] = all_filenames
-                        session["covered_summary"] = ""
-                        _save_study_sessions()
-                        logger.info(f"📚 Study session switched: {old_course} → {mentioned_course}")
-                    await _study_handle_message(update, uid, user_msg, session)
-                    return
+                # Different course mentioned → fall through to normal routing
+                # Study session stays intact for when user returns to original topic
+                logger.info(f"📚 Study bypass: {session.get('course')} session, but user asked about {mentioned_course}")
+                pass
             else:
                 if session.get("phase") == "paused":
                     session["phase"] = "studying"
