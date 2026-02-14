@@ -1912,9 +1912,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 results = vector_store.query(query_text=smart_query, n_results=10)
                 top_score = (1 - results[0]["distance"]) if results else 0
 
-            # Chunk quality filter: only keep >0.30 similarity, max 7
+            # Chunk quality filter: only keep >0.25 similarity, max 10
             if results:
-                results = [r for r in results if (1 - r["distance"]) > 0.30][:7]
+                results = [r for r in results if (1 - r["distance"]) > 0.25][:10]
                 logger.info(f"RAG: {len(results)} chunks after quality filter (top={top_score:.2f})")
 
         low_relevance = not results or top_score < 0.3
