@@ -1687,58 +1687,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Yükleme iptal edildi.", reply_markup=back_keyboard())
         return
 
-    # ─── Source File Selection callbacks ──────────────────────────────
-    if data.startswith("sf_") and data != "sf_all" and data != "sf_start":
-        uid = query.from_user.id
-        session = study_sessions.get(uid)
-        if not session or session.get("phase") != "selecting_files":
-            return
-        idx = int(data[3:])
-        files = session["available_files"]
-        if idx < 0 or idx >= len(files):
-            return
-        fname = files[idx]["filename"]
-        selected = set(session.get("selected_files", []))
-        if fname in selected:
-            selected.discard(fname)
-        else:
-            selected.add(fname)
-        session["selected_files"] = list(selected)
-        _save_study_sessions()
-        await _show_file_selection(query.message, uid)
-        return
-
-    if data == "sf_all":
-        uid = query.from_user.id
-        session = study_sessions.get(uid)
-        if not session or session.get("phase") != "selecting_files":
-            return
-        files = session["available_files"]
-        all_names = [f["filename"] for f in files]
-        current = set(session.get("selected_files", []))
-        if current == set(all_names):
-            session["selected_files"] = []
-        else:
-            session["selected_files"] = all_names
-        _save_study_sessions()
-        await _show_file_selection(query.message, uid)
-        return
-
-    if data == "sf_start":
-        uid = query.from_user.id
-        session = study_sessions.get(uid)
-        if not session or session.get("phase") != "selecting_files":
-            return
-        if not session.get("selected_files"):
-            await query.answer("En az 1 kaynak seç!", show_alert=True)
-            return
-        await query.edit_message_text("📚 Çalışma planı hazırlanıyor...")
-        # Create a minimal fake update for send_long_message
-        session["phase"] = "studying"
-        _save_study_sessions()
-        await _study_generate_plan_and_start(update, uid, query.message)
-        return
-
     # ─── Progressive Study callbacks ──────────────────────────────────
     if data == "study_next":
         uid = query.from_user.id
@@ -2333,14 +2281,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # If user is in file selection phase, ignore non-study messages
-    if session and session.get("phase") == "selecting_files" and intent != "STUDY":
-        await update.message.reply_text(
-            "📚 Kaynak seçimi devam ediyor. Yukarıdaki butonlardan dosya seç "
-            "veya yeni bir konu yazmak için /temizle yaz."
-        )
-        return
-
     # ── Intent: ASSIGNMENTS ──
     if intent == "ASSIGNMENTS":
         await update.message.chat.send_action(ChatAction.TYPING)
@@ -2568,80 +2508,25 @@ async def _start_study_session(
             await msg.edit_text("❌ Hiç materyal bulunamadı. Önce /sync yap.")
             return
 
-        if len(files) <= 2:
-            # Too few files to bother selecting — use all
-            all_filenames = [f["filename"] for f in files]
-            study_sessions[uid] = {
-                "phase": "studying",
-                "topic": user_msg,
-                "smart_query": smart_query,
-                "course": course_filter,
-                "selected_files": all_filenames,
-                "subtopics": [],
-                "step": 0,
-                "covered": [],
-            }
-            _save_study_sessions()
-            await msg.edit_text("📚 Çalışma planı hazırlanıyor...")
-            await _study_generate_plan_and_start(update, uid, msg)
-            return
-
-        # Store pending selection
+        # Auto-select all course files, skip file selection UI
+        all_filenames = [f["filename"] for f in files[:8]]
         study_sessions[uid] = {
-            "phase": "selecting_files",
+            "phase": "studying",
             "topic": user_msg,
             "smart_query": smart_query,
             "course": course_filter,
-            "available_files": files[:8],  # max 8 files
-            "selected_files": [f["filename"] for f in files[:8]],  # default: all selected
+            "selected_files": all_filenames,
+            "subtopics": [],
+            "step": 0,
+            "covered": [],
         }
         _save_study_sessions()
-
-        # Show file selection UI
-        await _show_file_selection(msg, uid)
+        await msg.edit_text(f"📚 Çalışma planı hazırlanıyor... ({len(all_filenames)} kaynak)")
+        await _study_generate_plan_and_start(update, uid, msg)
 
     except Exception as e:
         logger.error(f"Study session start error: {e}")
         await msg.edit_text(f"❌ Çalışma planı oluşturulamadı: {e}")
-
-
-async def _show_file_selection(msg, uid: int):
-    """Show file selection UI with toggle buttons."""
-    session = study_sessions.get(uid)
-    if not session:
-        return
-
-    files = session["available_files"]
-    selected = set(session.get("selected_files", []))
-
-    text = "📚 <b>Hangi kaynaklardan çalışmak istersin?</b>\n\n"
-    for i, f in enumerate(files):
-        icon = "✅" if f["filename"] in selected else "📄"
-        text += f"{icon} {f['filename']} ({f['chunk_count']} parça)\n"
-    text += f"\n<i>{len(selected)}/{len(files)} kaynak seçili</i>"
-
-    buttons = []
-    row = []
-    for i, f in enumerate(files):
-        icon = "✅" if f["filename"] in selected else "📄"
-        short_name = f["filename"][:20].replace(".pdf", "").replace(".docx", "")
-        row.append(InlineKeyboardButton(f"{icon} {short_name}", callback_data=f"sf_{i}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-
-    # Action buttons
-    all_selected = len(selected) == len(files)
-    toggle_text = "Hiçbirini Seçme ❌" if all_selected else "Tümünü Seç ✅"
-    buttons.append([InlineKeyboardButton(toggle_text, callback_data="sf_all")])
-    buttons.append([InlineKeyboardButton(f"Çalışmaya Başla ▶️ ({len(selected)} kaynak)", callback_data="sf_start")])
-
-    try:
-        await msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons))
-    except Exception:
-        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def _study_generate_plan_and_start(update: Update, uid: int, status_msg):
