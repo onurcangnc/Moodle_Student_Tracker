@@ -1603,7 +1603,7 @@ _STARS_KEYWORDS = {
     "yoklama", "program", "ders saati", "kaçta", "harf", "puan",
     "final", "vize", "midterm", "quiz", "takvim", "karne",
     "notum", "kaldım", "geçtim", "transkript", "standing",
-    "akademik durum", "sınıf", "kredi", "devam", "saat",
+    "akademik durum", "sınıf", "kredi", "saat",
     "bugün", "yarın", "hangi ders", "ders programı", "katılım",
 }
 
@@ -1920,7 +1920,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 if course_has_materials:
                     # File-level pre-filtering
-                    _get_relevant_files(smart_query, course=course_filter, top_k=5)
+                    relevant_files = _get_relevant_files(smart_query, course=course_filter, top_k=5)
 
                     results = vector_store.query(
                         query_text=smart_query,
@@ -1928,6 +1928,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         course_filter=course_filter,
                     )
                     top_score = (1 - results[0]["distance"]) if results else 0
+
+                    # Post-filter: boost relevant files to top
+                    if relevant_files and results:
+                        matched = [r for r in results if r.get("metadata", {}).get("filename", "") in relevant_files]
+                        others = [r for r in results if r.get("metadata", {}).get("filename", "") not in relevant_files]
+                        if matched:
+                            results = matched + others
+                            logger.info(f"RAG file-filter: {len(matched)} from relevant files, {len(others)} others")
 
                     # Fallback: weak results → try all courses
                     if len(results) < 2 or top_score < 0.35:
