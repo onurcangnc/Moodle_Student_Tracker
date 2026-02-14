@@ -2356,9 +2356,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Build smart query (enriches short messages with recent context)
         smart_query = build_smart_query(user_msg, history)
 
-        # ── Intent: CHAT / STUDY → RAG chat (STUDY gets more chunks + file summaries) ──
+        # ── Intent: CHAT / STUDY → RAG chat (STUDY gets more chunks) ──
         is_study = intent == "STUDY"
-        n_chunks = 50 if is_study else 15
+        n_chunks = 25 if is_study else 15
 
         # Check if detected course has ANY indexed materials
         course_has_materials = True
@@ -2414,18 +2414,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         llm_history = history.copy()
         llm_history.append({"role": "user", "content": user_msg})
 
-        # For STUDY intent: inject file summaries as extra context
-        extra_ctx = ""
-        if is_study and course_filter:
-            extra_ctx = _build_file_summaries_context(None, course_filter)
-
-        # Call LLM with history + RAG context (study gets file summaries + higher token limit)
+        # Call LLM with history + RAG context (study gets higher token limit)
         response = await asyncio.to_thread(
             llm.chat_with_history,
             messages=llm_history,
             context_chunks=results,
             study_mode=is_study,
-            extra_context=extra_ctx,
         )
 
         # ── Source attribution ──
