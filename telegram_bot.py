@@ -1850,15 +1850,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
         )
 
-        # Fetch chunks from selected file
+        # Fetch chunks: specific file → ALL chunks in order; all files → semantic search
         course = focus["course"]
-        query_text = selected_label if filename_filter else course
-        results = vector_store.query(
-            query_text=query_text,
-            n_results=25,
-            course_filter=course,
-            filename_filter=filename_filter,
-        )
+        if focus["file"]:
+            # Get ALL chunks from selected file in document order
+            results = vector_store.get_file_chunks(focus["file"])
+            logger.info(f"Study file: {focus['file']} → {len(results)} chunks (full content)")
+        else:
+            results = vector_store.query(
+                query_text=course, n_results=50, course_filter=course,
+            )
 
         # Build file summaries context (so LLM knows about other files too)
         extra_ctx = _build_file_summaries_context(course=course)
@@ -2493,10 +2494,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await _show_study_files(update, uid, course_filter)
                 return
 
-        # If student has study focus, prefer their selected file
-        filename_filter = None
+        # If student has study focus, send ALL chunks from that file
+        study_file = None
         if is_study and uid in study_focus and study_focus[uid].get("file"):
-            filename_filter = [study_focus[uid]["file"]]
+            study_file = study_focus[uid]["file"]
 
         # Check if detected course has ANY indexed materials
         course_has_materials = True
@@ -2504,48 +2505,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             course_files = vector_store.get_files_for_course(course_name=course_filter)
             course_has_materials = len(course_files) > 0
 
-        # RAG: retrieve relevant chunks (filtered by course + optional file focus)
-        results = vector_store.query(
-            query_text=smart_query,
-            n_results=n_chunks,
-            course_filter=course_filter,
-            filename_filter=filename_filter,
-        )
-
-        # Fallback 0: if file-focused results are weak, try all course files
-        top_score = (1 - results[0]["distance"]) if results else 0
-        if filename_filter and (len(results) < 2 or top_score < 0.35):
-            course_results = vector_store.query(
-                query_text=smart_query, n_results=n_chunks, course_filter=course_filter,
+        # RAG: focused file → all chunks in order; otherwise → semantic search
+        if study_file:
+            results = vector_store.get_file_chunks(study_file)
+            logger.info(f"Study follow-up: {study_file} → {len(results)} chunks (full content)")
+        else:
+            results = vector_store.query(
+                query_text=smart_query,
+                n_results=n_chunks,
+                course_filter=course_filter,
             )
-            course_top = (1 - course_results[0]["distance"]) if course_results else 0
-            if course_top > top_score:
-                results = course_results
-                top_score = course_top
-                logger.info(f"Study focus fallback: file score {top_score:.2f} → course-wide {course_top:.2f}")
 
-        # Fallback 1: if course-filtered results are weak, search all courses
-        # BUT: only fall back if the course actually HAS materials (just weak match)
-        # If course has NO materials at all, don't pull from other courses
-        if course_filter and (len(results) < 2 or top_score < 0.35):
-            if course_has_materials:
-                # Course has materials but query didn't match well → try all courses
-                all_results = vector_store.query(
-                    query_text=smart_query, n_results=n_chunks,
-                )
-                all_top = (1 - all_results[0]["distance"]) if all_results else 0
-                if all_top > top_score:
-                    results = all_results
-                    top_score = all_top
-                    logger.info(f"RAG fallback: filtered score {top_score:.2f} → all-course score {all_top:.2f}")
-            else:
-                # Course has NO materials → don't use RAG, let LLM use general knowledge
-                results = []
-                top_score = 0
-                logger.info(f"RAG skip: {course_filter} has no indexed materials, using LLM knowledge")
+        top_score = (1 - results[0]["distance"]) if results and results[0].get("distance") else 0
+
+        # Fallback logic — skip when study_file is set (we already have full content)
+        if not study_file:
+            # Fallback: if course-filtered results are weak, search all courses
+            if course_filter and (len(results) < 2 or top_score < 0.35):
+                if course_has_materials:
+                    all_results = vector_store.query(
+                        query_text=smart_query, n_results=n_chunks,
+                    )
+                    all_top = (1 - all_results[0]["distance"]) if all_results else 0
+                    if all_top > top_score:
+                        results = all_results
+                        top_score = all_top
+                        logger.info(f"RAG fallback: filtered score {top_score:.2f} → all-course score {all_top:.2f}")
+                else:
+                    results = []
+                    top_score = 0
+                    logger.info(f"RAG skip: {course_filter} has no indexed materials, using LLM knowledge")
 
         # Extra fallback: if query has proper nouns not found in results, try cross-course
-        if results and course_filter and top_score < 0.5:
+        if not study_file and results and course_filter and top_score < 0.5:
             key_terms = [w for w in user_msg.split() if len(w) >= 4 and w[0].isupper()]
             if key_terms:
                 result_text = " ".join(r.get("text", "") for r in results[:5])

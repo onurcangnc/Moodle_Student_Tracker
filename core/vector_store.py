@@ -255,6 +255,25 @@ class VectorStore:
             key=lambda x: x["first_idx"],
         )
 
+    def get_file_chunks(self, filename: str, max_chunks: int = 0) -> list[dict]:
+        """Get ALL chunks from a specific file, ordered by chunk_index.
+        Returns them in document order so LLM can read the full material.
+        """
+        chunks = []
+        for idx, meta in enumerate(self._metadatas):
+            if meta.get("filename") == filename:
+                chunks.append({
+                    "id": self._ids[idx],
+                    "text": self._texts[idx],
+                    "metadata": meta,
+                    "distance": 0.0,
+                    "chunk_index": int(meta.get("chunk_index", 0)),
+                })
+        chunks.sort(key=lambda x: x["chunk_index"])
+        if max_chunks > 0:
+            chunks = chunks[:max_chunks]
+        return chunks
+
     # ─── Stats ───────────────────────────────────────────────────────────
 
     def get_stats(self) -> dict:
