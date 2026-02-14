@@ -1850,16 +1850,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
         )
 
-        # Fetch chunks: specific file → ALL chunks in order; all files → semantic search
+        # Fetch chunks: 50 most relevant from selected file (or all course files)
         course = focus["course"]
-        if focus["file"]:
-            # Get ALL chunks from selected file in document order
-            results = vector_store.get_file_chunks(focus["file"])
-            logger.info(f"Study file: {focus['file']} → {len(results)} chunks (full content)")
-        else:
-            results = vector_store.query(
-                query_text=course, n_results=50, course_filter=course,
-            )
+        filename_filter = [focus["file"]] if focus["file"] else None
+        results = vector_store.query(
+            query_text=focus.get("topic", course),
+            n_results=50,
+            course_filter=course,
+            filename_filter=filename_filter,
+        )
 
         # Build file summaries context (so LLM knows about other files too)
         extra_ctx = _build_file_summaries_context(course=course)
@@ -2494,10 +2493,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await _show_study_files(update, uid, course_filter)
                 return
 
-        # If student has study focus, send ALL chunks from that file
-        study_file = None
+        # If student has study focus, filter to their selected file
+        filename_filter = None
         if is_study and uid in study_focus and study_focus[uid].get("file"):
-            study_file = study_focus[uid]["file"]
+            filename_filter = [study_focus[uid]["file"]]
+            n_chunks = 50  # more chunks for focused file study
 
         # Check if detected course has ANY indexed materials
         course_has_materials = True
@@ -2505,22 +2505,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             course_files = vector_store.get_files_for_course(course_name=course_filter)
             course_has_materials = len(course_files) > 0
 
-        # RAG: focused file → all chunks in order; otherwise → semantic search
-        if study_file:
-            results = vector_store.get_file_chunks(study_file)
-            logger.info(f"Study follow-up: {study_file} → {len(results)} chunks (full content)")
-        else:
-            results = vector_store.query(
-                query_text=smart_query,
-                n_results=n_chunks,
-                course_filter=course_filter,
-            )
+        # RAG: semantic search (with optional file filter for study focus)
+        results = vector_store.query(
+            query_text=smart_query,
+            n_results=n_chunks,
+            course_filter=course_filter,
+            filename_filter=filename_filter,
+        )
 
-        top_score = (1 - results[0]["distance"]) if results and results[0].get("distance") else 0
+        top_score = (1 - results[0]["distance"]) if results else 0
 
-        # Fallback logic — skip when study_file is set (we already have full content)
-        if not study_file:
-            # Fallback: if course-filtered results are weak, search all courses
+        # Fallback: if results are weak and no file focus, try broader search
+        if not filename_filter:
             if course_filter and (len(results) < 2 or top_score < 0.35):
                 if course_has_materials:
                     all_results = vector_store.query(
@@ -2537,7 +2533,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.info(f"RAG skip: {course_filter} has no indexed materials, using LLM knowledge")
 
         # Extra fallback: if query has proper nouns not found in results, try cross-course
-        if not study_file and results and course_filter and top_score < 0.5:
+        if not filename_filter and results and course_filter and top_score < 0.5:
             key_terms = [w for w in user_msg.split() if len(w) >= 4 and w[0].isupper()]
             if key_terms:
                 result_text = " ".join(r.get("text", "") for r in results[:5])
