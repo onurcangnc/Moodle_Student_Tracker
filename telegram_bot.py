@@ -274,7 +274,9 @@ def _build_file_summaries_context(selected_files: list[str] | None = None, cours
 
 async def _show_study_files(update: Update, uid: int, course_filter: str):
     """Show available course files for student to pick which material to study."""
-    files = vector_store.get_files_for_course(course_name=course_filter)
+    all_files = vector_store.get_files_for_course(course_name=course_filter)
+    # Filter out structure/metadata files — not real study materials
+    files = [f for f in all_files if not f["filename"].endswith("_structure.md")]
     if not files:
         await update.message.reply_text(
             f"📭 <b>{course_filter}</b> dersinde henüz indekslenmiş materyal yok.",
@@ -1855,7 +1857,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filename_filter = [focus["file"]] if focus["file"] else None
         results = vector_store.query(
             query_text=focus.get("topic", course),
-            n_results=50,
+            n_results=25,
             course_filter=course,
             filename_filter=filename_filter,
         )
@@ -2497,7 +2499,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filename_filter = None
         if is_study and uid in study_focus and study_focus[uid].get("file"):
             filename_filter = [study_focus[uid]["file"]]
-            n_chunks = 50  # more chunks for focused file study
+            n_chunks = 25  # focused file study
 
         # Check if detected course has ANY indexed materials
         course_has_materials = True
