@@ -2343,29 +2343,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Intent: {intent} | msg: {user_msg[:50]}")
 
     # ── Check active study session — conversational routing ──
+    # During study: only let data-query intents escape (ödev, mail, sınav, etc.)
+    # Everything else (CHAT, STUDY, SYNC, SUMMARY, QUESTIONS) → study chat
+    _STUDY_ESCAPE_INTENTS = {"ASSIGNMENTS", "MAIL", "EXAM", "GRADES", "SCHEDULE", "ATTENDANCE", "CGPA"}
     session = study_sessions.get(uid)
     if session and session.get("phase") in ("studying", "paused"):
-        if intent in ("CHAT", "STUDY"):
+        if intent not in _STUDY_ESCAPE_INTENTS:
             # Check if switching to a different course
             if intent == "STUDY":
                 new_course = llm.active_course or detect_active_course(user_msg, uid)
                 if new_course and new_course != session.get("course"):
                     pass  # Different course → fall through to start new session
                 else:
-                    # Same course or resuming → route through study chat
                     if session.get("phase") == "paused":
                         session["phase"] = "studying"
                         _save_study_sessions()
                     await _study_handle_message(update, uid, user_msg, session)
                     return
             else:
-                # CHAT intent during study → route through study chat
+                # CHAT/SYNC/SUMMARY/QUESTIONS during study → route through study chat
                 if session.get("phase") == "paused":
                     session["phase"] = "studying"
                     _save_study_sessions()
                 await _study_handle_message(update, uid, user_msg, session)
                 return
-        # Other intents (ASSIGNMENTS, MAIL, etc.) fall through to normal routing
+        # ASSIGNMENTS, MAIL, EXAM, etc. fall through to normal routing
 
     # ── Intent: ASSIGNMENTS ──
     if intent == "ASSIGNMENTS":
