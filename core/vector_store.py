@@ -16,12 +16,30 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import snowballstemmer
 from rank_bm25 import BM25Okapi
 
 from core import config
 from core.document_processor import DocumentChunk
 
 logger = logging.getLogger(__name__)
+
+# ─── BM25 Stemming Setup ─────────────────────────────────────────────────
+_en_stemmer = snowballstemmer.stemmer("english")
+_tr_stemmer = snowballstemmer.stemmer("turkish")
+_TR_CHARS = set("çşğüöıÇŞĞÜÖİ")
+
+
+def _tokenize_for_bm25(text: str) -> list[str]:
+    """Tokenize with Snowball Turkish/English stemming for BM25."""
+    raw = [w.lower() for w in re.split(r"\W+", text) if len(w) >= 2]
+    stemmed = []
+    for token in raw:
+        if any(c in _TR_CHARS for c in token):
+            stemmed.append(_tr_stemmer.stemWord(token))
+        else:
+            stemmed.append(_en_stemmer.stemWord(token))
+    return stemmed
 
 
 class VectorStore:
@@ -129,10 +147,7 @@ class VectorStore:
             self._bm25_index = None
             return
         t0 = time.time()
-        tokenized = []
-        for text in self._texts:
-            tokens = [w.lower() for w in re.split(r"\W+", text) if len(w) >= 2]
-            tokenized.append(tokens)
+        tokenized = [_tokenize_for_bm25(text) for text in self._texts]
         self._bm25_index = BM25Okapi(tokenized)
         logger.info(f"BM25 index built: {len(self._texts)} chunks in {time.time()-t0:.2f}s")
 
@@ -145,7 +160,7 @@ class VectorStore:
         """BM25 keyword search. Returns same format as query()."""
         if not self._bm25_index:
             return []
-        tokens = [w.lower() for w in re.split(r"\W+", query) if len(w) >= 2]
+        tokens = _tokenize_for_bm25(query)
         if not tokens:
             return []
 

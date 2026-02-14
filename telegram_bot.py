@@ -1912,10 +1912,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 results = vector_store.hybrid_search(query=smart_query, n_results=10)
                 top_score = (1 - results[0]["distance"]) if results else 0
 
-            # Chunk quality filter: only keep >0.25 similarity, max 10
+            # Adaptive chunk quality filter: top_score * 0.60 or min 0.20
             if results:
-                results = [r for r in results if (1 - r["distance"]) > 0.25][:10]
-                logger.info(f"RAG: {len(results)} chunks after quality filter (top={top_score:.2f})")
+                adaptive_threshold = max(top_score * 0.60, 0.20)
+                results = [r for r in results if (1 - r["distance"]) > adaptive_threshold][:10]
+                logger.info(f"RAG: {len(results)} chunks (top={top_score:.2f} threshold={adaptive_threshold:.2f})")
 
         low_relevance = not results or top_score < 0.3
 
