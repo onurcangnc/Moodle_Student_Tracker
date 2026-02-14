@@ -18,7 +18,10 @@
       "Bash(python3:*)",
       "Bash(powershell -NoProfile -Command:*)",
       "Bash(powershell -Command:*)",
-      "Bash(powershell -File:*)"
+      "Bash(powershell -File:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(grep:*)"
     ]
   }
 }

@@ -1,166 +1,229 @@
 # Moodle Student Tracker
 
-![Logo](./images/1.png)
+<p align="center">
+  <img src="./images/1.png" alt="Bilkent Moodle" width="600"/>
+</p>
 
 A **fully-automated, RAG-based personal academic assistant** for Bilkent University students. Indexes Moodle course materials, auto-authenticates STARS (grades/attendance/exams) with email 2FA, monitors university emails — all through a single Telegram bot with zero manual intervention.
 
-![Logo](./images/2.jpeg)
+---
+
+## Table of Contents
+
+- [Architecture](#architecture)
+- [Design Patterns](#design-patterns)
+- [Features](#features)
+- [Data Flow](#data-flow)
+- [Memory System](#memory-system)
+- [Setup](#setup)
+- [Deployment](#deployment)
+- [Recommended Usage](#recommended-usage)
+- [Tech Stack](#tech-stack)
+- [File Structure](#file-structure)
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           TELEGRAM BOT                                  │
-│                        (telegram_bot.py)                                │
-│  Commands · Intent Router · Callback Handler · 6 Background Jobs        │
-└──────────┬──────────┬──────────┬──────────┬──────────┬─────────────────┘
-           │          │          │          │          │
-  ┌────────▼───┐ ┌────▼────┐ ┌──▼───┐ ┌───▼────────┐ │
-  │ LLM Engine │ │  Sync   │ │Vector│ │   Memory   │ │
-  │  (RAG +    │ │ Engine  │ │Store │ │  (Hybrid)  │ │
-  │  Prompts)  │ │         │ │FAISS │ │            │ │
-  └──┬────┬────┘ └──┬──┬──┘ └──────┘ └────────────┘ │
-     │    │         │  │                              │
-┌────▼┐ ┌─▼───────┐│ ┌▼──────────────┐               │
-│ LLM │ │ Vector  ││ │   Document    │               │
-│Provid│ │ Store   ││ │  Processor    │               │
-│ ers  │ │         ││ │ PDF/DOCX/OCR  │               │
-└──────┘ └─────────┘│ └───────────────┘               │
-                    │                                  │
-            ┌───────▼───────┐                          │
-            │ Moodle Client │                          │
-            │ (Web Services)│                          │
-            └───────────────┘                          │
-                                                       │
-┌──────────────────────────┐  ┌────────────────────────▼───┐
-│     STARS Client          │  │     Webmail Client          │
-│  OAuth + Email 2FA        │◄─│     IMAP (AIRS/DAIS)       │
-│  Auto-login (10 min)      │  │     Email monitoring        │
-│  Grades · Exams ·         │  │     2FA code extraction     │
-│  Attendance · GPA         │  │                             │
-└──────────────────────────┘  └────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                             TELEGRAM BOT                                    │
+│                          (telegram_bot.py)                                  │
+│    Commands · Intent Router · Callback Handler · 6 Background Jobs          │
+└──────┬──────────┬──────────┬──────────┬──────────┬──────────┬──────────────┘
+       │          │          │          │          │          │
+ ┌─────▼─────┐ ┌──▼──────┐ ┌▼───────┐ ┌▼────────┐│  ┌───────▼──────────┐
+ │LLM Engine │ │  Sync   │ │ Vector │ │ Memory  ││  │   Notification   │
+ │ (RAG +    │ │ Engine  │ │ Store  │ │(Hybrid) ││  │   Engine (Diff)  │
+ │ Prompts)  │ │         │ │ FAISS  │ │         ││  │                  │
+ └──┬────┬───┘ └──┬──┬───┘ └────────┘ └─────────┘│  └──────────────────┘
+    │    │        │  │                             │
+┌───▼┐ ┌─▼──────┐│ ┌▼──────────────┐              │
+│LLM │ │ Vector ││ │   Document    │              │
+│Prov│ │ Store  ││ │  Processor    │              │
+│iders│ │       ││ │ PDF/DOCX/OCR  │              │
+└─────┘ └───────┘│ └───────────────┘              │
+                 │                                 │
+         ┌───────▼───────┐                         │
+         │ Moodle Client │                         │
+         │ (Web Services)│                         │
+         └───────────────┘                         │
+                                                   │
+┌──────────────────────────┐  ┌────────────────────▼─────┐
+│     STARS Client          │  │     Webmail Client        │
+│  OAuth + Email 2FA        │◄─│     IMAP (AIRS/DAIS)     │
+│  Auto-login (10 min)      │  │     Email monitoring      │
+│  Grades · Exams ·         │  │     2FA code extraction   │
+│  Attendance · GPA         │  │                           │
+└──────────────────────────┘  └──────────────────────────┘
 ```
-
-![alt text](./images/4.png)
-
-![alt text](./images/5.png)
 
 ### Hexagonal Architecture (Ports & Adapters)
 
 | Layer | Files | Role |
 |-------|-------|------|
 | **UI Adapters** | `telegram_bot.py`, `main.py` | User interfaces (Telegram, CLI) |
-| **Core Logic** | `llm_engine.py`, `sync_engine.py`, `vector_store.py`, `memory.py` | Business logic, RAG, memory management |
+| **Core Logic** | `llm_engine.py`, `sync_engine.py`, `vector_store.py`, `memory.py` | Business logic, RAG pipeline, memory management |
 | **External Adapters** | `moodle_client.py`, `stars_client.py`, `webmail_client.py`, `llm_providers.py` | External service integrations |
 
 ---
 
-![alt text](./images/6.jpeg)
-
 ## Design Patterns
 
-### Strategy Pattern
-Different extraction strategies for different file types, common interface for different LLM providers:
+### Strategy Pattern — Document Extraction & LLM Providers
+Different extraction strategies per file type, common interface for LLM providers:
 ```
 DocumentProcessor._extract_pdf()  / _extract_docx() / _extract_pptx() / _extract_html()
 MultiProviderEngine → Gemini / OpenAI / GLM (all OpenAI-compatible)
 ```
 
-![alt text](./images/4.png)
+### Factory Pattern — Task-Based Model Routing
+Environment-variable-driven model selection per task via `TaskRouter`:
+```python
+MODEL_CHAT=gemini-2.5-flash        # Main chat (RAG)
+MODEL_STUDY=gemini-2.5-flash       # Study mode (strict grounding)
+MODEL_INTENT=gpt-4.1-mini          # Intent classification (~600ms, 97%)
+MODEL_EXTRACTION=gpt-4.1-nano      # Memory extraction
+MODEL_TOPIC_DETECT=gpt-4.1-nano    # Topic detection
+MODEL_SUMMARY=gemini-2.5-flash     # Weekly summary
+MODEL_QUESTIONS=gemini-2.5-flash   # Practice questions
+MODEL_OVERVIEW=gemini-2.5-flash    # Course overview
+```
 
-### Repository Pattern
-`VectorStore` and `DynamicMemoryDB` abstract data access. Chunk dedup, FAISS persistence, SQLite memory store:
+### Repository Pattern — Data Abstraction
+`VectorStore` and `DynamicMemoryDB` abstract storage. Chunk dedup, FAISS persistence, SQLite memory:
 ```
 VectorStore.add_chunks()  → deduplicate → encode → FAISS index → persist
 VectorStore.query()       → encode query → cosine similarity → filter → return
 DynamicMemoryDB           → SQLite (WAL mode) → token-budget ranking
 ```
 
-### State Machine
-STARS session management with explicitly defined states:
+### State Machine — STARS Session Management
 ```
 StarsSession._phase:  idle → awaiting_sms → ready
 StarsSession.expired:  auth_time > 3500s (~58 min) → re-authenticate
 ```
 
-### Factory Pattern
-Task-based LLM model selection via environment variables:
-```python
-# .env routing:
-MODEL_CHAT=gemini-2.5-flash        # Main chat (RAG)
-MODEL_STUDY=gemini-2.5-flash       # Study mode (strict grounding)
-MODEL_EXTRACTION=gpt-4.1-nano      # Memory extraction
-MODEL_TOPIC_DETECT=gpt-4.1-nano    # Topic detection
-MODEL_SUMMARY=gemini-2.5-flash     # Weekly summary
-MODEL_QUESTIONS=gemini-2.5-flash   # Practice questions
-MODEL_OVERVIEW=gemini-2.5-flash    # Course overview
-MODEL_INTENT=gpt-4.1-mini          # Intent classification
-```
-
-### Chain of Responsibility
-Sync pipeline in sequential stages:
+### Chain of Responsibility — Sync Pipeline
+Sequential stages, each transforms and passes forward:
 ```
 Moodle API → Download → Extract (PDF/DOCX/OCR) → Math Normalize → Chunk → Embed → FAISS Index
 ```
 
-### Intent Router (NLU)
-Multi-intent classification via LLM. 12 intents, only 4 explicit commands:
+### Observer Pattern — Background Job Queue
+6 periodic jobs via python-telegram-bot's APScheduler:
 ```
-User Message → _classify_intent() (GPT-4.1-mini, ~600ms, 97% accuracy)
-  → STUDY        → Progressive study session (6-step deep teaching)
-  → ASSIGNMENTS  → Fetch & format Moodle assignments
-  → MAIL         → IMAP fetch + LLM summary
-  → SYNC         → Moodle sync status / new material check
-  → SUMMARY      → Course content overview generation
-  → QUESTIONS    → Practice question generation
-  → EXAM         → STARS exam schedule (cached)
-  → GRADES       → STARS grades (cached)
-  → SCHEDULE     → STARS weekly schedule (cached)
-  → ATTENDANCE   → STARS attendance (cached)
-  → CGPA         → STARS academic info (cached)
-  → CHAT         → RAG conversational chat (default)
-
-Multi-intent: STARS queries auto-detect compound intents
-  "sınavlarım ne zaman ve devamsızlığım?" → EXAM + ATTENDANCE
-
-Explicit commands: /start  /login  /sync  /temizle
-Hidden admin:      /stats  /maliyet  /modeller
-```
-
-### Observer (Job Queue)
-6 background jobs via python-telegram-bot's APScheduler:
-```
-auto_sync_job        → 10 min  → Moodle sync + new material notification
-auto_stars_login_job → 10 min  → STARS auto-login (email 2FA) + data refresh
-assignment_check     → 10 min  → New assignment detection
-mail_check           → 30 min  → AIRS/DAIS email check + LLM summary
-moodle_keepalive     → 2 min   → Moodle session keep-alive
+auto_sync_job        → 10 min   → Moodle sync + new material notification
+auto_stars_login_job → 10 min   → STARS re-auth + data refresh + diff notifications
+assignment_check     → 10 min   → New assignment detection
+mail_check           → 30 min   → AIRS/DAIS email check + LLM summary
+moodle_keepalive     → 2 min    → Moodle session keep-alive
 deadline_reminder    → Daily 9AM → 3-day advance deadline warning
 ```
 
-### Adapter Pattern
-External APIs transformed into a common interface:
+### Template Method — Context Injection
+Every LLM call follows the same enrichment template:
+```
+system_prompt += _build_student_context()  →  date + schedule + STARS + assignments + courses
+```
+Context is **TTL-cached (5 min)** with manual invalidation on data changes.
+
+### Adapter Pattern — External API Normalization
 ```
 MoodleClient  → Moodle Web Services REST API
 StarsClient   → OAuth 1.0 + HTML scraping (BeautifulSoup)
 WebmailClient → IMAP4_SSL (mail.bilkent.edu.tr)
 ```
 
-### Template Method
-Every LLM call follows the same context injection template:
-```
-system_prompt += _build_student_context()  →  date + schedule + STARS + assignments + all courses (~600 tokens)
-```
-RAG chat flow:
-```
-query → intent classify → detect course → vector search (+ fallback) → LLM call → save history
-```
+---
+
+## Features
+
+### Full Automation (Zero Manual Intervention)
+- **Auto STARS login** — Re-authenticates every 10 min, reads email 2FA code from IMAP automatically
+- **Auto Moodle sync** — Checks for new materials every 10 min, notifies when new content is indexed
+- **Auto assignment tracking** — Detects new assignments every 10 min
+- **Auto email monitoring** — AIRS/DAIS emails checked every 30 min with LLM-summarized notifications
+- **Deadline reminders** — Daily 9 AM notifications for assignments due within 3 days
+- **STARS diff notifications** — Real-time alerts for grade changes, new exam dates, attendance updates
+- **12-hour STARS summary** — Periodic push with CGPA, upcoming exams, attendance status
+
+### Natural Language Interface
+- **Zero-command UX** — 4 essential commands, everything else via natural conversation
+- **12 intent classes** — STUDY, ASSIGNMENTS, MAIL, SYNC, SUMMARY, QUESTIONS, EXAM, GRADES, SCHEDULE, ATTENDANCE, CGPA, CHAT
+- **Multi-intent STARS queries** — "sinavlarim ne zaman ve devamsizligim?" → EXAM + ATTENDANCE
+- **3-tier course detection** — exact code → number match → LLM-based (cached)
+- **Study continuation** — fuzzy "devam" matching resumes active study session
+
+### Academic Assistant (RAG)
+
+<p align="center">
+  <img src="./images/5.png" alt="Study Mode" width="500"/>
+  <br/>
+  <em>Progressive study mode — deep teaching with RAG-grounded content</em>
+</p>
+
+- **Multilingual embedding** — `paraphrase-multilingual-MiniLM-L12-v2` (50+ languages, +8% Turkish retrieval vs English-only)
+- **Hybrid PDF extraction** — pre-scans pages (text vs scanned), routes text→pymupdf4llm, scanned→OCR with quality probe
+- **OCR quality check** — probe first 3 scanned pages, majority vote: 2+ fail → skip remaining
+- **Math-aware pipeline** — ~50 Unicode symbol normalization, formula-aware chunking
+- **Smart RAG fallback** — course-filtered → cross-course fallback → skip RAG if no materials
+- **Source attribution** — programmatic footer with dedup (📚 Kaynak: file.pdf)
+- **Progressive study mode** — 6-step deep teaching per subtopic (teach → quiz → reteach → summary)
+- Practice question generation, course overview, weekly summary
+
+### STARS Integration
+
+<p align="center">
+  <img src="./images/3.png" alt="STARS Exams" width="500"/>
+  <br/>
+  <em>Exam schedule with countdown + course awareness</em>
+</p>
+
+<p align="center">
+  <img src="./images/6.jpeg" alt="Grades" width="350"/>
+  <br/>
+  <em>Grade overview — all courses at a glance</em>
+</p>
+
+<p align="center">
+  <img src="./images/4.png" alt="Attendance" width="500"/>
+  <br/>
+  <em>Attendance tracking with per-course ratio and absence details</em>
+</p>
+
+- **Fully automated** — OAuth + Email 2FA (reads verification code from IMAP)
+- **Session management** — Auto-refresh every 10 min when expired
+- **STARS diff notifications** — Grade changes, new exam dates, attendance ratio changes → instant Telegram alert
+- **Full academic awareness** — CGPA, grades, exams, attendance, schedule injected into all LLM calls
+- Natural language: "notlarim nedir?", "sinav ne zaman?", "devamsizligim?"
+
+### Email Monitoring
+
+<p align="center">
+  <img src="./images/2.jpeg" alt="Mail Summary" width="350"/>
+  <br/>
+  <em>LLM-summarized email notifications from AIRS/DAIS</em>
+</p>
+
+- AIRS (instructor) and DAIS (department) emails
+- Background check every 30 min with LLM-summarized notifications
+- Natural language: "maillerime bak" triggers on-demand check
+- **2FA code extraction** — Reads STARS verification codes from starsmsg@bilkent.edu.tr
+
+### Memory & Personalization
+- **3-layer architecture**: RAM conversation history → SQLite semantic memories → deep recall keyword search
+- **Conversation history persistence** — survives bot restart (JSON file)
+- **Deep cross-session recall** — Turkish keyword extraction + SQLite search for messages beyond 20-turn window
+- Learning progress tracking (topic mastery 0–1.0)
+- Weak topic detection and review suggestions
+- Semantic memory extraction (preferences, goals, challenges)
 
 ---
 
 ## Data Flow
 
-### Message Flow (Intent-Routed)
+### Intent Router (NLU)
 
 ```
 User Message
@@ -168,48 +231,30 @@ User Message
   ├─→ Study session active? → fuzzy "devam" match → continue study
   │
   ├─→ _classify_intent() → GPT-4.1-mini (~600ms, 12 intents)
-  │   ├─→ STUDY       → _start_study_session() → progressive 6-step teaching
-  │   │                  (or resume existing session if same course)
-  │   ├─→ ASSIGNMENTS  → _format_assignments() → Moodle API fetch
-  │   ├─→ MAIL         → _handle_mail_intent() → IMAP + LLM summary
-  │   ├─→ SYNC         → Show last sync stats + new chunk count
-  │   ├─→ SUMMARY      → _handle_summary_intent() → course overview
-  │   ├─→ QUESTIONS    → _handle_questions_intent() → practice questions
+  │   ├─→ STUDY       → progressive 6-step deep teaching
+  │   ├─→ ASSIGNMENTS → Moodle API fetch + format
+  │   ├─→ MAIL        → IMAP + LLM summary
+  │   ├─→ SYNC        → sync stats + new chunk count
+  │   ├─→ SUMMARY     → course content overview
+  │   ├─→ QUESTIONS   → practice question generation
   │   ├─→ EXAM/GRADES/SCHEDULE/ATTENDANCE/CGPA
-  │   │   └─→ _detect_stars_intents() → multi-intent keyword detection
-  │   │       └─→ Reply ALL detected intents (not just primary)
-  │   └─→ CHAT         → RAG pipeline (below)
+  │   │   └─→ multi-intent keyword detection → reply ALL detected
+  │   └─→ CHAT        → RAG pipeline (below)
   │
-  ├─→ RAG Pipeline (CHAT intent):
-  │   ├─→ Active course detection (3-tier: exact code → number match → LLM-based)
-  │   ├─→ Course material check (has indexed materials?)
-  │   ├─→ VectorStore.query() → FAISS cosine similarity (top 15)
-  │   │   ├─→ Course filter + smart fallback:
-  │   │   │   ├─→ Course HAS materials but weak match → search all courses
-  │   │   │   ├─→ Proper noun not found in results → force cross-course search
-  │   │   │   └─→ Course has NO materials → skip RAG, use LLM general knowledge
-  │   │   └─→ Source attribution: extract top source files for footer
-  │   ├─→ _build_student_context() → date, schedule, STARS, assignments, all courses (~600 tokens)
-  │   ├─→ LLMEngine.chat_with_history() → Gemini 2.5 Flash
-  │   ├─→ Footer dedup: strip LLM-generated footer → append programmatic footer
-  │   └─→ Memory update + source footer (📚 Kaynak: file1.pdf, file2.pdf)
-  │
-  └─→ Send response to Telegram (auto-split for messages > 4096 chars)
+  └─→ RAG Pipeline (CHAT intent):
+      ├─→ Course detection (3-tier: exact code → number → LLM-based)
+      ├─→ VectorStore.query() → FAISS cosine similarity (top 15)
+      │   ├─→ Course filter + smart fallback:
+      │   │   ├─→ Weak match → search all courses
+      │   │   ├─→ Proper noun not found → force cross-course
+      │   │   └─→ No materials → skip RAG, use general knowledge
+      │   └─→ Source attribution: extract top source files
+      ├─→ _build_student_context() (cached 5 min)
+      ├─→ LLMEngine.chat_with_history() → Gemini 2.5 Flash
+      └─→ Memory update + source footer (📚 Kaynak: file.pdf)
 ```
 
-### Startup Sequence
-
-```
-post_init()
-  ├─→ Moodle: auto-login (username/password → token)
-  ├─→ Webmail: IMAP connect + seed AIRS/DAIS UIDs
-  ├─→ STARS: auto-login + email 2FA auto-verify → fetch all data → inject context
-  ├─→ Vector store: load FAISS index + metadata
-  ├─→ Study sessions: restore from data/study_sessions.json
-  └─→ Register 6 background jobs
-```
-
-### STARS Authentication Flow (Fully Automated)
+### STARS Authentication (Fully Automated)
 
 ```
 auto_stars_login_job (every 10 min):
@@ -218,18 +263,16 @@ auto_stars_login_job (every 10 min):
   │
   └─→ Session expired (>58 min):
       ├─→ GET /srs/ → 4 redirects → login page
-      ├─→ POST credentials → detect verification type:
-      │   ├─→ verifyEmail → EmailVerifyForm[verifyCode]
-      │   └─→ verifySms  → SmsVerifyForm[verifyCode]
+      ├─→ POST credentials → detect verification type
       ├─→ Poll IMAP (6×5s) for starsmsg@bilkent.edu.tr → extract code
       ├─→ POST verification code → oauth/authorize → authenticated
       ├─→ Fetch all data: grades, exams, attendance, schedule, CGPA
-      ├─→ Inject into LLM context (_build_student_context)
-      └─→ Every 12h: send summary notification to user
-          (📊 CGPA, upcoming exams, attendance warnings)
+      ├─→ Inject into LLM context
+      ├─→ Diff snapshot → notify grade/exam/attendance changes
+      └─→ Every 12h: send summary notification
 ```
 
-### Sync Pipeline (Background, Every 10 min)
+### Sync Pipeline (Every 10 min)
 
 ```
 auto_sync_job:
@@ -237,209 +280,223 @@ auto_sync_job:
   ├─→ Download new files to data/downloads/
   ├─→ DocumentProcessor (hybrid extraction):
   │   ├─→ Pre-scan: classify pages as text vs scanned
-  │   ├─→ Scanned pages → OCR probe (3 pages) → majority vote:
-  │   │   ├─→ 2+ fail quality check → skip remaining (early exit)
-  │   │   └─→ quality OK → OCR all scanned pages (Tesseract, DPI=200)
-  │   ├─→ Text pages → pymupdf4llm batch (BATCH_SIZE=50, structured Markdown)
-  │   ├─→ Math normalization (~50 Unicode symbols → searchable text)
-  │   ├─→ Equation block protection (sentinel markers)
+  │   ├─→ Scanned → OCR probe (3 pages) → majority vote → early exit if bad
+  │   ├─→ Text → pymupdf4llm batch (BATCH_SIZE=50, structured Markdown)
+  │   ├─→ Math normalization (~50 Unicode symbols)
   │   └─→ RecursiveCharacterTextSplitter (1000 char, 200 overlap)
   ├─→ sentence-transformers encode → FAISS add → persist
-  └─→ new_chunks > 0 ? → notify user: "🆕 {n} yeni chunk indexlendi"
+  └─→ Notify user: "🆕 {n} yeni chunk indexlendi"
+```
+
+### Startup Sequence
+
+```
+post_init()
+  ├─→ Moodle: auto-login (username/password → token)
+  ├─→ Webmail: IMAP connect + seed AIRS/DAIS UIDs
+  ├─→ STARS: auto-login + email 2FA → fetch all → set diff baseline
+  ├─→ Vector store: load FAISS index + metadata
+  ├─→ Study sessions: restore from data/study_sessions.json
+  ├─→ Conversation history: restore from data/conversation_history.json
+  └─→ Register 6 background jobs
 ```
 
 ---
 
 ## Memory System
 
-Two-layer hybrid architecture:
+Three-layer hybrid architecture:
 
 ```
-┌──────────────────────┐    ┌──────────────────────────┐
-│   STATIC LAYER       │    │     DYNAMIC LAYER        │
-│   (profile.md)       │    │     (SQLite DB)          │
-│                      │    │                          │
-│ Identity, prefs      │    │ Semantic memories        │
-│ Course list          │    │ Learning progress        │
-│ Study schedule       │    │ Conversation history     │
-│                      │    │ Weak topic detection     │
-│ Always in prompt     │    │ Query-time selective     │
-│ ~300-500 tokens      │    │ ~300-800 tokens          │
-│ Rarely updated       │    │ Updated every turn       │
-└──────────────────────┘    └──────────────────────────┘
+┌──────────────────────────┐  ┌──────────────────────────────┐  ┌────────────────────────────┐
+│     STATIC LAYER          │  │      DYNAMIC LAYER            │  │      DEEP RECALL            │
+│     (profile.md)          │  │      (SQLite DB)              │  │      (Keyword Search)       │
+│                           │  │                               │  │                             │
+│ Identity, preferences     │  │ Semantic memories             │  │ Cross-session search        │
+│ Course list               │  │ Learning progress             │  │ Turkish keyword extraction  │
+│ Study schedule            │  │ Conversation history (20 msg) │  │ SQLite message + memory     │
+│                           │  │ Weak topic detection          │  │ search on every query       │
+│ Always in prompt          │  │ Query-time selective           │  │ Activated for >10 char      │
+│ ~300-500 tokens           │  │ ~300-800 tokens               │  │ queries, max 8 results      │
+│ Rarely updated            │  │ Updated every turn            │  │ ~100-900 tokens             │
+└──────────────────────────┘  └──────────────────────────────┘  └────────────────────────────┘
 
-Total per-turn cost: ~600-1300 tokens (vs 4000-8000 full-context)
+Total per-turn memory cost: ~700-2200 tokens
 ```
 
----
-
-## Features
-
-### Full Automation (Zero Manual Intervention)
-- **Auto STARS login** — Re-authenticates every 10 min when session expires, reads email 2FA code from IMAP automatically
-- **Auto Moodle sync** — Checks for new materials every 10 min, notifies user when new content is indexed
-- **Auto assignment tracking** — Checks for new assignments every 10 min
-- **Auto email monitoring** — AIRS/DAIS emails checked every 30 min with LLM-summarized notifications
-- **Deadline reminders** — Daily 9 AM notifications for assignments due within 3 days
-- **12-hour STARS summary** — Periodic notification with CGPA, upcoming exams, attendance status
-
-### Natural Language Interface
-- **Zero-command UX** — 4 essential commands, everything else via natural conversation
-- **Multi-intent classification** — LLM-based intent routing (GPT-4.1-mini, ~600ms, 97% accuracy)
-- **12 intent classes** — STUDY, ASSIGNMENTS, MAIL, SYNC, SUMMARY, QUESTIONS, EXAM, GRADES, SCHEDULE, ATTENDANCE, CGPA, CHAT
-- **Multi-intent STARS queries** — "sınavlarım ne zaman ve devamsızlığım?" → both EXAM + ATTENDANCE
-- **3-tier course detection** — exact code match → number match → LLM-based (cached, no network call per message)
-- **Study continuation** — fuzzy "devam" matching resumes active study session even with course prefix ("Edebe devam")
-
-### Academic Assistant (RAG)
-- Automatically indexes Moodle course materials (PDF, DOCX, PPTX, HTML, RTF + OCR)
-- **Multilingual embedding** — `paraphrase-multilingual-MiniLM-L12-v2` (50+ languages, +8% better Turkish retrieval vs English-only model)
-- **Hybrid PDF extraction** — pre-scans pages (text vs scanned), routes text→pymupdf4llm, scanned→OCR with quality probe and early exit
-- **OCR quality check** — probe first 3 scanned pages, majority vote: if 2+ fail → skip remaining (avoids wasting time on unreadable manuscripts)
-- **Math-aware pipeline** — Unicode symbol normalization (~50 symbols), formula-aware chunking with equation block protection
-- **Dual-text embedding** — original text for LLM, normalized text for FAISS (e.g. `∫x²dx` → `integral x^2 dx`)
-- **Smart RAG fallback** — course-filtered → cross-course fallback (proper noun detection) → skip RAG if no materials
-- **Source attribution** — programmatic footer with dedup (strips LLM-generated footers before appending)
-- **Progressive study mode** — 6-step deep teaching per subtopic (teach → quiz → reteach → summary card)
-- **Unified student context** — every LLM call knows: date, schedule, grades, exams, assignments, all enrolled courses + material status
-- Practice question generation, course overview, weekly summary
-
-### STARS Integration
-- **Fully automated** — Auto-login via OAuth + Email 2FA (reads verification code from IMAP)
-- **Session management** — Auto-refresh every 10 min when expired (>58 min lifetime)
-- **Full academic awareness** — CGPA, grades, exams, attendance, schedule injected into all LLM calls
-- **12-hour summary notifications** — Periodic push with CGPA, upcoming exams, attendance warnings
-- Exam schedule with countdown (days remaining)
-- Attendance tracking (percentage + details)
-- Natural language queries: "notlarım nedir?", "sınavım ne zaman?"
-
-### Moodle Tracking
-- **Automatic synchronization** — Every 10 minutes (configurable via `AUTO_SYNC_INTERVAL`)
-- **New material notifications** — Telegram push when new chunks are indexed
-- Assignment deadline tracking — injected into LLM context
-- Deadline reminders (3 days in advance, daily 9 AM)
-- File upload + indexing (user-submitted PDF/DOCX/PPTX)
-- Semester reset detection (MOODLE_URL change → auto-clear + re-sync)
-
-### Email Monitoring
-- AIRS (instructor) and DAIS (department) emails
-- Background check every 30 minutes with LLM-summarized notifications
-- Natural language: "maillerime bak" triggers on-demand check
-- **2FA code extraction** — Reads STARS verification codes from starsmsg@bilkent.edu.tr
-
-### Memory & Personalization
-- Learning progress tracking (topic mastery 0-1.0)
-- Weak topic detection and review suggestions
-- Conversation history (last 20 messages)
-- Semantic memory (preferences, goals, challenges)
-
----
-
-## File Structure
-
-```
-.
-├── telegram_bot.py          # Main Telegram bot (handlers + 6 background jobs + intent router)
-├── main.py                  # CLI interface (sync, chat, summary, web)
-├── core/
-│   ├── config.py            # Environment variable management
-│   ├── moodle_client.py     # Moodle Web Services API client
-│   ├── document_processor.py # Hybrid PDF extraction (pymupdf4llm + OCR) + DOCX/PPTX/HTML
-│   ├── vector_store.py      # FAISS vector store + dedup + filename filter
-│   ├── llm_engine.py        # RAG orchestration + dual system prompts (chat/study)
-│   ├── llm_providers.py     # Multi-provider LLM routing (TaskRouter)
-│   ├── sync_engine.py       # Moodle → index pipeline
-│   ├── memory.py            # Hybrid memory (static profile + dynamic SQLite)
-│   ├── stars_client.py      # Bilkent STARS scraper (OAuth + Email/SMS 2FA)
-│   └── webmail_client.py    # IMAP email monitoring + 2FA code extraction
-├── data/
-│   ├── downloads/           # Downloaded course files
-│   ├── study_sessions.json  # Persistent study session state
-│   ├── memory.db            # SQLite dynamic memory
-│   ├── faiss.index          # FAISS vector index
-│   ├── metadata.json        # Chunk metadata
-│   ├── sync_state.json      # Sync state
-│   └── .moodle_token        # Cached Moodle token
-├── .env                     # Environment variables (not committed)
-├── .env.example             # Example configuration
-└── requirements.txt         # Python dependencies
-```
+**Conversation history** is persisted to JSON and survives bot restarts. The deep recall layer enables the bot to reference conversations from days or weeks ago through keyword-based SQLite search.
 
 ---
 
 ## Setup
 
+> **Detayli adim adim kurulum icin: [SETUP.md](./SETUP.md)**
+
 ### Requirements
-- Python 3.11+
+- Python 3.11+ (3.12 recommended)
 - Moodle 3.9+ (Web Services enabled)
 - Tesseract OCR (for scanned PDFs)
 
-### Steps
+### Installation
 
 ```bash
-# 1. Install dependencies
+# 1. Clone and install
+git clone <repo-url>
+cd Moodle_Student_Tracker
 pip install -r requirements.txt
 
-# 2. Configure environment variables
+# 2. Configure
 cp .env.example .env
-# Edit the .env file (Moodle, LLM API keys, Telegram token, STARS, Webmail)
+# Edit .env with your credentials (see below)
 
-# 3. Run with Telegram bot
+# 3. Run
 python telegram_bot.py
+```
 
-# --- or with CLI ---
+### Environment Variables
 
-# Synchronization
+```bash
+# ─── Moodle ──────────────────────────────────────────────
+MOODLE_URL=https://moodle.bilkent.edu.tr/2025-2026-spring
+MOODLE_USERNAME=
+MOODLE_PASSWORD=
+
+# ─── LLM API Keys ───────────────────────────────────────
+GEMINI_API_KEY=                    # Google AI Studio
+OPENAI_API_KEY=                    # OpenAI (intent + extraction)
+GLM_API_KEY=                       # Z.ai (optional fallback)
+
+# ─── Task → Model Routing ───────────────────────────────
+MODEL_CHAT=gemini-2.5-flash
+MODEL_STUDY=gemini-2.5-flash
+MODEL_INTENT=gpt-4.1-mini
+MODEL_EXTRACTION=gpt-4.1-nano
+MODEL_TOPIC_DETECT=gpt-4.1-nano
+MODEL_SUMMARY=gemini-2.5-flash
+MODEL_QUESTIONS=gemini-2.5-flash
+MODEL_OVERVIEW=gemini-2.5-flash
+
+# ─── Telegram Bot ────────────────────────────────────────
+TELEGRAM_BOT_TOKEN=                # @BotFather → /newbot
+TELEGRAM_OWNER_ID=                 # Your Telegram chat ID
+
+# ─── STARS ───────────────────────────────────────────────
+STARS_USERNAME=
+STARS_PASSWORD=
+
+# ─── Webmail IMAP ────────────────────────────────────────
+WEBMAIL_EMAIL=
+WEBMAIL_PASSWORD=
+
+# ─── Tuning (optional) ──────────────────────────────────
+EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+AUTO_SYNC_INTERVAL=600
+ASSIGNMENT_CHECK_INTERVAL=600
+```
+
+### LLM Providers
+
+| Provider | Model | Usage | Cost |
+|----------|-------|-------|------|
+| Google | Gemini 2.5 Flash | Chat, study, summary, questions, overview | Free tier (1500 req/day) |
+| OpenAI | GPT-4.1-mini | Intent classification (97% accuracy) | ~$0.016/1K req |
+| OpenAI | GPT-4.1-nano | Memory extraction, topic detection | ~$0.005/1K req |
+| Z.ai (GLM) | glm-4.7 | Fallback (optional) | Free tier |
+
+**Estimated monthly cost for active daily use: ~$0.90**
+
+### CLI Interface (Alternative)
+
+```bash
+# Sync Moodle materials
 python main.py sync
 
 # Interactive chat
 python main.py chat
 
-# Web interface (Gradio)
+# Course summary
+python main.py summary
+
+# Web interface (requires: pip install gradio)
 python main.py web
-```
-
-### LLM API Keys
-
-| Provider | Model | Usage | Env Variable |
-|----------|-------|-------|-------------|
-| Google | Gemini 2.5 Flash | Chat, study, summary, questions, overview | `GEMINI_API_KEY` |
-| OpenAI | GPT-4.1-mini | Intent classification (97% accuracy) | `OPENAI_API_KEY` |
-| OpenAI | GPT-4.1-nano | Memory extraction, topic detection | `OPENAI_API_KEY` |
-| Z.ai (GLM) | glm-4.7 | Fallback | `GLM_API_KEY` |
-
-### Moodle Token
-
-Obtained automatically (via `MOODLE_USERNAME` + `MOODLE_PASSWORD`) or manually:
-```
-https://MOODLE_URL/login/token.php?username=XXX&password=XXX&service=moodle_mobile_app
 ```
 
 ---
 
 ## Deployment
 
-Production deployment with systemd:
+### Production (systemd)
 
 ```bash
 # Copy files to server
-scp telegram_bot.py root@server:/opt/moodle-bot/
+scp telegram_bot.py main.py root@server:/opt/moodle-bot/
 scp -r core/ root@server:/opt/moodle-bot/core/
 
-# Start the service
+# Syntax check before deploy
+python -c "import ast; ast.parse(open('telegram_bot.py').read()); print('OK')"
+
+# Restart service
 ssh root@server "systemctl restart moodle-bot"
 
-# Check status
+# Verify
 ssh root@server "systemctl status moodle-bot --no-pager"
 
-# Syntax check before deploy
-python3 -c "import ast; ast.parse(open('telegram_bot.py').read()); print('OK')"
+# View logs
+ssh root@server "journalctl -u moodle-bot -f"
+```
 
-# Re-index from scratch
+### Re-index from scratch
+
+```bash
 ssh root@server "cd /opt/moodle-bot && rm -f data/faiss.index data/metadata.json data/sync_state.json"
 ssh root@server "systemctl restart moodle-bot"
 # Then send /sync in Telegram
 ```
+
+---
+
+## Recommended Usage
+
+### First Time Setup
+1. Fill `.env` with all credentials
+2. Run `python telegram_bot.py`
+3. Open Telegram → find your bot → send `/start`
+4. The bot will auto-login to Moodle, STARS, and Webmail
+5. First sync happens automatically — wait for "indexing complete" notification
+
+### Daily Workflow
+- **Ask anything naturally** — no need to memorize commands. Just type your question.
+- "Edeb dersine calismak istiyorum" → starts progressive study session
+- "Sinav tarihlerim?" → shows upcoming exams with countdown
+- "Maillerime bak" → checks AIRS/DAIS emails
+- "Odevlerim ne durumda?" → shows assignment deadlines
+- "Hegemonya nedir?" → RAG search across all course materials
+
+### Study Mode (Recommended for Exam Prep)
+1. Say "X dersine calismak istiyorum"
+2. Select source files (PDFs) from toggle buttons
+3. Bot teaches topic-by-topic with **6-step deep method**:
+   - Teach → Mini quiz → Re-teach weak areas → Summary card
+4. Say "devam" to continue, "plan" to see/jump topics
+5. Session persists across bot restarts
+
+### Commands
+| Command | Description |
+|---------|-------------|
+| `/start` | Show main menu |
+| `/menu` | Course list |
+| `/odevler` | Assignment status |
+| `/login` | Manual STARS login |
+| `/sync` | Manual Moodle sync |
+| `/stars` | STARS data panel |
+| `/temizle` | Clear study sessions + history |
+
+### Pro Tips
+- The bot **understands Turkish naturally** — no formal syntax needed
+- Compound queries work: "hem notlarim hem devamsizligim?"
+- Course prefixes work: "Edeb devam" resumes study for that course
+- The bot remembers past conversations across sessions — reference old topics freely
+- All notifications are automatic — grades, exams, assignments, emails arrive without asking
 
 ---
 
@@ -448,17 +505,50 @@ ssh root@server "systemctl restart moodle-bot"
 | Layer | Technology |
 |-------|------------|
 | Bot Framework | python-telegram-bot 21+ (APScheduler job queue) |
-| Embedding | sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2, 384 dim, 50+ langs) |
+| Embedding | sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2, 384 dim) |
 | Vector DB | FAISS (IndexFlatIP, cosine similarity) |
-| LLM | Gemini 2.5 Flash (chat/study) + GPT-4.1-mini (intent) + GPT-4.1-nano (extraction) |
+| LLM | Gemini 2.5 Flash + GPT-4.1-mini + GPT-4.1-nano |
 | Document Processing | pymupdf4llm (batch), PyMuPDF, PyPDF2, python-docx, BeautifulSoup |
-| OCR | Tesseract DPI=200 (tur+eng+equ) with probe-based quality check and early exit |
-| Math Normalization | ~50 Unicode symbols → searchable text + equation block protection |
-| Text Splitting | langchain RecursiveCharacterTextSplitter (equation-aware separators) |
-| Memory | SQLite (WAL mode) + Markdown profile |
+| OCR | Tesseract DPI=200 (tur+eng+equ) with probe-based quality check |
+| Text Splitting | langchain RecursiveCharacterTextSplitter (equation-aware) |
+| Memory | SQLite (WAL mode) + Markdown profile + JSON persistence |
 | Web Scraping | requests + BeautifulSoup (STARS OAuth + HTML parsing) |
-| Email | imaplib IMAP4_SSL (on-demand connection, no persistent keepalive) |
-| Async | asyncio + asyncio.to_thread() (non-blocking sync/IMAP/STARS) |
+| Email | imaplib IMAP4_SSL (on-demand connection) |
+| Async | asyncio + asyncio.to_thread() (non-blocking I/O) |
+
+---
+
+## File Structure
+
+```
+.
+├── telegram_bot.py            # Main bot (handlers + 6 background jobs + intent router + notifications)
+├── main.py                    # CLI interface (sync, chat, summary, web)
+├── core/
+│   ├── config.py              # Environment variable management
+│   ├── moodle_client.py       # Moodle Web Services API client
+│   ├── document_processor.py  # Hybrid PDF extraction (pymupdf4llm + OCR) + DOCX/PPTX/HTML
+│   ├── vector_store.py        # FAISS vector store + dedup + filename filter
+│   ├── llm_engine.py          # RAG orchestration + dual prompts + student context cache
+│   ├── llm_providers.py       # Multi-provider LLM routing (TaskRouter)
+│   ├── sync_engine.py         # Moodle → index pipeline
+│   ├── memory.py              # 3-layer memory (static + dynamic SQLite + deep recall)
+│   ├── stars_client.py        # STARS scraper (OAuth + Email/SMS 2FA)
+│   └── webmail_client.py      # IMAP email monitoring + 2FA code extraction
+├── data/
+│   ├── downloads/             # Downloaded course files
+│   ├── study_sessions.json    # Persistent study session state
+│   ├── conversation_history.json # Persistent conversation history
+│   ├── memory.db              # SQLite dynamic memory
+│   ├── faiss.index            # FAISS vector index
+│   ├── metadata.json          # Chunk metadata
+│   ├── sync_state.json        # Sync state
+│   └── .moodle_token          # Cached Moodle token
+├── images/                    # Screenshots for README
+├── .env                       # Environment variables (not committed)
+├── .env.example               # Example configuration
+└── requirements.txt           # Python dependencies
+```
 
 ---
 
@@ -466,11 +556,12 @@ ssh root@server "systemctl restart moodle-bot"
 
 | Metric | Value |
 |--------|-------|
-| Indexed chunks | ~3600 |
+| Indexed chunks | ~3,600 |
 | Courses | 5 |
 | Files | 28 |
 | Intents | 12 |
 | Background jobs | 6 |
 | Embedding dimensions | 384 |
 | Supported languages | 50+ |
-| Intent accuracy | 97% (30-case benchmark) |
+| Intent accuracy | 97% |
+| Estimated monthly cost | ~$0.90 |

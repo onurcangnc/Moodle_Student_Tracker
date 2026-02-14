@@ -62,7 +62,7 @@ OWNER_ID = int(os.getenv("TELEGRAM_OWNER_ID", "0"))
 AUTO_SYNC_INTERVAL = int(os.getenv("AUTO_SYNC_INTERVAL", "600"))  # 10 min
 ASSIGNMENT_CHECK_INTERVAL = int(os.getenv("ASSIGNMENT_CHECK_INTERVAL", "600"))  # 10 min
 
-# ─── Global Components ──────────────────────────────────────────────────────
+# ─── Global Components ─────────────���────────────────────────────────────────
 
 moodle: MoodleClient = None
 processor: DocumentProcessor = None
@@ -79,13 +79,16 @@ known_assignment_ids: set = set()
 sync_lock = asyncio.Lock()
 last_stars_notification: float = 0  # timestamp of last STARS summary notification
 STARS_NOTIFY_INTERVAL = 43200  # 12 hours
+last_user_intent: dict[int, str] = {}  # uid → last classified intent (for follow-up detection)
+_prev_stars_snapshot: dict = {}  # previous STARS state for diff-based notifications
 
 # ─── Conversation History ────────────────────────────────────────────────────
 
 # user_id → {"messages": [...], "active_course": "fullname" | None}
 conversation_history: dict[int, dict] = {}
+CONV_HISTORY_FILE = Path(os.getenv("DATA_DIR", "./data")) / "conversation_history.json"
 
-# ─── Progressive Study Sessions ──────────────────────────────────────────────
+# ─── Progressive Study Sessions ─────────────────────────────────────────────
 # user_id → {"phase", "topic", "subtopics", "step", "course", "covered",
 #             "selected_files", "available_files", "quiz_answers"}
 study_sessions: dict[int, dict] = {}
@@ -146,6 +149,28 @@ def _load_study_sessions():
             logger.error(f"Failed to load study sessions: {e}")
 
 
+def _save_conversation_history():
+    """Persist conversation history to disk."""
+    try:
+        CONV_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        serializable = {str(uid): data for uid, data in conversation_history.items()}
+        CONV_HISTORY_FILE.write_text(json.dumps(serializable, ensure_ascii=False, indent=2))
+    except Exception as e:
+        logger.debug(f"Conv history save error: {e}")
+
+
+def _load_conversation_history():
+    """Load conversation history from disk."""
+    global conversation_history
+    if CONV_HISTORY_FILE.exists():
+        try:
+            raw = json.loads(CONV_HISTORY_FILE.read_text(encoding="utf-8"))
+            conversation_history.update({int(uid): data for uid, data in raw.items()})
+            logger.info(f"Loaded conversation history for {len(conversation_history)} users")
+        except Exception as e:
+            logger.error(f"Failed to load conversation history: {e}")
+
+
 def get_conversation_history(user_id: int, limit: int = 5) -> list[dict]:
     entry = conversation_history.get(user_id, {})
     return entry.get("messages", [])[-limit:]
@@ -158,18 +183,20 @@ def get_user_active_course(user_id: int) -> str | None:
 
 
 def save_to_history(
-    user_id: int, user_msg: str, bot_response: str, active_course: str | None = None
+    user_id: int, user_msg: str, bot_response: str,
+    active_course: str | None = None, intent: str | None = None
 ):
     if user_id not in conversation_history:
         conversation_history[user_id] = {"messages": [], "active_course": None}
     conv = conversation_history[user_id]
-    conv["messages"].append({"role": "user", "content": user_msg})
-    conv["messages"].append({"role": "assistant", "content": bot_response})
+    conv["messages"].append({"role": "user", "content": user_msg, "intent": intent})
+    conv["messages"].append({"role": "assistant", "content": bot_response[:200], "intent": intent})
     if active_course is not None:
         conv["active_course"] = active_course
     # Max 20 messages
     if len(conv["messages"]) > 20:
         conv["messages"] = conv["messages"][-20:]
+    _save_conversation_history()
 
 
 def detect_active_course(user_msg: str, user_id: int) -> str | None:
@@ -299,8 +326,9 @@ def init_components():
     sync_engine = SyncEngine(moodle, processor, vector_store)
     memory = MemoryManager()
 
-    # Load persisted study sessions
+    # Load persisted state
     _load_study_sessions()
+    _load_conversation_history()
 
     if moodle.connect():
         logger.info("Moodle connected successfully.")
@@ -864,6 +892,7 @@ async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         _inject_schedule(cache)
                         _inject_stars_context(cache)
                         await asyncio.to_thread(_inject_assignments_context)
+                        llm.invalidate_student_context()
                         exam_count = len(cache.exams)
                         await msg.edit_text(
                             f"✅ STARS verileri güncellendi! (otomatik doğrulama)\n"
@@ -892,6 +921,7 @@ async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _inject_schedule(cache)
             _inject_stars_context(cache)
             await asyncio.to_thread(_inject_assignments_context)
+            llm.invalidate_student_context()
             exam_count = len(cache.exams)
             await msg.edit_text(
                 f"✅ STARS verileri güncellendi!\n"
@@ -1269,6 +1299,12 @@ async def _stars_reply_schedule(update: Update, cache, user_msg: str = ""):
     # Check if user asks about a specific day
     target_day = _detect_schedule_day(user_msg) if user_msg else None
 
+    # Check if user wants time-filtered schedule ("güncel saate göre", "kalan dersler")
+    msg_l = user_msg.lower() if user_msg else ""
+    wants_remaining = any(kw in msg_l for kw in (
+        "saate göre", "güncel", "kalan", "kaldı", "şimdiye göre", "şu an",
+    ))
+
     if target_day:
         # Show single day
         entries = by_day.get(target_day, [])
@@ -1279,7 +1315,31 @@ async def _stars_reply_schedule(update: Update, cache, user_msg: str = ""):
             lines.append("Bugün ders yok! 🎉" if is_today else f"{target_day} günü ders yok.")
         else:
             entries.sort(key=lambda e: e.get("time", ""))
+            # Filter by current time if requested
+            if wants_remaining and is_today:
+                now_hhmm = now.strftime("%H:%M")
+                remaining = [e for e in entries if e.get("time", "").split(" - ")[-1] > now_hhmm]
+                if remaining:
+                    lines[0] = f"📅 <b>{label} — kalan dersler (saat {now.strftime('%H:%M')})</b>\n"
+                    entries = remaining
+                else:
+                    lines.append(f"✅ Bugünkü tüm dersler bitti! (saat {now.strftime('%H:%M')})")
+                    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+                    return
             for e in entries:
+                room = f" ({e['room']})" if e.get("room") else ""
+                lines.append(f"  ⏰ {e['time']} — {e['course']}{room}")
+    elif wants_remaining:
+        # No specific day but wants "kalan" → show today's remaining
+        entries = by_day.get(today_name, [])
+        entries.sort(key=lambda e: e.get("time", ""))
+        now_hhmm = now.strftime("%H:%M")
+        remaining = [e for e in entries if e.get("time", "").split(" - ")[-1] > now_hhmm]
+        lines = [f"📅 <b>{today_name} (bugün) — kalan dersler (saat {now.strftime('%H:%M')})</b>\n"]
+        if not remaining:
+            lines.append(f"✅ Bugünkü tüm dersler bitti!")
+        else:
+            for e in remaining:
                 room = f" ({e['room']})" if e.get("room") else ""
                 lines.append(f"  ⏰ {e['time']} — {e['course']}{room}")
     else:
@@ -1764,7 +1824,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def _classify_intent(message: str, recent_history: list[dict] = None) -> str:
     """Classify user message intent via LLM (GPT-4.1-mini).
-    Returns one of: STUDY, ASSIGNMENTS, MAIL, SUMMARY, QUESTIONS,
+    Uses enriched conversation history (with intent metadata) for self-aware follow-up detection.
+    Returns one of: STUDY, ASSIGNMENTS, MAIL, SYNC, SUMMARY, QUESTIONS,
                     EXAM, GRADES, SCHEDULE, ATTENDANCE, CGPA, CHAT
     """
     valid_intents = {
@@ -1772,13 +1833,19 @@ def _classify_intent(message: str, recent_history: list[dict] = None) -> str:
         "EXAM", "GRADES", "SCHEDULE", "ATTENDANCE", "CGPA",
     }
 
-    # Build context from recent history for follow-up understanding
+    # Build structured context from enriched history (intent labels included)
     context_prefix = ""
     if recent_history:
-        recent_user_msgs = [m["content"] for m in recent_history if m["role"] == "user"][-2:]
-        if recent_user_msgs:
-            context_prefix = "Son mesajlar (bağlam için):\n" + "\n".join(
-                f"- {m}" for m in recent_user_msgs
+        context_lines = []
+        for m in recent_history[-6:]:
+            role = "Öğrenci" if m["role"] == "user" else "Sistem"
+            intent_label = m.get("intent", "")
+            intent_tag = f" → {intent_label}" if intent_label else ""
+            content = m["content"][:120]
+            context_lines.append(f"- {role}{intent_tag}: {content}")
+        if context_lines:
+            context_prefix = "Konuşma geçmişi:\n" + "\n".join(
+                context_lines
             ) + "\n\nŞimdi sınıflandırılacak mesaj:\n"
 
     try:
@@ -1826,6 +1893,14 @@ def _classify_intent(message: str, recent_history: list[dict] = None) -> str:
                 "  ÖNEMLİ: Öğrenci önceki mesajını açıklıyor/düzeltiyorsa\n"
                 "  (ör: 'X dersini diyorum', 'hayır Y'den bahsediyorum', 'onu kastetmedim')\n"
                 "  → CHAT olarak sınıflandır.\n\n"
+                "ÖNEMLİ — TAKİP MESAJLARI:\n"
+                "Konuşma geçmişinde intent etiketleri var. Mesaj önceki intent'e atıfta bulunuyorsa,\n"
+                "aynı intent'i döndür. Örnekler:\n"
+                "  - Önceki SCHEDULE + 'saate göre değerlendir' → SCHEDULE\n"
+                "  - Önceki MAIL + 'onu tam oku' / 'detaylı göster' → MAIL\n"
+                "  - Önceki SYNC + 'tekrar kontrol et' → SYNC\n"
+                "  - Önceki MAIL + 'moodle diyorum mail değil' (düzeltme) → SYNC\n"
+                "Bağlam'dan yola çık, mesajı tek başına değerlendirme.\n\n"
                 "SADECE şu kelimelerden birini yaz: STUDY, ASSIGNMENTS, MAIL, SYNC, SUMMARY, "
                 "QUESTIONS, EXAM, GRADES, SCHEDULE, ATTENDANCE, CGPA, CHAT"
             ),
@@ -1973,13 +2048,23 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─── Intent Handlers (Natural Language Routing) ──────────────────────────────
 
-async def _handle_mail_intent(update: Update):
-    """Handle MAIL intent — check and summarize mails."""
+async def _handle_mail_intent(update: Update, user_msg: str = ""):
+    """Handle MAIL intent — check and summarize mails.
+    If user_msg targets a specific sender, show that email's full content.
+    """
     if not webmail_client.authenticated:
         await update.message.reply_text("📬 Webmail bağlantısı yok. .env'de WEBMAIL_EMAIL ve WEBMAIL_PASSWORD tanımlayın.")
         return
 
     msg = await update.message.reply_text("🔄 Mailler kontrol ediliyor...")
+
+    # Detect if user asks about a specific sender
+    specific_keywords = ("oku", "tam ne", "ne diyor", "ne yazmış", "detay", "içeriğ")
+    wants_specific = any(kw in user_msg.lower() for kw in specific_keywords)
+
+    # Fetch more mails if looking for a specific one
+    fetch_limit = 10 if wants_specific else 3
+
     try:
         mails = await asyncio.wait_for(
             asyncio.to_thread(webmail_client.check_all_unread), timeout=45,
@@ -1995,7 +2080,7 @@ async def _handle_mail_intent(update: Update):
     if not mails:
         try:
             mails = await asyncio.wait_for(
-                asyncio.to_thread(webmail_client.get_recent_airs_dais, 3), timeout=45,
+                asyncio.to_thread(webmail_client.get_recent_airs_dais, fetch_limit), timeout=45,
             )
         except Exception:
             mails = []
@@ -2003,6 +2088,42 @@ async def _handle_mail_intent(update: Update):
             await msg.edit_text("📬 AIRS/DAIS maili bulunamadı.")
             return
         is_recent_fallback = True
+
+    # If user wants a specific sender's email, try to match
+    if wants_specific and user_msg:
+        msg_lower = user_msg.lower()
+        matched_mail = None
+        for m in mails:
+            sender = m.get("from", "")
+            if "<" in sender:
+                sender_name = sender.split("<")[0].strip().strip('"').lower()
+            else:
+                sender_name = sender.lower()
+            subject = m.get("subject", "").lower()
+            # Check if any word from sender name appears in user message
+            sender_words = [w for w in sender_name.split() if len(w) > 2]
+            if any(w in msg_lower for w in sender_words):
+                matched_mail = m
+                break
+            # Also check subject keywords
+            if any(w in msg_lower for w in subject.split() if len(w) > 3):
+                matched_mail = m
+                break
+
+        if matched_mail:
+            sender = matched_mail.get("from", "?")
+            if "<" in sender:
+                sender = sender.split("<")[0].strip().strip('"')
+            subject = matched_mail.get("subject", "(Konusuz)")
+            body = matched_mail.get("body_preview", "İçerik alınamadı.")
+            text = (
+                f"📧 <b>{subject}</b>\n"
+                f"👤 {sender}\n"
+                f"📅 {matched_mail.get('date', '')}\n\n"
+                f"{body}"
+            )
+            await msg.edit_text(text, parse_mode=ParseMode.HTML)
+            return
 
     await msg.edit_text(f"📬 {len(mails)} mail bulundu, özetleniyor...")
 
@@ -2164,6 +2285,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if cache:
                     _inject_schedule(cache)
                     _inject_stars_context(cache)
+                    llm.invalidate_student_context()
                     exam_count = len(cache.exams)
                     await msg.edit_text(
                         f"✅ STARS verileri güncellendi!\n"
@@ -2187,10 +2309,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _stars_reply_course_detail(update, cache, course_match.group(1))
             return
 
-    # ── Multi-intent classification via LLM ──
+    # ── Self-aware intent classification via LLM ──
     msg_lower = user_msg.lower()
-    recent_hist = get_conversation_history(uid, limit=4)
+    recent_hist = get_conversation_history(uid, limit=6)
     intent = await asyncio.to_thread(_classify_intent, user_msg, recent_hist)
+    last_user_intent[uid] = intent
     logger.info(f"Intent: {intent} | msg: {user_msg[:50]}")
 
     # ── Check active study session ──
@@ -2223,11 +2346,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.chat.send_action(ChatAction.TYPING)
         text = _format_assignments()
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        save_to_history(uid, user_msg, "[Ödev listesi gösterildi]", intent="ASSIGNMENTS")
         return
 
     # ── Intent: MAIL ──
     if intent == "MAIL":
-        await _handle_mail_intent(update)
+        await _handle_mail_intent(update, user_msg)
+        save_to_history(uid, user_msg, "[Mail özeti gösterildi]", intent="MAIL")
         return
 
     # ── Intent: SYNC — Moodle yeni materyal kontrolü ──
@@ -2240,16 +2365,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Tekrar senkronlamak için /sync yazabilirsin."
         )
         await update.message.reply_text(text)
+        save_to_history(uid, user_msg, "[Sync durumu gösterildi]", intent="SYNC")
         return
 
     # ── Intent: SUMMARY ──
     if intent == "SUMMARY":
         await _handle_summary_intent(update, user_msg)
+        save_to_history(uid, user_msg, "[Ders özeti gösterildi]", intent="SUMMARY")
         return
 
     # ── Intent: QUESTIONS ──
     if intent == "QUESTIONS":
         await _handle_questions_intent(update, uid, user_msg)
+        save_to_history(uid, user_msg, "[Pratik sorular gösterildi]", intent="QUESTIONS")
         return
 
     # ── Intent: STARS data queries ──
@@ -2269,6 +2397,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await _stars_reply_attendance(update, cache)
                 elif si == "CGPA":
                     await _stars_reply_academic(update, cache)
+            intents_label = "+".join(stars_intents)
+            save_to_history(uid, user_msg, f"[{intents_label} verisi gösterildi]", intent=intent)
             return
         else:
             await update.message.reply_text(
@@ -2403,8 +2533,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await send_long_message(update, response, parse_mode=ParseMode.HTML)
 
-        # Save to history (with active course)
-        save_to_history(uid, user_msg, response, active_course=course_filter)
+        # Save to history (with active course + intent)
+        save_to_history(uid, user_msg, response, active_course=course_filter, intent="CHAT")
 
     except Exception as e:
         typing.stop()
@@ -2556,7 +2686,7 @@ async def _study_generate_plan_and_start(update: Update, uid: int, status_msg):
             )
             await status_msg.delete()
             await send_long_message(update, response, parse_mode=ParseMode.HTML)
-            save_to_history(uid, topic, response, active_course=course)
+            save_to_history(uid, topic, response, active_course=course, intent="STUDY")
             study_sessions.pop(uid, None)
             _save_study_sessions()
             return
@@ -2714,7 +2844,7 @@ async def _study_teach_step(update: Update, uid: int, status_msg):
             update, full_response, parse_mode=ParseMode.HTML, reply_markup=keyboard,
         )
 
-        save_to_history(uid, f"[Çalışma {step+1}/{total}] {subtopic}", response, active_course=course)
+        save_to_history(uid, f"[Çalışma {step+1}/{total}] {subtopic}", response, active_course=course, intent="STUDY")
 
     except Exception as e:
         logger.error(f"Study teach error: {e}")
@@ -2795,7 +2925,7 @@ async def _study_teach_step_from_callback(query, uid: int):
                 kwargs.pop("parse_mode", None)
                 await query.message.reply_text(chunk, **kwargs)
 
-        save_to_history(uid, f"[Çalışma {step+1}/{total}] {subtopic}", response, active_course=course)
+        save_to_history(uid, f"[Çalışma {step+1}/{total}] {subtopic}", response, active_course=course, intent="STUDY")
 
     except Exception as e:
         logger.error(f"Study callback teach error: {e}")
@@ -3081,6 +3211,7 @@ async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE):
             # Refresh assignment deadlines + course list for LLM context
             try:
                 await asyncio.to_thread(_inject_assignments_context)
+                llm.invalidate_student_context()
                 courses = moodle.get_courses()
                 llm.moodle_courses = [
                     {"shortname": c.shortname, "fullname": c.fullname} for c in courses
@@ -3150,6 +3281,8 @@ async def auto_stars_login_job(context: ContextTypes.DEFAULT_TYPE):
             _inject_schedule(cache)
             _inject_stars_context(cache)
             await asyncio.to_thread(_inject_assignments_context)
+            llm.invalidate_student_context()
+            await _notify_stars_changes(cache, context)
             logger.info(
                 f"Auto STARS login OK: CGPA={cache.user_info.get('cgpa', '?')}, "
                 f"{len(cache.exams)} exams, {len(cache.attendance)} attendance, "
@@ -3191,6 +3324,81 @@ async def auto_stars_login_job(context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Auto STARS login error: {e}")
+
+
+# ─── STARS Diff-Based Change Detection ─────────────────────────────────────────
+
+def _build_stars_snapshot(cache) -> dict:
+    """Build a comparable snapshot from STARS cache for diff detection."""
+    return {
+        "exams": {(e.get("course", ""), e.get("exam_name", ""), e.get("date", ""))
+                  for e in (cache.exams or [])},
+        "grades": {(g.get("course", ""), a.get("name", ""), a.get("grade", ""))
+                   for g in (cache.grades or []) for a in g.get("assessments", [])},
+        "attendance": {(a.get("course", ""), a.get("ratio", ""))
+                       for a in (cache.attendance or [])},
+    }
+
+
+async def _notify_stars_changes(cache, context) -> None:
+    """Compare current STARS data with previous snapshot. Send targeted notifications."""
+    global _prev_stars_snapshot
+
+    new_snap = _build_stars_snapshot(cache)
+
+    if not _prev_stars_snapshot:
+        _prev_stars_snapshot = new_snap
+        logger.info("STARS diff: baseline snapshot set (first fetch).")
+        return
+
+    old = _prev_stars_snapshot
+    alerts: list[str] = []
+
+    # 1. New exam dates
+    new_exams = new_snap["exams"] - old["exams"]
+    if new_exams:
+        alerts.append("📅 <b>Yeni Sınav Tarihi!</b>")
+        for course, exam_name, date in sorted(new_exams):
+            alerts.append(f"  • {course}: {exam_name} — {date}")
+
+    # 2. Grade changes (new entries or grade updates)
+    new_grades = new_snap["grades"] - old["grades"]
+    # Filter: only truly new grades (not just same course+assessment with different score)
+    old_grade_keys = {(c, n) for c, n, _ in old["grades"]}
+    added_grades = [(c, n, g) for c, n, g in new_grades if (c, n) not in old_grade_keys]
+    updated_grades = [(c, n, g) for c, n, g in new_grades if (c, n) in old_grade_keys]
+
+    if added_grades:
+        alerts.append("📝 <b>Yeni Not Girişi!</b>")
+        for course, name, grade in sorted(added_grades):
+            alerts.append(f"  • {course}: {name} → <b>{grade}</b>")
+    if updated_grades:
+        # Find old grade for comparison
+        old_grade_map = {(c, n): g for c, n, g in old["grades"]}
+        alerts.append("📝 <b>Not Güncellendi!</b>")
+        for course, name, grade in sorted(updated_grades):
+            old_g = old_grade_map.get((course, name), "?")
+            alerts.append(f"  • {course}: {name} → <b>{old_g} → {grade}</b>")
+
+    # 3. Attendance ratio changes
+    old_att = {c: r for c, r in old["attendance"]}
+    for course, ratio in new_snap["attendance"]:
+        old_ratio = old_att.get(course)
+        if old_ratio and old_ratio != ratio:
+            alerts.append(f"📋 <b>Devamsızlık Güncellendi:</b> {course}: {old_ratio} → <b>{ratio}</b>")
+
+    _prev_stars_snapshot = new_snap
+
+    if alerts and OWNER_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=OWNER_ID,
+                text="\n".join(alerts),
+                parse_mode=ParseMode.HTML,
+            )
+            logger.info(f"STARS diff: {len(alerts)} change(s) notified.")
+        except Exception as e:
+            logger.error(f"STARS diff notification error: {e}")
 
 
 # ─── Auto Assignment Check ───────────────────────────────────────────────────
@@ -3349,6 +3557,8 @@ async def post_init(app: Application):
                             _inject_schedule(cache)
                             _inject_stars_context(cache)
                             await asyncio.to_thread(_inject_assignments_context)
+                            llm.invalidate_student_context()
+                            await _notify_stars_changes(cache, app)
                             logger.info(f"Auto STARS login at startup: OK (CGPA={cache.user_info.get('cgpa', '?')})")
                             last_stars_notification = time.time()  # seed so first notify is in 12h
                         else:
@@ -3363,6 +3573,8 @@ async def post_init(app: Application):
                     _inject_schedule(cache)
                     _inject_stars_context(cache)
                     await asyncio.to_thread(_inject_assignments_context)
+                    llm.invalidate_student_context()
+                    await _notify_stars_changes(cache, app)
                     logger.info(f"Auto STARS login at startup: OK (no 2FA)")
                     last_stars_notification = time.time()
             else:

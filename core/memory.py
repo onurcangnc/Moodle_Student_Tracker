@@ -50,6 +50,33 @@ DB_PATH = config.data_dir / "memory.db"
 PROFILE_PATH = config.data_dir / "profile.md"
 
 
+# ─── Turkish Keyword Extraction (for deep recall) ─────────────────────────────
+
+_TR_STOPWORDS = frozenset({
+    "bir", "bu", "şu", "ben", "sen", "biz", "siz",
+    "ve", "ile", "de", "da", "mi", "mı", "ne", "nasıl", "neden",
+    "ama", "fakat", "için", "gibi", "kadar", "daha", "çok", "az",
+    "var", "yok", "olan", "olarak", "den", "dan", "nin", "nın",
+    "hakkında", "geçen", "hafta", "bugün", "dün",
+    "konuştuğumuz", "konuşmuştuk", "demiştin", "sormuştum",
+    "hatırla", "hatırlıyor", "musun", "mısın", "neydi", "nedir",
+    "bana", "sana", "beni", "seni", "bunu", "şunu",
+    "şimdi", "sonra", "önce", "biraz",
+})
+
+
+def _extract_keywords(text: str, max_kw: int = 5) -> list[str]:
+    """Extract meaningful keywords from a Turkish message (stopword filter)."""
+    words = re.findall(r'[a-zA-ZçğıöşüÇĞİÖŞÜ]+', text.lower())
+    seen: set[str] = set()
+    result: list[str] = []
+    for w in words:
+        if len(w) >= 3 and w not in _TR_STOPWORDS and w not in seen:
+            seen.add(w)
+            result.append(w)
+    return result[:max_kw]
+
+
 # ─── Static Profile (Markdown Layer) ────────────────────────────────────────
 
 DEFAULT_PROFILE = """# Öğrenci Profili
@@ -368,6 +395,17 @@ class DynamicMemoryDB:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def search_semantic_memories(self, query: str, limit: int = 10) -> list:
+        """Search semantic_memory table by content keyword match."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT * FROM semantic_memory
+                   WHERE is_active = 1 AND content LIKE ?
+                   ORDER BY confidence DESC, last_accessed DESC LIMIT ?""",
+                (f"%{query}%", limit),
+            ).fetchall()
+            return [MemoryEntry(**{k: r[k] for k in r.keys()}) for r in rows]
+
     # ─── Semantic Memory ─────────────────────────────────────────────────
 
     def add_memory(self, entry: MemoryEntry) -> int:
@@ -605,7 +643,8 @@ class HybridMemoryManager:
 
     # ─── Context Builder (THE critical method) ───────────────────────────
 
-    def build_memory_context(self, course: Optional[str] = None) -> str:
+    def build_memory_context(self, course: Optional[str] = None,
+                             query: Optional[str] = None) -> str:
         """
         Build memory context for system prompt injection.
 
@@ -614,7 +653,8 @@ class HybridMemoryManager:
         - Semantic memories:  ~200-400 tokens (selective)
         - Weak topics:        ~100-150 tokens (if any)
         - Recent messages:    ~100-200 tokens (continuity)
-        - TOTAL:              ~700-1250 tokens
+        - Deep recall:        ~100-300 tokens (if query provided)
+        - TOTAL:              ~700-1550 tokens
         """
         parts = []
 
@@ -636,12 +676,36 @@ class HybridMemoryManager:
 
         # Layer 4: Recent messages (cross-session continuity)
         recent = self.db.get_recent_messages(limit=4)
+        recent_ids = {m.get("id") for m in recent} if recent else set()
         if recent:
             lines = []
             for msg in recent:
                 role = "K" if msg["role"] == "user" else "A"
                 lines.append(f"{role}: {msg['content'][:100]}")
             parts.append("[SON KONUŞMA]\n" + "\n".join(lines))
+
+        # Layer 5: Deep recall — keyword-based past conversation search
+        if query and len(query) > 10:
+            keywords = _extract_keywords(query)
+            if keywords:
+                seen_contents: set[str] = set()
+                recall_lines: list[str] = []
+                for kw in keywords:
+                    for m in self.db.search_messages(kw, limit=3):
+                        if m.get("id") in recent_ids:
+                            continue
+                        preview = m["content"][:120].replace("\n", " ")
+                        if preview not in seen_contents:
+                            seen_contents.add(preview)
+                            role = "K" if m["role"] == "user" else "A"
+                            recall_lines.append(f"{role}: {preview}")
+                    for mem in self.db.search_semantic_memories(kw, limit=3):
+                        if mem.content not in seen_contents:
+                            seen_contents.add(mem.content)
+                            recall_lines.append(mem.to_text())
+                if recall_lines:
+                    combined = "\n".join(recall_lines[:8])[:900]
+                    parts.append("[İLGİLİ GEÇMİŞ KONUŞMALAR]\n" + combined)
 
         return "\n\n".join(parts) if parts else ""
 
@@ -659,7 +723,7 @@ class HybridMemoryManager:
             self.current_session_id, "assistant", assistant_response,
         )
 
-        if len(user_message) > 20 and not user_message.startswith("/"):
+        if len(user_message) > 50 and not user_message.startswith("/"):
             self._extract_memories(user_message, assistant_response, course, user_msg_id)
             self._detect_topics(user_message, course)
 

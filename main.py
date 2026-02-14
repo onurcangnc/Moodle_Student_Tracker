@@ -150,6 +150,7 @@ def cmd_chat(args):
     ))
 
     available_courses = stats.get("courses", [])
+    chat_history: list[dict] = []
 
     while True:
         try:
@@ -167,8 +168,10 @@ def cmd_chat(args):
             continue
 
         # Regular chat with RAG
+        chat_history.append({"role": "user", "content": user_input})
         with console.status("[bold green]Düşünüyorum...[/bold green]"):
-            response = llm.chat(user_input)
+            response = llm.chat_with_history(messages=chat_history[-10:])
+        chat_history.append({"role": "assistant", "content": response})
 
         console.print(f"\n[bold green]Asistan[/bold green]")
         console.print(Markdown(response))
@@ -432,8 +435,12 @@ def cmd_web(args):
         else:
             llm.clear_course_filter()
 
-        response = llm.chat(message)
-        return response
+        messages = []
+        for user_msg, bot_msg in (history or []):
+            messages.append({"role": "user", "content": user_msg})
+            messages.append({"role": "assistant", "content": bot_msg})
+        messages.append({"role": "user", "content": message})
+        return llm.chat_with_history(messages=messages[-10:])
 
     def generate_summary(course):
         if not course or course == "Tümü":

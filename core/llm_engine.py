@@ -12,7 +12,7 @@ import json
 import logging
 import re
 from typing import Optional
-from dataclasses import dataclass, field
+
 
 from core import config
 from core.vector_store import VectorStore
@@ -201,33 +201,6 @@ Summary format:
 5. **Study Tips**: Suggestions to reinforce this material"""
 
 
-# ─── Conversation Memory ────────────────────────────────────────────────────
-
-@dataclass
-class ConversationMemory:
-    """Maintains conversation history with a sliding window."""
-    messages: list[dict] = field(default_factory=list)
-    max_messages: int = 30  # Keep last N messages
-
-    def add_user(self, content: str):
-        self.messages.append({"role": "user", "content": content})
-        self._trim()
-
-    def add_assistant(self, content: str):
-        self.messages.append({"role": "assistant", "content": content})
-        self._trim()
-
-    def get_messages(self) -> list[dict]:
-        return self.messages.copy()
-
-    def clear(self):
-        self.messages.clear()
-
-    def _trim(self):
-        if len(self.messages) > self.max_messages:
-            self.messages = self.messages[-self.max_messages:]
-
-
 # ─── Safe JSON Parser ──────────────────────────────────────────────────────
 
 def _safe_parse_json(raw: str, fallback=None):
@@ -272,21 +245,31 @@ class LLMEngine:
     def __init__(self, vector_store: VectorStore):
         self.engine = MultiProviderEngine()
         self.vector_store = vector_store
-        self.memory = ConversationMemory()  # In-session short-term
         self.mem_manager = HybridMemoryManager()  # Persistent long-term
         self.schedule_text: str = ""  # Weekly schedule from STARS
         self.stars_context: str = ""  # All STARS data (grades, exams, attendance)
         self.assignments_context: str = ""  # Moodle assignment deadlines
         self.moodle_courses: list[dict] = []  # All enrolled courses [{shortname, fullname}]
         self.active_course: Optional[str] = None
+        self._student_ctx_cache: str | None = None
+        self._student_ctx_ts: float = 0  # monotonic timestamp
 
     # ─── Student Context ──────────────────────────────────────────────────
+
+    def invalidate_student_context(self):
+        """Force refresh of cached student context (call after STARS/schedule/assignment updates)."""
+        self._student_ctx_cache = None
 
     def _build_student_context(self) -> str:
         """Build unified student context for system prompt injection.
         Aggregates: date/time, schedule, STARS data, assignment deadlines.
-        Returns empty string if nothing available.
+        Cached for 5 minutes (invalidated on data changes).
         """
+        import time as _time
+        now = _time.monotonic()
+        if self._student_ctx_cache is not None and (now - self._student_ctx_ts) < 300:
+            return self._student_ctx_cache
+
         from datetime import datetime as _dt, timezone as _tz, timedelta as _td
 
         parts = []
@@ -350,7 +333,10 @@ class LLMEngine:
         except Exception:
             pass
 
-        return "\n\n" + "\n\n".join(parts)
+        result = "\n\n" + "\n\n".join(parts)
+        self._student_ctx_cache = result
+        self._student_ctx_ts = now
+        return result
 
     # ─── Relevance Check ─────────────────────────────────────────────────
 
@@ -368,74 +354,6 @@ class LLMEngine:
             return 0.0
         # distance = 1 - similarity, so similarity = 1 - distance
         return max(1 - r["distance"] for r in results)
-
-    # ─── RAG Chat ────────────────────────────────────────────────────────
-
-    def chat(self, user_message: str, course_filter: Optional[str] = None) -> str:
-        """
-        Process a user message with RAG + Memory:
-        1. Retrieve relevant context from vector store
-        2. Build memory context from past sessions
-        3. Inject both into prompt
-        4. Send to Claude with conversation history
-        5. Record exchange for future memory extraction
-        """
-        course = course_filter or self.active_course
-
-        # 1. Retrieve relevant document chunks
-        context_chunks = self.vector_store.query(
-            query_text=user_message,
-            n_results=6,
-            course_filter=course,
-        )
-        context_text = self._format_context(context_chunks)
-
-        # 2. Build persistent memory context
-        memory_context = self.mem_manager.build_memory_context(course=course)
-
-        # 3. Build system prompt with memory
-        system = SYSTEM_PROMPT_CHAT
-        if memory_context:
-            system += f"\n\n--- HAFIZA ---\n{memory_context}\n--- /HAFIZA ---"
-
-        # 4. Build the augmented user message
-        augmented_message = user_message
-        if context_text:
-            augmented_message = (
-                f"CONTEXT (ders materyallerinden):\n"
-                f"{'─'*40}\n"
-                f"{context_text}\n"
-                f"{'─'*40}\n\n"
-                f"SORU: {user_message}"
-            )
-
-        # 5. Conversation flow
-        self.memory.add_user(user_message)
-        messages = self.memory.get_messages()[:-1]
-        messages.append({"role": "user", "content": augmented_message})
-
-        try:
-            assistant_reply = self.engine.complete(
-                task="chat",
-                system=system,
-                messages=messages,
-                max_tokens=4096,
-            )
-            self.memory.add_assistant(assistant_reply)
-
-            # 6. Record exchange for persistent memory
-            self.mem_manager.record_exchange(
-                user_message=user_message,
-                assistant_response=assistant_reply,
-                course=course or "",
-                rag_sources=context_text[:500] if context_text else "",
-            )
-
-            return assistant_reply
-
-        except Exception as e:
-            logger.error(f"Chat error: {e}")
-            return f"Hata: {e}"
 
     # ─── Conversational Chat (history-based) ─────────────────────────────
 
@@ -466,9 +384,10 @@ class LLMEngine:
         else:
             logger.info("RAG: No chunks retrieved")
 
-        # Build persistent memory context
+        # Build persistent memory context (with deep recall for current query)
         course = self.active_course
-        memory_context = self.mem_manager.build_memory_context(course=course)
+        user_query = messages[-1]["content"] if messages and messages[-1]["role"] == "user" else None
+        memory_context = self.mem_manager.build_memory_context(course=course, query=user_query)
 
         # Build system prompt — study mode uses strict grounding
         system = SYSTEM_PROMPT_STUDY if study_mode else SYSTEM_PROMPT_CHAT
@@ -966,10 +885,9 @@ class LLMEngine:
         self.active_course = None
 
     def reset_conversation(self):
-        """Clear in-session conversation history (persistent memory remains)."""
-        self.memory.clear()
+        """Clear persistent memory session (profile + semantic memories remain)."""
         self.mem_manager.end_session()
-        logger.info("Conversation history cleared.")
+        logger.info("Conversation session ended.")
 
     def get_memory_stats(self) -> dict:
         """Get memory system statistics."""

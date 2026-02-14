@@ -237,20 +237,20 @@ class WebmailClient:
             return None
 
     @staticmethod
-    def _extract_body(msg: email.message.Message) -> str:
-        """Extract first 500 chars of plain text body."""
+    def _extract_body(msg: email.message.Message, max_len: int = 2000) -> str:
+        """Extract plain text body, truncated to max_len chars."""
         if msg.is_multipart():
             for part in msg.walk():
                 if part.get_content_type() == "text/plain":
                     payload = part.get_payload(decode=True)
                     if payload:
                         charset = part.get_content_charset() or "utf-8"
-                        return payload.decode(charset, errors="replace")[:500].strip()
+                        return payload.decode(charset, errors="replace")[:max_len].strip()
         else:
             payload = msg.get_payload(decode=True)
             if payload:
                 charset = msg.get_content_charset() or "utf-8"
-                return payload.decode(charset, errors="replace")[:500].strip()
+                return payload.decode(charset, errors="replace")[:max_len].strip()
         return ""
 
     def fetch_stars_verification_code(self, max_age_seconds: int = 120) -> str | None:
