@@ -2543,15 +2543,15 @@ async def _study_generate_plan_and_start(update: Update, uid: int, status_msg):
 
         # RAG with file filter
         results = vector_store.query(
-            query_text=smart_query, n_results=25,
+            query_text=smart_query, n_results=50,
             course_filter=course, filename_filter=selected,
         )
         if not results or len(results) < 3:
             results = vector_store.query(
-                query_text=smart_query, n_results=25, filename_filter=selected,
+                query_text=smart_query, n_results=50, filename_filter=selected,
             )
         if not results:
-            results = vector_store.query(query_text=smart_query, n_results=25)
+            results = vector_store.query(query_text=smart_query, n_results=50)
 
         context_text = llm._format_context(results)
 
@@ -2690,15 +2690,15 @@ async def _study_teach_step(update: Update, uid: int, status_msg):
         # Dedicated RAG for this subtopic (filtered by selected files)
         sub_query = f"{topic} {subtopic}"
         results = vector_store.query(
-            query_text=sub_query, n_results=25,
+            query_text=sub_query, n_results=50,
             course_filter=course, filename_filter=selected_files,
         )
         if not results or len(results) < 3:
             results = vector_store.query(
-                query_text=sub_query, n_results=25, filename_filter=selected_files,
+                query_text=sub_query, n_results=50, filename_filter=selected_files,
             )
         if not results or len(results) < 3:
-            results = vector_store.query(query_text=sub_query, n_results=25)
+            results = vector_store.query(query_text=sub_query, n_results=50)
 
         context_text = llm._format_context(results)
         logger.info(f"📚 Study step {step+1}/{total}: '{subtopic}' — {len(results)} chunks")
@@ -2752,15 +2752,15 @@ async def _study_teach_step_from_callback(query, uid: int):
     try:
         sub_query = f"{topic} {subtopic}"
         results = vector_store.query(
-            query_text=sub_query, n_results=25,
+            query_text=sub_query, n_results=50,
             course_filter=course, filename_filter=selected_files,
         )
         if not results or len(results) < 3:
             results = vector_store.query(
-                query_text=sub_query, n_results=25, filename_filter=selected_files,
+                query_text=sub_query, n_results=50, filename_filter=selected_files,
             )
         if not results or len(results) < 3:
-            results = vector_store.query(query_text=sub_query, n_results=25)
+            results = vector_store.query(query_text=sub_query, n_results=50)
 
         context_text = llm._format_context(results)
         logger.info(f"📚 Study step {step+1}/{total}: '{subtopic}' — {len(results)} chunks")
@@ -2837,11 +2837,11 @@ async def _study_quiz_callback(query, uid: int):
     try:
         sub_query = f"{topic} {subtopic}"
         results = vector_store.query(
-            query_text=sub_query, n_results=15,
+            query_text=sub_query, n_results=30,
             course_filter=course, filename_filter=selected_files,
         )
         if not results:
-            results = vector_store.query(query_text=sub_query, n_results=15)
+            results = vector_store.query(query_text=sub_query, n_results=30)
 
         context_text = llm._format_context(results)
 
@@ -2956,11 +2956,11 @@ async def _study_retry_callback(query, uid: int):
     try:
         sub_query = f"{topic} {subtopic}"
         results = vector_store.query(
-            query_text=sub_query, n_results=20,
+            query_text=sub_query, n_results=40,
             course_filter=course, filename_filter=selected_files,
         )
         if not results:
-            results = vector_store.query(query_text=sub_query, n_results=20)
+            results = vector_store.query(query_text=sub_query, n_results=40)
 
         context_text = llm._format_context(results)
 
