@@ -2335,8 +2335,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = study_sessions.get(uid)
     if session and session.get("phase") in ("studying", "paused"):
         if intent not in _STUDY_ESCAPE_INTENTS:
-            # Detect if user mentions a different course
-            mentioned_course = llm.active_course or detect_active_course(user_msg, uid)
+            # Detect if user EXPLICITLY mentions a different course in THIS message
+            # Do NOT use llm.active_course — it's sticky and causes false bypasses
+            mentioned_course = detect_active_course(user_msg, uid)
             if mentioned_course and mentioned_course != session.get("course"):
                 # Different course mentioned → fall through to normal routing
                 # Study session stays intact for when user returns to original topic
