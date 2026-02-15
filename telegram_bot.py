@@ -21,14 +21,14 @@ import re
 import sys
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from dotenv import load_dotenv
 load_dotenv()
 
-from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -103,28 +103,38 @@ def _get_user_state(uid: int) -> dict:
             "awaiting_topic_selection": False,
             # Reading Mode
             "reading_mode": False,
+            "reading_paused": False,
             "reading_file": None,
             "reading_file_display": None,
             "reading_position": 0,
             "reading_total": 0,
+            "reading_chunks_read": [],
+            "quiz_active": False,
         }
     return _user_state[uid]
 
 
 def _reset_reading_mode(state: dict):
+    """Okumayı tamamen bitir (state sıfırla)."""
     state["reading_mode"] = False
+    state["reading_paused"] = False
     state["reading_file"] = None
     state["reading_file_display"] = None
     state["reading_position"] = 0
     state["reading_total"] = 0
+    state["reading_chunks_read"] = []
+    state["quiz_active"] = False
 
 
 def _start_reading_mode(state: dict, filename: str, display_name: str, total: int):
     state["reading_mode"] = True
+    state["reading_paused"] = False
     state["reading_file"] = filename
     state["reading_file_display"] = display_name
     state["reading_position"] = 0
     state["reading_total"] = total
+    state["reading_chunks_read"] = []
+    state["quiz_active"] = False
     state["seen_chunk_ids"] = []
     state["last_query"] = ""
 
@@ -204,22 +214,30 @@ _SOURCE_RULE = (
 )
 
 _READING_MODE_INSTRUCTION = (
-    "Öğrenciye bir akademik metni bölüm bölüm öğretiyorsun.\n"
-    "KURALLAR:\n"
+    "Sen bir üniversite ders asistanısın. Öğrenciye akademik materyali bölüm bölüm ÖĞRETİYORSUN.\n\n"
+    "KESİN KURALLAR:\n"
     "1. Verilen chunk'ları KENDİ KELİMELERİNLE öğretici dille özetle\n"
-    "2. ASLA copy-paste yapma — aynı bilgiyi farklı kelimelerle ifade et\n"
+    "2. Chunk'ı olduğu gibi YAPIŞTIRMA\n"
     "3. Karmaşık kavramları basit örneklerle açıkla\n"
-    "4. 3-7 cümle ile cevapla\n"
-    "5. Önemli terimleri <b>kalın</b> yap"
+    "4. Her yanıt 4-8 cümle olsun\n"
+    "5. Önemli terimleri <b>kalın</b> yap\n"
+    "6. Gerekirse günlük hayattan analoji kullan\n\n"
+    "YASAK:\n"
+    '- ASLA soru sorma. "Peki sence...?", "Ne düşünüyorsun?", "Nasıl yorumlarsın?", "Anladın mı?" gibi soru kalıpları KULLANMA.\n'
+    '- "Sence" kelimesini KULLANMA.\n'
+    "- Yanıtta soru işareti \"?\" KULLANMA.\n"
+    "- Yanıtı soru ile bitirme.\n\n"
+    "Sadece bilgi ver, açıkla, öğret. Nokta ile bitir."
 ) + _SOURCE_RULE
 
 _READING_QA_INSTRUCTION = (
-    "Öğrenci bir akademik metin okurken soru sordu.\n"
-    "Aşağıda okunan bölümler ve RAG aramasıyla bulunan ilgili bölümler var.\n"
-    "KURALLAR:\n"
-    "1. Soruyu ÖNCELİKLE bu bölümlerdeki bilgiyle cevapla\n"
+    "Öğrenci bir akademik metin okurken soru sordu.\n\n"
+    "KESİN KURALLAR:\n"
+    "1. Soruyu verilen bölümlerdeki bilgiyle cevapla\n"
     "2. Bölümlerde yoksa genel bilginle TAMAMLA\n"
-    "3. Cevaptan sonra okumaya devam edebileceğini hatırlat"
+    "3. Kısa cevap ver (3-5 cümle)\n"
+    "4. SORU SORMA — sadece cevapla\n"
+    '5. Soru işareti "?" KULLANMA'
 ) + _SOURCE_RULE
 
 _RAG_PARTIAL_INSTRUCTION = (
@@ -235,12 +253,24 @@ _NO_RAG_INSTRUCTION = (
 ) + _SOURCE_RULE
 
 _QUIZ_INSTRUCTION = (
-    "Öğrenciye okuduğu bölümlerden TEK bir soru sor.\n"
-    "KURALLAR:\n"
-    "1. Sadece verilen bölümlerdeki bilgiden soru sor\n"
+    "Öğrenciye okuduğu materyalden TEK bir soru sor.\n\n"
+    "KESİN KURALLAR:\n"
+    "1. SADECE verilen bölümlerdeki bilgiden soru sor\n"
     "2. TEK soru — birden fazla sorma\n"
-    "3. Cevabı VERME — öğrencinin cevabını bekle\n"
-    "4. Açık uçlu, kavramsal soru olsun"
+    "3. Cevabı VERME — öğrencinin yazmasını bekle\n"
+    "4. Açık uçlu, kavramsal anlayışı test eden soru olsun\n"
+    "5. Çoktan seçmeli DEĞİL\n"
+    "6. Kısa ve net soru — 1-2 cümle"
+) + _SOURCE_RULE
+
+_QUIZ_EVAL_INSTRUCTION = (
+    "Öğrencinin quiz cevabını değerlendir.\n\n"
+    "KESİN KURALLAR:\n"
+    '1. Doğruysa: "✅ Doğru! [kısa açıklama neden doğru]"\n'
+    '2. Kısmen doğruysa: "🔶 Kısmen doğru. [eksik kısım + doğru cevap]"\n'
+    '3. Yanlışsa: "❌ Maalesef yanlış. [doğru cevap + kısa açıklama]"\n'
+    "4. 2-3 cümle ile değerlendir, uzatma\n"
+    "5. Materyaldeki bilgiye dayanarak değerlendir"
 ) + _SOURCE_RULE
 
 
@@ -261,11 +291,8 @@ def _format_completion_message(state: dict) -> str:
     name = state["reading_file_display"] or state["reading_file"]
     total = state["reading_total"]
     return (
-        f"📖 <b>{name}</b> tamamlandı! ({total} bölüm okundu)\n\n"
-        "Şimdi ne yapmak istersin?\n"
-        '• "beni test et" — okuduklarından soru sorayım\n'
-        "• Başka bir dosya seçebilirsin\n"
-        "• Herhangi bir soru sorabilirsin"
+        f"🎉 <b>{name}</b> tamamlandı! ({total} bölüm okundu)\n\n"
+        "Aşağıdaki butonlarla devam edebilirsin:"
     )
 
 
@@ -307,6 +334,68 @@ def _format_source_footer(chunks: list[dict], source_type: str) -> str:
         footer += "\n💡 <i>Ek bilgi genel kaynaktan tamamlandı</i>"
 
     return footer
+
+
+# ─── Reading Mode: Strict Source Footer & Navigation Buttons ───────────────
+
+def _reading_source_footer(state: dict) -> str:
+    """Source footer that shows ONLY the selected reading file."""
+    display = state.get("reading_file_display") or state.get("reading_file", "")
+    return f"\n\n📄 <i>Kaynak: {display}</i>" if display else ""
+
+
+def _reading_buttons(state: dict, show_back: bool = False, completed: bool = False) -> InlineKeyboardMarkup:
+    """Navigation buttons for reading mode."""
+    # Find course shortname for cs| callback
+    current_course = state.get("current_course", "")
+    course_short = ""
+    for c in (llm.moodle_courses if llm else []):
+        if c["fullname"] == current_course:
+            course_short = c["shortname"].split("-")[0].strip()[:58]
+            break
+    file_select_cb = f"cs|{course_short}" if course_short else "rd|menu"
+
+    if completed:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🧠 Quiz", callback_data="rd|quiz")],
+            [InlineKeyboardButton("📄 Başka Kaynak", callback_data=file_select_cb)],
+            [InlineKeyboardButton("💬 Normal Mod", callback_data="rd|normal")],
+        ])
+
+    row1 = []
+    if show_back:
+        row1.append(InlineKeyboardButton("◀️ Geri", callback_data="rd|back"))
+    row1.append(InlineKeyboardButton("▶️ Devam Et", callback_data="rd|next"))
+    row2 = [
+        InlineKeyboardButton("🧠 Quiz", callback_data="rd|quiz"),
+        InlineKeyboardButton("✅ Bitir", callback_data="rd|finish"),
+    ]
+    row3 = [InlineKeyboardButton("💬 Normal Mod", callback_data="rd|normal")]
+    return InlineKeyboardMarkup([row1, row2, row3])
+
+
+# ─── Persistent Reply Keyboard (Main Menu) ─────────────────────────────────
+
+_TR_TZ = timezone(timedelta(hours=3))
+_TR_DAYS = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("📚 Ders Çalış"), KeyboardButton("📊 Notlarım")],
+        [KeyboardButton("📅 Bugün"), KeyboardButton("📅 Bu Hafta")],
+        [KeyboardButton("📬 Mailler"), KeyboardButton("📝 Ödevler")],
+        [KeyboardButton("🔄 Sync"), KeyboardButton("⚙️ Ayarlar")],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+
+def _reading_resume_button() -> InlineKeyboardMarkup:
+    """Single 'Return to reading' button for seamless switching."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("▶️ Okumaya Dön", callback_data="rd|resume")]
+    ])
 
 
 # ─── Bug #3: Topic Menu Detection ──────────────────────────────────────────
@@ -842,52 +931,54 @@ class _TypingIndicator:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await owner_only(update):
         return
-    stats = vector_store.get_stats()
     await update.message.reply_text(
-        f"🎓 <b>Moodle AI Asistan</b>\n\n"
-        f"📦 {stats.get('total_chunks', 0)} chunk | "
-        f"📚 {stats.get('unique_courses', 0)} kurs\n\n"
-        f"Benimle doğal konuşarak her şeyi yapabilirsin:\n\n"
-        f"💬 <b>Örnekler:</b>\n"
-        f'• "Buffer overflow nedir?" → Açıklar, soru sorar\n'
-        f'• "Notlarım nasıl?" → STARS verilerinden cevaplar\n'
-        f'• "Ödevlerim ne?" → Bekleyen ödevleri gösterir\n'
-        f'• "Maillerimi kontrol et" → Son mailleri listeler\n'
-        f'• "CS 453 çalışacağım" → Konu konu öğretir\n\n'
-        f"<b>Komutlar:</b>\n"
-        f"/login — STARS giriş\n"
-        f"/sync — Materyalleri güncelle\n"
-        f"/temizle — Oturumu sıfırla",
+        "👋 Merhaba!\n\n"
+        "📚 /calis — Kaynak seçip bölüm bölüm öğren\n"
+        "📊 /notlar — Akademik durumunu gör\n"
+        "📅 /bugun — Bugünkü derslerini kontrol et\n"
+        "📬 /mail — Son bildirimleri oku\n\n"
+        "💬 İstediğin zaman yazarak soru sorabilirsin!\n"
+        "📖 /help — Tüm komutlar",
         parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_keyboard(),
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await owner_only(update):
         return
-    await update.message.reply_text(
+    uid = update.effective_user.id
+    state = _get_user_state(uid)
+
+    help_text = (
         "📖 <b>Nasıl Kullanılır?</b>\n\n"
-        "Doğal konuşarak her şeyi yapabilirsin:\n\n"
-        "<b>Ders çalışma:</b>\n"
-        '• "CTIS 353 çalışacağım" → Konu konu öğretir\n'
-        '• "devam et" → Sonraki kavrama geçer\n'
-        '• "anlamadım" → Farklı açıdan anlatır\n\n'
-        "<b>Akademik bilgi:</b>\n"
-        '• "notlarım nasıl?" → STARS verilerinden cevaplar\n'
-        '• "sınavlarım ne zaman?" → Sınav takvimi\n'
-        '• "bugün dersim var mı?" → Ders programı\n\n'
-        "<b>Hızlı işlemler:</b>\n"
-        '• "maillerimi kontrol et" → Son mailler\n'
-        '• "ödevlerim ne?" → Bekleyen ödevler\n'
-        '• "sync yap" → Materyalleri güncelle\n\n'
-        "<b>Komutlar:</b>\n"
-        "/menu — Kurs listesi + özet\n"
-        "/login — STARS giriş\n"
-        "/temizle — Sohbet geçmişini sıfırla",
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_keyboard(),
+        "📚 <b>Okuma Modu:</b>\n"
+        "• /calis → Ders seç → Kaynak seç\n"
+        "• [▶️ Devam Et] → Sonraki bölüm\n"
+        "• [◀️ Geri] → Önceki bölüm\n"
+        "• [🧠 Quiz] → Okuduklarından soru\n"
+        "• [✅ Bitir] → Okumayı bitir\n"
+        "• [💬 Normal Mod] → Normal moda geç\n"
+        "• Yazarak da soru sorabilirsin\n\n"
+        "💬 <b>Normal Mod:</b>\n"
+        "• Yazarak soru sor → RAG + genel bilgi\n"
+        "• /notlar → Akademik durum\n"
+        "• /bugun → Bugünkü dersler\n"
+        "• /haftam → Haftalık program\n"
+        "• /mail → Son bildirimler\n"
+        "• /odevler → Ödev durumu\n\n"
+        "🔧 <b>Diğer:</b>\n"
+        "• /sync → Materyalleri güncelle\n"
+        "• /temizle → Sohbeti sıfırla"
     )
+
+    if state.get("reading_mode"):
+        help_text += "\n\n📖 <i>Şu anda okuma modundasın.</i>"
+    elif state.get("reading_paused"):
+        f_name = state.get("reading_file_display", "")
+        help_text += f'\n\n⏸️ <i>{f_name} duraklatıldı. "devam et" yazarak dönebilirsin.</i>'
+
+    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML, reply_markup=MAIN_KEYBOARD)
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1167,6 +1258,102 @@ def _format_assignments() -> str:
 
     lines.append(f"\n───────────────")
     lines.append(f"📊 Toplam: {len(assignments)} | Bekleyen: {len(pending)} | Geçmiş: {len(overdue)} | Teslim: {len(submitted)}")
+
+    return "\n".join(lines)
+
+
+# ─── Persistent Keyboard Formatters ──────────────────────────────────────────
+
+def _format_today_schedule(cache, now) -> str:
+    today_name = _TR_DAYS[now.weekday()]
+    tomorrow_name = _TR_DAYS[(now.weekday() + 1) % 7]
+
+    if not cache.schedule:
+        return f"📅 <b>{today_name}</b>\n\nDers programı bilgisi yok. /login ile STARS'a giriş yap."
+
+    today_entries = sorted(
+        [e for e in cache.schedule if e.get("day") == today_name],
+        key=lambda e: e.get("time", ""),
+    )
+    tomorrow_entries = sorted(
+        [e for e in cache.schedule if e.get("day") == tomorrow_name],
+        key=lambda e: e.get("time", ""),
+    )
+
+    lines = [f"📅 <b>{today_name}</b>\n"]
+
+    if not today_entries:
+        lines.append("🎉 Bugün ders yok!")
+    else:
+        for e in today_entries:
+            room = f" — {e.get('room', '')}" if e.get("room") else ""
+            lines.append(f"  🕐 <b>{e.get('time', '?')}</b>  {e.get('course', '?')}{room}")
+
+    if tomorrow_entries:
+        lines.append(f"\n📅 <b>Yarın ({tomorrow_name})</b>")
+        for e in tomorrow_entries:
+            room = f" — {e.get('room', '')}" if e.get("room") else ""
+            lines.append(f"  🕐 <b>{e.get('time', '?')}</b>  {e.get('course', '?')}{room}")
+    elif (now.weekday() + 1) % 7 < 5:
+        lines.append(f"\n📅 Yarın ({tomorrow_name}): Ders yok")
+
+    return "\n".join(lines)
+
+
+def _format_week_schedule(cache, now) -> str:
+    days_order = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma"]
+    today_name = _TR_DAYS[now.weekday()]
+
+    if not cache.schedule:
+        return "📅 <b>Haftalık Program</b>\n\nDers programı bilgisi yok. /login ile STARS'a giriş yap."
+
+    by_day: dict[str, list] = {}
+    for entry in cache.schedule:
+        day = entry.get("day", "?")
+        by_day.setdefault(day, []).append(entry)
+
+    lines = ["📅 <b>Haftalık Ders Programı</b>\n"]
+    for day in days_order:
+        entries = sorted(by_day.get(day, []), key=lambda e: e.get("time", ""))
+        marker = " ◀️" if day == today_name else ""
+        lines.append(f"\n<b>{day}</b>{marker}")
+        if not entries:
+            lines.append("  — Ders yok")
+        else:
+            for e in entries:
+                room = f" ({e.get('room', '')})" if e.get("room") else ""
+                lines.append(f"  🕐 {e.get('time', '?')}  {e.get('course', '?')}{room}")
+
+    return "\n".join(lines)
+
+
+def _format_grades_summary(cache) -> str:
+    info = cache.user_info or {}
+    cgpa = info.get("cgpa", "?")
+    standing = info.get("standing", "?")
+    student_class = info.get("class", "?")
+
+    lines = [
+        "📊 <b>Akademik Durum</b>\n",
+        f"🎓 CGPA: <b>{cgpa}</b> | {standing} | {student_class}\n",
+    ]
+
+    if cache.grades:
+        lines.append("<b>Ders Notları:</b>")
+        for g in cache.grades:
+            course = g.get("course", "?")
+            items = g.get("items", g.get("assessments", []))
+            if items:
+                scores = ", ".join(f"{it.get('name', '?')}: {it.get('grade', '?')}" for it in items[:5])
+                lines.append(f"  📚 <b>{course}</b>: {scores}")
+
+    if cache.attendance:
+        lines.append("\n<b>Devamsızlık:</b>")
+        for a in cache.attendance:
+            lines.append(f"  📋 {a.get('course', '?')}: {a.get('ratio', '?')}")
+
+    if cache.exams:
+        lines.append(f"\n📅 {len(cache.exams)} yaklaşan sınav")
 
     return "\n".join(lines)
 
@@ -1741,13 +1928,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         state["reading_position"] = len(batch)
+        state["reading_chunks_read"] = [c.get("id", "") for c in batch]
         progress = _format_progress(state["reading_position"], total)
 
         await query.edit_message_text("📖 Okuma modu başlatılıyor...")
-
-        extra_sys = _READING_MODE_INSTRUCTION
-        if not state["socratic_mode"]:
-            extra_sys += "\n" + _NO_SOCRATIC_INSTRUCTION
 
         response = await asyncio.to_thread(
             llm.chat_with_history,
@@ -1755,13 +1939,366 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context_chunks=batch,
             study_mode=True,
             extra_context=_build_file_summaries_context(course=course),
-            extra_system=extra_sys,
+            extra_system=_READING_MODE_INSTRUCTION,
         )
 
-        footer = _format_source_footer(batch, "reading")
-        text = f"{progress}\n📚 <b>{display}</b>\n\n{response}{footer}\n\nDevam etmek için \"devam et\" yaz."
-        await send_long_message(update, text, parse_mode=ParseMode.HTML)
+        footer = _reading_source_footer(state)
+        buttons = _reading_buttons(state)
+        mode_notice = "📖 <i>Okuma moduna geçildi. Normal moda dönmek için</i> [💬 Normal Mod] <i>butonunu kullan.</i>\n\n"
+        text = f"{mode_notice}{progress}\n\n📚 <b>{display}</b>\n\n{response}{footer}"
+        await send_long_message(update, text, parse_mode=ParseMode.HTML, reply_markup=buttons)
         save_to_history(uid, f"[Dosya seçildi: {filename}]", response, active_course=course)
+        return
+
+    # ─── Course Selection callbacks (cs|back, cs|{shortname}) ────────────
+    if data.startswith("cs|"):
+        cs_action = data[3:]
+        uid = query.from_user.id
+        state = _get_user_state(uid)
+
+        if cs_action == "back":
+            _reset_reading_mode(state)
+            courses = llm.moodle_courses if llm else []
+            if not courses:
+                await query.edit_message_text("📚 Kurs bilgisi yok. /sync ile güncelle.")
+                return
+
+            keyboard = []
+            for c in courses:
+                short = c["shortname"].split("-")[0].strip()
+                cb_data = f"cs|{short[:58]}"
+                keyboard.append([InlineKeyboardButton(f"📚 {short}", callback_data=cb_data)])
+
+            await query.edit_message_text(
+                "📚 <b>Hangi dersi çalışmak istersin?</b>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return
+
+        # cs|{shortname_prefix} → show files for that course
+        courses = llm.moodle_courses if llm else []
+        matched_course = None
+        for c in courses:
+            short = c["shortname"].split("-")[0].strip()
+            if short == cs_action or cs_action.startswith(short) or short.startswith(cs_action):
+                matched_course = c
+                break
+
+        if not matched_course:
+            await query.edit_message_text("❌ Kurs bulunamadı.", reply_markup=back_keyboard())
+            return
+
+        state["current_course"] = matched_course["fullname"]
+        course_files = vector_store.get_files_for_course(course_name=matched_course["fullname"])
+
+        if not course_files:
+            short = matched_course["shortname"].split("-")[0].strip()
+            await query.edit_message_text(
+                f"📚 <b>{short}</b>\n\n⚠️ Bu ders için materyal yok.\n/sync ile güncelle.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀️ Ders Listesi", callback_data="cs|back")]
+                ]),
+            )
+            return
+
+        header, markup = _format_topic_menu(matched_course["fullname"], course_files)
+        state["awaiting_topic_selection"] = True
+        await query.edit_message_text(header, parse_mode=ParseMode.HTML, reply_markup=markup)
+        return
+
+    # ─── STARS detail callbacks (srs|grades_detail, srs|attendance) ──────
+    if data.startswith("srs|"):
+        srs_action = data[4:]
+        uid = query.from_user.id
+        cache = stars_client.get_cache(uid)
+
+        if not cache or not cache.fetched_at:
+            await query.edit_message_text("❌ STARS verisi yok. /login ile giriş yap.")
+            return
+
+        if srs_action == "grades_detail":
+            lines = ["📊 <b>Not Detayları</b>\n"]
+            if cache.grades:
+                for g in cache.grades:
+                    course = g.get("course", "?")
+                    lines.append(f"\n📚 <b>{course}</b>")
+                    items = g.get("items", g.get("assessments", []))
+                    for it in items:
+                        name = it.get("name", "?")
+                        grade = it.get("grade", "?")
+                        weight = it.get("weight", "")
+                        weight_str = f" (%{weight})" if weight else ""
+                        lines.append(f"  • {name}: <b>{grade}</b>{weight_str}")
+            else:
+                lines.append("Henüz not bilgisi yok.")
+
+            await query.edit_message_text(
+                "\n".join(lines),
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀️ Geri", callback_data="srs|back")]
+                ]),
+            )
+            return
+
+        if srs_action == "attendance":
+            lines = ["📋 <b>Devamsızlık Detayları</b>\n"]
+            if cache.attendance:
+                for a in cache.attendance:
+                    course = a.get("course", "?")
+                    ratio = a.get("ratio", "?")
+                    records = a.get("records", [])
+                    lines.append(f"\n📚 <b>{course}</b> — {ratio}")
+                    for r in records[-5:]:
+                        date = r.get("date", "?")
+                        attended = r.get("attended", True)
+                        emoji = "✅" if attended else "❌"
+                        title = r.get("title", "")
+                        lines.append(f"  {emoji} {date} {title}")
+            else:
+                lines.append("Devamsızlık bilgisi yok.")
+
+            await query.edit_message_text(
+                "\n".join(lines),
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀️ Geri", callback_data="srs|back")]
+                ]),
+            )
+            return
+
+        if srs_action == "back":
+            text = _format_grades_summary(cache)
+            keyboard = [
+                [
+                    InlineKeyboardButton("📊 Not Detayları", callback_data="srs|grades_detail"),
+                    InlineKeyboardButton("📋 Devamsızlık", callback_data="srs|attendance"),
+                ],
+            ]
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return
+
+    # ─── Settings callbacks (set|socratic, set|clear) ────────────────────
+    if data.startswith("set|"):
+        set_action = data[4:]
+        uid = query.from_user.id
+        state = _get_user_state(uid)
+
+        if set_action == "socratic":
+            state["socratic_mode"] = not state["socratic_mode"]
+            status = "AÇIK" if state["socratic_mode"] else "KAPALI"
+            state["seen_chunk_ids"] = []
+
+            socratic_label = f"🧠 Sokratik: {status}"
+            keyboard = [
+                [InlineKeyboardButton(socratic_label, callback_data="set|socratic")],
+                [InlineKeyboardButton("🗑️ Geçmişi Temizle", callback_data="set|clear")],
+            ]
+            await query.edit_message_text(
+                f"⚙️ <b>Ayarlar</b>\n\n🧠 Sokratik mod: <b>{status}</b>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return
+
+        if set_action == "clear":
+            conversation_history.pop(uid, None)
+            _user_state.pop(uid, None)
+            _save_conversation_history()
+            await query.edit_message_text(
+                "🗑️ Sohbet geçmişi temizlendi.",
+                reply_markup=back_keyboard(),
+            )
+            return
+
+    # ─── Reading Mode: Navigation callbacks ───────────────────────────────
+    if data.startswith("rd|"):
+        action = data[3:]
+        uid = query.from_user.id
+        state = _get_user_state(uid)
+
+        # rd|resume can come from paused state (reading_mode=False, reading_paused=True)
+        if action == "resume":
+            if not state.get("reading_paused") and not state.get("reading_mode"):
+                await query.edit_message_text("❌ Aktif okuma bulunamadı.")
+                return
+            # Restore reading mode from paused
+            if state.get("reading_paused"):
+                state["reading_mode"] = True
+                state["reading_paused"] = False
+            display = state.get("reading_file_display") or state.get("reading_file", "")
+            progress = _format_progress(state["reading_position"], state["reading_total"])
+            show_back = state["reading_position"] > READING_BATCH_SIZE
+            buttons = _reading_buttons(state, show_back=show_back)
+            footer = _reading_source_footer(state)
+            await query.edit_message_text(
+                f"{progress}\n📚 <b>{display}</b>\n\nKaldığın yerden devam edebilirsin.{footer}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=buttons,
+            )
+            return
+
+        if not state.get("reading_mode"):
+            await query.edit_message_text("❌ Okuma modu aktif değil.")
+            return
+
+        course = state.get("current_course")
+        display = state.get("reading_file_display") or state.get("reading_file", "")
+
+        # ── rd|normal → duraklatıp normal moda geç
+        if action == "normal":
+            state["reading_paused"] = True
+            state["reading_mode"] = False
+            pos = state["reading_position"]
+            total = state["reading_total"]
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📖 Okumaya Dön", callback_data="rd|resume")]
+            ])
+            await query.edit_message_text(
+                f"💬 Normal moda geçildi.\n\n"
+                f"📖 <i>{display} ({pos}/{total}) duraklatıldı. "
+                f"Devam etmek için</i> [📖 Okumaya Dön] <i>butonunu kullan.</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+            return
+
+        # ── rd|next → sonraki batch
+        if action == "next":
+            await query.answer()
+            batch = _get_reading_batch(state["reading_file"], state["reading_position"])
+
+            if not batch:
+                msg_text = _format_completion_message(state)
+                footer = _reading_source_footer(state)
+                buttons = _reading_buttons(state, completed=True)
+                await send_long_message(update, f"{msg_text}{footer}", parse_mode=ParseMode.HTML, reply_markup=buttons)
+                return
+
+            state["reading_position"] += len(batch)
+            state["reading_chunks_read"].extend(c.get("id", "") for c in batch)
+            progress = _format_progress(state["reading_position"], state["reading_total"])
+
+            history = get_conversation_history(uid, limit=4)
+            llm_history = history + [{"role": "user", "content": "Devam et, sonraki bölümü öğret."}]
+
+            response = await asyncio.to_thread(
+                llm.chat_with_history,
+                messages=llm_history,
+                context_chunks=batch,
+                study_mode=True,
+                extra_context=_build_file_summaries_context(course=course),
+                extra_system=_READING_MODE_INSTRUCTION,
+            )
+
+            footer = _reading_source_footer(state)
+            buttons = _reading_buttons(state, show_back=True)
+            text = f"{progress}\n📚 <b>{display}</b>\n\n{response}{footer}"
+            await send_long_message(update, text, parse_mode=ParseMode.HTML, reply_markup=buttons)
+            save_to_history(uid, "[Devam et]", response, active_course=course)
+            return
+
+        # ── rd|back → önceki batch
+        if action == "back":
+            await query.answer()
+            new_pos = max(0, state["reading_position"] - READING_BATCH_SIZE * 2)
+            batch = _get_reading_batch(state["reading_file"], new_pos)
+
+            if not batch:
+                await query.message.reply_text("📖 Zaten başlangıçtasınız.")
+                return
+
+            state["reading_position"] = new_pos + len(batch)
+            progress = _format_progress(state["reading_position"], state["reading_total"])
+
+            history = get_conversation_history(uid, limit=4)
+            llm_history = history + [{"role": "user", "content": "Önceki bölümü tekrar anlat."}]
+
+            response = await asyncio.to_thread(
+                llm.chat_with_history,
+                messages=llm_history,
+                context_chunks=batch,
+                study_mode=True,
+                extra_context=_build_file_summaries_context(course=course),
+                extra_system=_READING_MODE_INSTRUCTION,
+            )
+
+            footer = _reading_source_footer(state)
+            show_back = state["reading_position"] > READING_BATCH_SIZE
+            buttons = _reading_buttons(state, show_back=show_back)
+            text = f"{progress}\n📚 <b>{display}</b>\n\n{response}{footer}"
+            await send_long_message(update, text, parse_mode=ParseMode.HTML, reply_markup=buttons)
+            save_to_history(uid, "[Geri]", response, active_course=course)
+            return
+
+        # ── rd|quiz → okunan bölümlerden quiz
+        if action == "quiz":
+            await query.answer()
+            # Use reading_chunks_read for comprehensive quiz
+            chunks_read = state.get("reading_chunks_read", [])
+            if chunks_read:
+                read_chunks = []
+                for idx, _id in enumerate(vector_store._ids):
+                    if _id in chunks_read:
+                        read_chunks.append({
+                            "id": _id,
+                            "text": vector_store._texts[idx],
+                            "metadata": vector_store._metadatas[idx],
+                            "distance": 0.0,
+                        })
+                read_chunks = read_chunks[-10:]
+            else:
+                all_chunks = vector_store.get_file_chunks(state["reading_file"])
+                read_chunks = all_chunks[:state["reading_position"]][-10:]
+
+            if not read_chunks:
+                await query.message.reply_text('Henüz bir bölüm okumadık. Önce [▶️ Devam Et] ile başla!')
+                return
+
+            response = await asyncio.to_thread(
+                llm.chat_with_history,
+                messages=[{"role": "user", "content": "Okuduğumuz bölümlerden beni test et."}],
+                context_chunks=read_chunks,
+                study_mode=True,
+                extra_system=_QUIZ_INSTRUCTION,
+            )
+
+            state["quiz_active"] = True
+            footer = _reading_source_footer(state)
+
+            nav = []
+            if state["reading_position"] < state["reading_total"]:
+                nav.append(InlineKeyboardButton("▶️ Okumaya Dön", callback_data="rd|next"))
+            nav.append(InlineKeyboardButton("🧠 Başka Soru", callback_data="rd|quiz"))
+
+            await send_long_message(
+                update, f"🧠 <b>Quiz</b>\n\n{response}{footer}\n\n<i>Cevabını yaz...</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([nav]),
+            )
+            save_to_history(uid, "[Quiz]", response, active_course=course)
+            return
+
+        # ── rd|finish → okumayı tamamen bitir, normal moda dön
+        if action == "finish":
+            file_name = state.get("reading_file_display") or state.get("reading_file", "")
+            pos = state["reading_position"]
+            total = state["reading_total"]
+            _reset_reading_mode(state)
+
+            await query.edit_message_text(
+                f"📖 <b>{file_name}</b> — {pos}/{total} bölüm okundu.\n\n"
+                "💬 Normal moda döndün. Soru sorabilir veya /calis ile başka kaynak seçebilirsin.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
         return
 
 
@@ -1893,6 +2430,23 @@ _ASSIGNMENT_KEYWORDS = {
 _SYNC_KEYWORDS = {"sync", "senkron", "moodle kontrol", "yeni materyal", "yeni kaynak"}
 
 _MAIL_KEYWORDS = {"mail", "posta", "e-posta", "email"}
+
+# SRS data queries that should bypass reading mode (no PDF sources)
+_SRS_BYPASS_KEYWORDS = {
+    "devamsızlık", "yoklama", "katılım",
+    "notum", "notlarım", "kaldım", "geçtim",
+    "cgpa", "gpa", "ortalama", "transkript",
+    "ödev", "teslim", "deadline",
+    "ders programı", "ders saati", "kaçta",
+    "bugün", "yarın", "hangi ders",
+    "mail", "posta", "e-posta",
+}
+
+
+def _is_srs_bypass(msg: str) -> bool:
+    """True if msg is an SRS data query that should skip reading mode."""
+    msg_l = msg.lower()
+    return any(k in msg_l for k in _SRS_BYPASS_KEYWORDS)
 
 
 def _should_inject_stars(msg: str) -> bool:
@@ -2099,6 +2653,153 @@ async def _handle_mail_keyword(update: Update, uid: int, user_msg: str):
         await msg.edit_text(f"⚠️ Mail hatası: {e}")
 
 
+# ─── Persistent Keyboard Button Handlers ──────────────────────────────────────
+
+
+async def _handle_study_menu(update: Update, uid: int, state: dict):
+    """📚 Ders Çalış — show course list via InlineKeyboard."""
+    courses = llm.moodle_courses if llm else []
+    if not courses:
+        await update.message.reply_text("📚 Henüz kurs bilgisi yok. /sync ile güncelle.")
+        return
+
+    keyboard = []
+    for c in courses:
+        short = c["shortname"].split("-")[0].strip()
+        cb_data = f"cs|{short[:58]}"
+        keyboard.append([InlineKeyboardButton(f"📚 {short}", callback_data=cb_data)])
+
+    markup = InlineKeyboardMarkup(keyboard)
+    text = "📚 <b>Hangi dersi çalışmak istersin?</b>"
+    if state.get("reading_mode") or state.get("reading_paused"):
+        text += "\n\n💡 <i>Ders seçersen okuma modu sıfırlanır.</i>"
+
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+async def _handle_grades(update: Update, uid: int, state: dict):
+    """📊 Notlarım — STARS grades + CGPA + attendance summary."""
+    cache = stars_client.get_cache(uid)
+    if not cache or not cache.fetched_at:
+        await update.message.reply_text("❌ STARS'a giriş yapmadın. /login ile giriş yap.")
+        return
+
+    text = _format_grades_summary(cache)
+    keyboard = [
+        [
+            InlineKeyboardButton("📊 Not Detayları", callback_data="srs|grades_detail"),
+            InlineKeyboardButton("📋 Devamsızlık", callback_data="srs|attendance"),
+        ],
+    ]
+    if state.get("reading_mode") or state.get("reading_paused"):
+        keyboard.append([InlineKeyboardButton("📖 Okumaya Dön", callback_data="rd|resume")])
+
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _handle_today_schedule(update: Update, uid: int, state: dict):
+    """📅 Bugün — today's lessons."""
+    cache = stars_client.get_cache(uid)
+    if not cache or not cache.fetched_at:
+        await update.message.reply_text("❌ STARS'a giriş yapmadın. /login ile giriş yap.")
+        return
+
+    now = datetime.now(_TR_TZ)
+    text = _format_today_schedule(cache, now)
+    reply_markup = _reading_resume_button() if (state.get("reading_mode") or state.get("reading_paused")) else None
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+
+async def _handle_week_schedule(update: Update, uid: int, state: dict):
+    """📅 Bu Hafta — full week schedule."""
+    cache = stars_client.get_cache(uid)
+    if not cache or not cache.fetched_at:
+        await update.message.reply_text("❌ STARS'a giriş yapmadın. /login ile giriş yap.")
+        return
+
+    now = datetime.now(_TR_TZ)
+    text = _format_week_schedule(cache, now)
+    reply_markup = _reading_resume_button() if (state.get("reading_mode") or state.get("reading_paused")) else None
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+
+async def _handle_mail_button(update: Update, uid: int, state: dict):
+    """📬 Mailler — delegate to existing mail handler."""
+    await _handle_mail_keyword(update, uid, "📬 Mailler")
+
+
+async def _handle_homework(update: Update, uid: int, state: dict):
+    """📝 Ödevler — assignment status."""
+    text = _format_assignments()
+    reply_markup = _reading_resume_button() if (state.get("reading_mode") or state.get("reading_paused")) else back_keyboard()
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+
+async def _handle_sync_button(update: Update, uid: int, state: dict):
+    """🔄 Sync — delegate to existing sync handler."""
+    await _handle_sync_keyword(update, uid, "🔄 Sync")
+
+
+async def _handle_settings(update: Update, uid: int, state: dict):
+    """⚙️ Ayarlar — settings panel."""
+    socratic_label = "🧠 Sokratik: AÇIK" if state["socratic_mode"] else "🧠 Sokratik: KAPALI"
+    keyboard = [
+        [InlineKeyboardButton(socratic_label, callback_data="set|socratic")],
+        [InlineKeyboardButton("🗑️ Geçmişi Temizle", callback_data="set|clear")],
+    ]
+    await update.message.reply_text(
+        "⚙️ <b>Ayarlar</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+BUTTON_ROUTES = {
+    "📚 Ders Çalış": _handle_study_menu,
+    "📊 Notlarım":   _handle_grades,
+    "📅 Bugün":      _handle_today_schedule,
+    "📅 Bu Hafta":   _handle_week_schedule,
+    "📬 Mailler":    _handle_mail_button,
+    "📝 Ödevler":    _handle_homework,
+    "🔄 Sync":       _handle_sync_button,
+    "⚙️ Ayarlar":    _handle_settings,
+}
+
+
+# ─── Slash Command Wrappers (reuse button handlers) ──────────────────────────
+
+async def cmd_calis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await owner_only(update):
+        return
+    uid = update.effective_user.id
+    state = _get_user_state(uid)
+    await _handle_study_menu(update, uid, state)
+
+
+async def cmd_notlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await owner_only(update):
+        return
+    uid = update.effective_user.id
+    state = _get_user_state(uid)
+    await _handle_grades(update, uid, state)
+
+
+async def cmd_bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await owner_only(update):
+        return
+    uid = update.effective_user.id
+    state = _get_user_state(uid)
+    await _handle_today_schedule(update, uid, state)
+
+
+async def cmd_haftam(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await owner_only(update):
+        return
+    uid = update.effective_user.id
+    state = _get_user_state(uid)
+    await _handle_week_schedule(update, uid, state)
+
+
 # ─── Main Chat Handler ────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2117,6 +2818,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.message.chat_id
+
+    # ── Layer 0: Persistent Reply Keyboard button routing ──
+    state = _get_user_state(uid)
+    _btn_handler = BUTTON_ROUTES.get(user_msg.strip())
+    if _btn_handler:
+        await _btn_handler(update, uid, state)
+        return
 
     # ── STARS SMS verification intercept ──
     if stars_client.is_awaiting_sms(uid):
@@ -2154,9 +2862,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_mail_keyword(update, uid, user_msg)
         return
 
-    # ── Per-user conversation state ──
-    state = _get_user_state(uid)
-
     # ── Bug #1: Socratic mode toggle ──
     socratic_ack = _check_socratic_toggle(user_msg, state)
     if socratic_ack:
@@ -2169,125 +2874,213 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(stripped.split()) < 2:
             return
 
-    # ── Continue command detection ──
-    is_continue = _is_continue_command(user_msg)
-
-    # ── Reading Mode Intercept ──
+    # ══════════════════════════════════
+    # OKUMA MODU AKTİFSE → ayrı handler
+    # ══════════════════════════════════
     if state.get("reading_mode"):
-        temp_course = detect_active_course(user_msg, uid)
-        if temp_course and temp_course != state.get("current_course"):
-            _reset_reading_mode(state)
-            state["current_course"] = temp_course
-            # Fall through to normal flow (course menu etc.)
-        else:
-            typing = _TypingIndicator(update.get_bot(), chat_id)
-            typing.start()
-            try:
-                # Reading: "devam et" → sequential chunk
-                if is_continue:
-                    batch = _get_reading_batch(state["reading_file"], state["reading_position"])
+        typing = _TypingIndicator(update.get_bot(), chat_id)
+        typing.start()
+        try:
+            course = state.get("current_course")
 
-                    if not batch:
-                        typing.stop()
-                        msg_text = _format_completion_message(state)
-                        await send_long_message(update, msg_text, parse_mode=ParseMode.HTML)
-                        save_to_history(uid, user_msg, "[Dosya tamamlandı]", active_course=state.get("current_course"))
-                        return
-
-                    state["reading_position"] += len(batch)
-                    progress = _format_progress(state["reading_position"], state["reading_total"])
-
-                    history = get_conversation_history(uid, limit=4)
-                    llm_history = history + [{"role": "user", "content": "Devam et, sonraki bölümü öğret."}]
-
-                    extra_sys = _READING_MODE_INSTRUCTION
-                    if not state["socratic_mode"]:
-                        extra_sys += "\n" + _NO_SOCRATIC_INSTRUCTION
-
-                    response = await asyncio.to_thread(
-                        llm.chat_with_history,
-                        messages=llm_history,
-                        context_chunks=batch,
-                        study_mode=True,
-                        extra_context=_build_file_summaries_context(course=state.get("current_course")),
-                        extra_system=extra_sys,
-                    )
-
-                    footer = _format_source_footer(batch, "reading")
-                    display = f"{progress}\n📚 <b>{state['reading_file_display']}</b>\n\n{response}{footer}"
-                    typing.stop()
-                    await send_long_message(update, display, parse_mode=ParseMode.HTML)
-                    save_to_history(uid, user_msg, response, active_course=state.get("current_course"))
-                    return
-
-                # Reading: "beni test et" → quiz from read chunks
-                if _is_test_command(user_msg):
+            # Quiz cevabı
+            if state.get("quiz_active"):
+                state["quiz_active"] = False
+                chunks_read = state.get("reading_chunks_read", [])
+                if chunks_read:
+                    read_chunks = []
+                    for idx, _id in enumerate(vector_store._ids):
+                        if _id in chunks_read:
+                            read_chunks.append({"id": _id, "text": vector_store._texts[idx], "metadata": vector_store._metadatas[idx], "distance": 0.0})
+                    context_chunks = read_chunks[-10:]
+                else:
                     all_chunks = vector_store.get_file_chunks(state["reading_file"])
-                    read_chunks = all_chunks[:state["reading_position"]]
+                    context_chunks = all_chunks[:state["reading_position"]][-10:]
 
-                    if not read_chunks:
-                        typing.stop()
-                        await update.message.reply_text('Henüz bir bölüm okumadık. Önce "devam et" ile başla!')
-                        return
+                response = await asyncio.to_thread(
+                    llm.chat_with_history,
+                    messages=[{"role": "user", "content": f"Öğrencinin cevabı: {user_msg}"}],
+                    context_chunks=context_chunks,
+                    study_mode=True,
+                    extra_system=_QUIZ_EVAL_INSTRUCTION,
+                )
+                footer = _reading_source_footer(state)
+                nav = []
+                if state["reading_position"] < state["reading_total"]:
+                    nav.append(InlineKeyboardButton("▶️ Okumaya Dön", callback_data="rd|next"))
+                nav.append(InlineKeyboardButton("🧠 Başka Soru", callback_data="rd|quiz"))
+                typing.stop()
+                await send_long_message(update, f"📝 {response}{footer}", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([nav]))
+                save_to_history(uid, user_msg, response, active_course=course)
+                return
 
-                    response = await asyncio.to_thread(
-                        llm.chat_with_history,
-                        messages=[{"role": "user", "content": "Okuduğumuz bölümlerden beni test et."}],
-                        context_chunks=read_chunks[-10:],
-                        study_mode=True,
-                        extra_system=_QUIZ_INSTRUCTION,
-                    )
-
+            # "devam et" → sonraki chunk
+            if _is_continue_command(user_msg):
+                batch = _get_reading_batch(state["reading_file"], state["reading_position"])
+                if not batch:
                     typing.stop()
-                    footer = _format_source_footer(read_chunks[-10:], "quiz")
-                    await send_long_message(update, f"🧠 {response}{footer}", parse_mode=ParseMode.HTML)
-                    save_to_history(uid, user_msg, response, active_course=state.get("current_course"))
+                    msg_text = _format_completion_message(state)
+                    footer = _reading_source_footer(state)
+                    buttons = _reading_buttons(state, completed=True)
+                    await send_long_message(update, f"{msg_text}{footer}", parse_mode=ParseMode.HTML, reply_markup=buttons)
                     return
 
-                # Reading: free question → RAG (file scope) + recent read context
-                all_chunks = vector_store.get_file_chunks(state["reading_file"])
-                recent_read = all_chunks[max(0, state["reading_position"] - 5):state["reading_position"]]
-
-                rag_results = vector_store.hybrid_search(
-                    query=user_msg,
-                    n_results=10,
-                    course_filter=state.get("current_course"),
-                )
-                file_results = [r for r in rag_results if r.get("metadata", {}).get("filename") == state["reading_file"]]
-
-                seen_ids = {r["id"] for r in file_results}
-                for c in recent_read:
-                    if c["id"] not in seen_ids:
-                        file_results.append(c)
-                        seen_ids.add(c["id"])
-
+                state["reading_position"] += len(batch)
+                state["reading_chunks_read"].extend(c.get("id", "") for c in batch)
+                progress = _format_progress(state["reading_position"], state["reading_total"])
                 history = get_conversation_history(uid, limit=4)
-                llm_history = history + [{"role": "user", "content": user_msg}]
-
-                extra_sys = _READING_QA_INSTRUCTION
-                if not state["socratic_mode"]:
-                    extra_sys += "\n" + _NO_SOCRATIC_INSTRUCTION
+                llm_history = history + [{"role": "user", "content": "Devam et, sonraki bölümü öğret."}]
 
                 response = await asyncio.to_thread(
                     llm.chat_with_history,
                     messages=llm_history,
-                    context_chunks=file_results[:10],
+                    context_chunks=batch,
                     study_mode=True,
-                    extra_system=extra_sys,
+                    extra_context=_build_file_summaries_context(course=course),
+                    extra_system=_READING_MODE_INSTRUCTION,
                 )
-
+                footer = _reading_source_footer(state)
+                buttons = _reading_buttons(state, show_back=True)
                 typing.stop()
-                footer = _format_source_footer(file_results[:10], "rag_strong" if file_results else "general")
-                display = f"📚 {response}{footer}\n\n📖 Okumaya devam etmek için \"devam et\" yaz."
-                await send_long_message(update, display, parse_mode=ParseMode.HTML)
-                save_to_history(uid, user_msg, response, active_course=state.get("current_course"))
+                await send_long_message(
+                    update,
+                    f"{progress}\n📚 <b>{state['reading_file_display']}</b>\n\n{response}{footer}",
+                    parse_mode=ParseMode.HTML, reply_markup=buttons,
+                )
+                save_to_history(uid, user_msg, response, active_course=course)
                 return
 
-            except Exception as e:
+            # "beni test et" → quiz
+            if _is_test_command(user_msg):
+                chunks_read = state.get("reading_chunks_read", [])
+                if chunks_read:
+                    read_chunks = []
+                    for idx, _id in enumerate(vector_store._ids):
+                        if _id in chunks_read:
+                            read_chunks.append({"id": _id, "text": vector_store._texts[idx], "metadata": vector_store._metadatas[idx], "distance": 0.0})
+                    quiz_chunks = read_chunks[-10:]
+                else:
+                    all_chunks = vector_store.get_file_chunks(state["reading_file"])
+                    quiz_chunks = all_chunks[:state["reading_position"]][-10:]
+
+                if not quiz_chunks:
+                    typing.stop()
+                    await update.message.reply_text('Henüz bölüm okumadık. Önce [▶️ Devam Et] ile başla!')
+                    return
+
+                response = await asyncio.to_thread(
+                    llm.chat_with_history,
+                    messages=[{"role": "user", "content": "Okuduğumuz bölümlerden beni test et."}],
+                    context_chunks=quiz_chunks,
+                    study_mode=True,
+                    extra_system=_QUIZ_INSTRUCTION,
+                )
+                state["quiz_active"] = True
                 typing.stop()
-                logger.error(f"Reading mode error: {e}")
-                await update.message.reply_text(f"❌ Hata: {e}")
+                footer = _reading_source_footer(state)
+                nav = []
+                if state["reading_position"] < state["reading_total"]:
+                    nav.append(InlineKeyboardButton("▶️ Okumaya Dön", callback_data="rd|next"))
+                nav.append(InlineKeyboardButton("🧠 Başka Soru", callback_data="rd|quiz"))
+                await send_long_message(
+                    update, f"🧠 <b>Quiz</b>\n\n{response}{footer}\n\n<i>Cevabını yaz...</i>",
+                    parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([nav]),
+                )
+                save_to_history(uid, user_msg, response, active_course=course)
                 return
+
+            # Diğer her text → dosya-scoped soru
+            all_chunks = vector_store.get_file_chunks(state["reading_file"])
+            recent_read = all_chunks[max(0, state["reading_position"] - 5):state["reading_position"]]
+
+            file_results = vector_store.hybrid_search(
+                query=user_msg, n_results=10,
+                course_filter=course,
+                filename_filter=[state["reading_file"]],
+            )
+            seen_ids = {r["id"] for r in file_results}
+            for c in recent_read:
+                if c["id"] not in seen_ids:
+                    file_results.append(c)
+                    seen_ids.add(c["id"])
+
+            history = get_conversation_history(uid, limit=4)
+            llm_history = history + [{"role": "user", "content": user_msg}]
+
+            response = await asyncio.to_thread(
+                llm.chat_with_history,
+                messages=llm_history,
+                context_chunks=file_results[:10],
+                study_mode=True,
+                extra_system=_READING_QA_INSTRUCTION,
+            )
+            typing.stop()
+            footer = _reading_source_footer(state)
+            nav = []
+            if state["reading_position"] < state["reading_total"]:
+                nav.append(InlineKeyboardButton("▶️ Devam Et", callback_data="rd|next"))
+            nav.append(InlineKeyboardButton("💬 Normal Mod", callback_data="rd|normal"))
+            await send_long_message(update, f"📚 {response}{footer}", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([nav]))
+            save_to_history(uid, user_msg, response, active_course=course)
+            return
+
+        except Exception as e:
+            typing.stop()
+            logger.error(f"Reading mode error: {e}")
+            await update.message.reply_text(f"❌ Hata: {e}")
+            return
+
+    # ══════════════════════════════════
+    # NORMAL MOD
+    # ══════════════════════════════════
+
+    # Continue command detection
+    is_continue = _is_continue_command(user_msg)
+
+    # ── "devam et" in normal mode with paused reading → resume ──
+    if is_continue and state.get("reading_paused"):
+        state["reading_mode"] = True
+        state["reading_paused"] = False
+        # Re-enter reading mode flow (next batch)
+        typing = _TypingIndicator(update.get_bot(), chat_id)
+        typing.start()
+        try:
+            batch = _get_reading_batch(state["reading_file"], state["reading_position"])
+            if not batch:
+                typing.stop()
+                msg_text = _format_completion_message(state)
+                footer = _reading_source_footer(state)
+                buttons = _reading_buttons(state, completed=True)
+                await send_long_message(update, f"{msg_text}{footer}", parse_mode=ParseMode.HTML, reply_markup=buttons)
+                return
+
+            state["reading_position"] += len(batch)
+            state["reading_chunks_read"].extend(c.get("id", "") for c in batch)
+            progress = _format_progress(state["reading_position"], state["reading_total"])
+            display = state.get("reading_file_display") or state.get("reading_file", "")
+
+            response = await asyncio.to_thread(
+                llm.chat_with_history,
+                messages=[{"role": "user", "content": "Devam et, sonraki bölümü öğret."}],
+                context_chunks=batch,
+                study_mode=True,
+                extra_context=_build_file_summaries_context(course=state.get("current_course")),
+                extra_system=_READING_MODE_INSTRUCTION,
+            )
+            footer = _reading_source_footer(state)
+            buttons = _reading_buttons(state, show_back=True)
+            typing.stop()
+            await send_long_message(
+                update,
+                f"📖 <i>Okumaya devam ediliyor...</i>\n\n{progress}\n📚 <b>{display}</b>\n\n{response}{footer}",
+                parse_mode=ParseMode.HTML, reply_markup=buttons,
+            )
+            save_to_history(uid, user_msg, response, active_course=state.get("current_course"))
+            return
+        except Exception as e:
+            typing.stop()
+            await update.message.reply_text(f"❌ Hata: {e}")
+            return
 
     # ── Quiz without reading mode ──
     if _is_test_command(user_msg) and not state.get("reading_mode"):
@@ -2435,8 +3228,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         results = matched + others
                         logger.info(f"RAG file-filter: {len(matched)} from relevant files, {len(others)} others")
 
-                # Fallback: weak results → try all courses
-                if len(results) < 2 or top_score < 0.35:
+                # Fallback: NO results at all → try all courses (strict: only when 0 results)
+                if not results:
                     all_results = vector_store.hybrid_search(
                         query=smart_query, n_results=15, exclude_ids=exclude_ids,
                     )
@@ -2532,6 +3325,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"ℹ️ <b>{course_filter}</b> dersinin Moodle'da materyali yok. "
                     "Genel bilgimle yanıtlıyorum:\n\n"
                 ) + display_response
+
+        # Paused reading reminder
+        if state.get("reading_paused"):
+            f_name = state.get("reading_file_display", "")
+            p = state.get("reading_position", 0)
+            t = state.get("reading_total", 0)
+            display_response += f"\n\n⏸️ <i>{f_name} ({p}/{t}) duraklatıldı. \"devam et\" yazarak okumaya dönebilirsin.</i>"
 
         typing.stop()
         await send_long_message(update, display_response, parse_mode=ParseMode.HTML)
@@ -3061,6 +3861,10 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("calis", cmd_calis))
+    app.add_handler(CommandHandler("notlar", cmd_notlar))
+    app.add_handler(CommandHandler("bugun", cmd_bugun))
+    app.add_handler(CommandHandler("haftam", cmd_haftam))
     app.add_handler(CommandHandler("odevler", cmd_assignments))
     app.add_handler(CommandHandler("login", cmd_login))
     app.add_handler(CommandHandler("stars", cmd_stars))

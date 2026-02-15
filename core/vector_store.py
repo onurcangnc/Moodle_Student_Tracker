@@ -191,13 +191,18 @@ class VectorStore:
         n_results: int = 15,
         course_filter: Optional[str] = None,
         exclude_ids: Optional[set[str]] = None,
+        filename_filter: Optional[list[str]] = None,
     ) -> list[dict]:
         """RRF fusion of semantic (FAISS) + keyword (BM25) search."""
         # Fetch wider candidate pool; RRF will rank and trim to n_results
         extra = len(exclude_ids) if exclude_ids else 0
         fetch_k = (n_results + extra) * 2
-        semantic = self.query(query_text=query, n_results=fetch_k, course_filter=course_filter)
+        semantic = self.query(query_text=query, n_results=fetch_k, course_filter=course_filter, filename_filter=filename_filter)
         bm25 = self.bm25_search(query, n_results=fetch_k, course_filter=course_filter)
+
+        # Post-filter BM25 by filename (bm25_search doesn't support native filter)
+        if filename_filter:
+            bm25 = [r for r in bm25 if r.get("metadata", {}).get("filename") in filename_filter]
 
         if not bm25:
             results = semantic
