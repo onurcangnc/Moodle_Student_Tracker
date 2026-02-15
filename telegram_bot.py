@@ -87,6 +87,262 @@ _prev_stars_snapshot: dict = {}  # previous STARS state for diff-based notificat
 conversation_history: dict[int, dict] = {}
 CONV_HISTORY_FILE = Path(os.getenv("DATA_DIR", "./data")) / "conversation_history.json"
 
+# ─── Per-User Conversation State (session-only, not persisted) ──────────────
+
+# user_id → {socratic_mode, seen_chunk_ids, last_query, current_course, awaiting_topic_selection}
+_user_state: dict[int, dict] = {}
+
+
+def _get_user_state(uid: int) -> dict:
+    if uid not in _user_state:
+        _user_state[uid] = {
+            "socratic_mode": True,
+            "seen_chunk_ids": [],
+            "last_query": "",
+            "current_course": None,
+            "awaiting_topic_selection": False,
+            # Reading Mode
+            "reading_mode": False,
+            "reading_file": None,
+            "reading_file_display": None,
+            "reading_position": 0,
+            "reading_total": 0,
+        }
+    return _user_state[uid]
+
+
+def _reset_reading_mode(state: dict):
+    state["reading_mode"] = False
+    state["reading_file"] = None
+    state["reading_file_display"] = None
+    state["reading_position"] = 0
+    state["reading_total"] = 0
+
+
+def _start_reading_mode(state: dict, filename: str, display_name: str, total: int):
+    state["reading_mode"] = True
+    state["reading_file"] = filename
+    state["reading_file_display"] = display_name
+    state["reading_position"] = 0
+    state["reading_total"] = total
+    state["seen_chunk_ids"] = []
+    state["last_query"] = ""
+
+
+# ─── Bug #1: Socratic Mode Toggle ──────────────────────────────────────────
+
+_SOCRATIC_OFF_TRIGGERS = [
+    "soru sorma", "sadece anlat", "sadece öğret", "lecture mode",
+    "soru istemiyorum", "direkt anlat",
+]
+_SOCRATIC_ON_TRIGGERS = [
+    "soru sor", "soru sorabilirsin",
+    "socratic", "tartışalım",
+]
+
+_NO_SOCRATIC_INSTRUCTION = (
+    "KULLANICI SORU SORULMAMASINI İSTEDİ. Yanıtlarında ASLA soru sorma. "
+    '"Peki sence...?", "Ne düşünüyorsun?", "Nasıl yorumlarsın?", "Anladın mı?" gibi '
+    "soru kalıpları KULLANMA. Sadece bilgi ver, açıkla, öğret. "
+    'Yanıtı "Devam etmemi istersen yaz." ile bitir.'
+)
+
+
+def _check_socratic_toggle(msg: str, state: dict) -> str | None:
+    """Check if message toggles Socratic mode. Returns ack message or None."""
+    msg_lower = msg.lower()
+    for trigger in _SOCRATIC_OFF_TRIGGERS:
+        if trigger in msg_lower:
+            if state["socratic_mode"]:
+                state["socratic_mode"] = False
+                state["seen_chunk_ids"] = []
+                return "Tamam, sadece anlatım moduna geçiyorum. Soru sormayacağım."
+            return None
+    for trigger in _SOCRATIC_ON_TRIGGERS:
+        if trigger in msg_lower:
+            if not state["socratic_mode"]:
+                state["socratic_mode"] = True
+                state["seen_chunk_ids"] = []
+                return "Tekrar soru-cevap moduna geçiyorum."
+            return None
+    return None
+
+
+# ─── Bug #2: Continue Command Detection ────────────────────────────────────
+
+_CONTINUE_TRIGGERS = {
+    "devam", "devam et", "daha anlat", "daha detay",
+    "daha detay ver", "sonra", "continue", "more",
+    "devam etsene",
+}
+
+
+def _is_continue_command(msg: str) -> bool:
+    return msg.strip().lower() in _CONTINUE_TRIGGERS
+
+
+# ─── Quiz / Test Command Detection ──────────────────────────────────────────
+
+_TEST_TRIGGERS = {"beni test et", "test et", "quiz", "kendimi test etmek istiyorum", "sınavla beni"}
+
+
+def _is_test_command(msg: str) -> bool:
+    return msg.strip().lower() in _TEST_TRIGGERS
+
+
+# ─── Reading Mode Constants ──────────────────────────────────────────────────
+
+READING_BATCH_SIZE = 3
+
+_HIGH_CONFIDENCE = 0.70
+_LOW_CONFIDENCE = 0.40
+
+_SOURCE_RULE = (
+    "\nKAYNAK KURALI: Yanıtının İÇİNDE kaynak referansı VERME — sistem otomatik ekliyor. "
+    '"materyale göre", "kaynaklara göre", "📖 [dosya]" gibi ifadeler KULLANMA. '
+    "Sadece bilgiyi öğret."
+)
+
+_READING_MODE_INSTRUCTION = (
+    "Öğrenciye bir akademik metni bölüm bölüm öğretiyorsun.\n"
+    "KURALLAR:\n"
+    "1. Verilen chunk'ları KENDİ KELİMELERİNLE öğretici dille özetle\n"
+    "2. ASLA copy-paste yapma — aynı bilgiyi farklı kelimelerle ifade et\n"
+    "3. Karmaşık kavramları basit örneklerle açıkla\n"
+    "4. 3-7 cümle ile cevapla\n"
+    "5. Önemli terimleri <b>kalın</b> yap"
+) + _SOURCE_RULE
+
+_READING_QA_INSTRUCTION = (
+    "Öğrenci bir akademik metin okurken soru sordu.\n"
+    "Aşağıda okunan bölümler ve RAG aramasıyla bulunan ilgili bölümler var.\n"
+    "KURALLAR:\n"
+    "1. Soruyu ÖNCELİKLE bu bölümlerdeki bilgiyle cevapla\n"
+    "2. Bölümlerde yoksa genel bilginle TAMAMLA\n"
+    "3. Cevaptan sonra okumaya devam edebileceğini hatırlat"
+) + _SOURCE_RULE
+
+_RAG_PARTIAL_INSTRUCTION = (
+    "Materyalden KISMİ eşleşmeler bulundu.\n"
+    "Materyaldeki bilgiyi kullan ama EKSİK kısımları genel bilginle TAMAMLA.\n"
+    "Materyalden gelen bilgiyi ve genel bilgini AYIRMA — doğal akışta birleştir."
+) + _SOURCE_RULE
+
+_NO_RAG_INSTRUCTION = (
+    "Bu soru için ders materyalinde eşleşme bulunamadı.\n"
+    "Genel bilginle cevapla. ASLA 'materyalde şöyle yazıyor' deme.\n"
+    "Kısa ve öz cevap ver (3-7 cümle)."
+) + _SOURCE_RULE
+
+_QUIZ_INSTRUCTION = (
+    "Öğrenciye okuduğu bölümlerden TEK bir soru sor.\n"
+    "KURALLAR:\n"
+    "1. Sadece verilen bölümlerdeki bilgiden soru sor\n"
+    "2. TEK soru — birden fazla sorma\n"
+    "3. Cevabı VERME — öğrencinin cevabını bekle\n"
+    "4. Açık uçlu, kavramsal soru olsun"
+) + _SOURCE_RULE
+
+
+def _format_progress(current: int, total: int) -> str:
+    pct = int((current / total) * 100) if total > 0 else 0
+    filled = pct // 10
+    bar = "█" * filled + "░" * (10 - filled)
+    return f"📖 [{bar}] {current}/{total} bölüm (%{pct})"
+
+
+def _get_reading_batch(filename: str, position: int) -> list[dict]:
+    """Dosyadan sıradaki chunk batch'ini getir."""
+    all_chunks = vector_store.get_file_chunks(filename)
+    return all_chunks[position:position + READING_BATCH_SIZE]
+
+
+def _format_completion_message(state: dict) -> str:
+    name = state["reading_file_display"] or state["reading_file"]
+    total = state["reading_total"]
+    return (
+        f"📖 <b>{name}</b> tamamlandı! ({total} bölüm okundu)\n\n"
+        "Şimdi ne yapmak istersin?\n"
+        '• "beni test et" — okuduklarından soru sorayım\n'
+        "• Başka bir dosya seçebilirsin\n"
+        "• Herhangi bir soru sorabilirsin"
+    )
+
+
+# ─── Source Attribution ──────────────────────────────────────────────────────
+
+def _extract_sources(chunks: list[dict]) -> list[dict]:
+    """Extract unique source files from chunk list."""
+    sources: dict[str, dict] = {}
+    for c in chunks:
+        meta = c.get("metadata", {})
+        fname = meta.get("filename", "")
+        if not fname:
+            continue
+        if fname not in sources:
+            display = fname.rsplit(".", 1)[0] if "." in fname else fname
+            display = display.replace("_", " ")
+            sources[fname] = {"name": display}
+    return list(sources.values())
+
+
+def _format_source_footer(chunks: list[dict], source_type: str) -> str:
+    """Build source attribution footer.
+    source_type: 'rag_strong' | 'rag_partial' | 'general' | 'reading' | 'quiz'
+    """
+    if source_type == "general":
+        return "\n\n💡 <i>Kaynak: Genel bilgi (ders materyalinden değil)</i>"
+
+    sources = _extract_sources(chunks)
+    if not sources:
+        return "\n\n💡 <i>Kaynak: Genel bilgi (ders materyalinden değil)</i>"
+
+    if len(sources) == 1:
+        footer = f"\n\n📄 <i>Kaynak: {sources[0]['name']}</i>"
+    else:
+        lines = [f"  • {s['name']}" for s in sources]
+        footer = "\n\n📄 <i>Kaynaklar:\n" + "\n".join(lines) + "</i>"
+
+    if source_type == "rag_partial":
+        footer += "\n💡 <i>Ek bilgi genel kaynaktan tamamlandı</i>"
+
+    return footer
+
+
+# ─── Bug #3: Topic Menu Detection ──────────────────────────────────────────
+
+_GENERIC_STUDY_PATTERNS = [
+    "çalışacağım", "çalışalım", "çalışmam lazım", "çalışmak istiyorum",
+    "başlayalım", "geçelim", "çalışayım",
+]
+
+
+def _needs_topic_menu(msg: str) -> bool:
+    """True if message is a generic 'let's study X' without specific topic."""
+    msg_lower = msg.lower()
+    return any(p in msg_lower for p in _GENERIC_STUDY_PATTERNS)
+
+
+def _format_topic_menu(course_name: str, files: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
+    """Format course file list as inline keyboard menu."""
+    parts = course_name.split()
+    short = parts[0] if len(parts) == 1 else f"{parts[0]} {parts[1].split('-')[0]}"
+
+    header = f"📚 <b>{short}</b> — Hangi dosyayı çalışmak istersin?"
+
+    keyboard = []
+    for f in files:
+        name = f["filename"]
+        display = name.rsplit(".", 1)[0] if "." in name else name
+        display = display.replace("_", " ")
+        chunks = f.get("chunk_count", 0)
+        label = f"📄 {display} ({chunks} bölüm)"
+        cb_data = f"rf|{name[:58]}"
+        keyboard.append([InlineKeyboardButton(label, callback_data=cb_data)])
+
+    markup = InlineKeyboardMarkup(keyboard)
+    return header, markup
+
 
 # ─── Document Summaries (per-file LLM-generated overviews) ─────────────────
 # filename → {"summary": "...", "course": "...", "chunk_count": N, "generated_at": "..."}
@@ -326,11 +582,15 @@ def detect_active_course(user_msg: str, user_id: int) -> str | None:
 
     msg_upper = user_msg.upper().replace("-", " ").replace("_", " ")
 
-    # Tier 1: Exact course code match (instant, free)
+    # Tier 1a: Exact course code match (e.g. "CTIS 474" in message)
     for c in courses:
         code = c["shortname"].split("-")[0].strip().upper()
         if code in msg_upper:
             return c["fullname"]
+
+    # Tier 1b: Department prefix fallback (e.g. "CTIS" alone → first CTIS course)
+    for c in courses:
+        code = c["shortname"].split("-")[0].strip().upper()
         dept = code.split()[0] if " " in code else code
         if len(dept) >= 3 and dept in msg_upper.split():
             return c["fullname"]
@@ -745,6 +1005,8 @@ async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             text = _format_sync_result(result)
             await msg.edit_text(text, reply_markup=back_keyboard())
+            if result["new_chunks"] > 0:
+                asyncio.create_task(_run_post_sync_eval(bot=context.bot))
         except Exception as e:
             logger.error(f"Sync error: {e}")
             await msg.edit_text(f"❌ Sync hatası: {e}", reply_markup=back_keyboard())
@@ -914,6 +1176,7 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = update.effective_user.id
     conversation_history.pop(uid, None)
+    _user_state.pop(uid, None)
     _save_conversation_history()
     logger.info(f"Cleared history and course focus for user {uid}")
     await update.message.reply_text(
@@ -1446,6 +1709,60 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Yükleme iptal edildi.", reply_markup=back_keyboard())
         return
 
+    # ─── Reading Mode: File selection callback ──────────────────────
+    if data.startswith("rf|"):
+        fname_prefix = data[3:]
+        uid = query.from_user.id
+        state = _get_user_state(uid)
+        course = state.get("current_course")
+
+        if not course:
+            await query.edit_message_text("❌ Önce bir ders seç.")
+            return
+
+        course_files = vector_store.get_files_for_course(course_name=course)
+        matched = next((f for f in course_files if f["filename"].startswith(fname_prefix)), None)
+
+        if not matched:
+            await query.edit_message_text("❌ Dosya bulunamadı.", reply_markup=back_keyboard())
+            return
+
+        filename = matched["filename"]
+        total = matched.get("chunk_count", 0)
+        display = filename.rsplit(".", 1)[0].replace("_", " ")
+
+        _start_reading_mode(state, filename, display, total)
+        state["awaiting_topic_selection"] = False
+
+        batch = _get_reading_batch(filename, 0)
+        if not batch:
+            await query.edit_message_text("❌ Bu dosyada chunk bulunamadı.")
+            _reset_reading_mode(state)
+            return
+
+        state["reading_position"] = len(batch)
+        progress = _format_progress(state["reading_position"], total)
+
+        await query.edit_message_text("📖 Okuma modu başlatılıyor...")
+
+        extra_sys = _READING_MODE_INSTRUCTION
+        if not state["socratic_mode"]:
+            extra_sys += "\n" + _NO_SOCRATIC_INSTRUCTION
+
+        response = await asyncio.to_thread(
+            llm.chat_with_history,
+            messages=[{"role": "user", "content": f"Bu bölümü öğretici bir şekilde anlat: {display}"}],
+            context_chunks=batch,
+            study_mode=True,
+            extra_context=_build_file_summaries_context(course=course),
+            extra_system=extra_sys,
+        )
+
+        footer = _format_source_footer(batch, "reading")
+        text = f"{progress}\n📚 <b>{display}</b>\n\n{response}{footer}\n\nDevam etmek için \"devam et\" yaz."
+        await send_long_message(update, text, parse_mode=ParseMode.HTML)
+        save_to_history(uid, f"[Dosya seçildi: {filename}]", response, active_course=course)
+        return
 
 
 # ─── File Upload Handler ─────────────────────────────────────────────────────
@@ -1837,7 +2154,171 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_mail_keyword(update, uid, user_msg)
         return
 
-    # ── Single LLM Call Flow ──
+    # ── Per-user conversation state ──
+    state = _get_user_state(uid)
+
+    # ── Bug #1: Socratic mode toggle ──
+    socratic_ack = _check_socratic_toggle(user_msg, state)
+    if socratic_ack:
+        await update.message.reply_text(socratic_ack)
+        # If the message ONLY toggles mode (no real question), return early
+        # But if it contains a real question too ("anlat soru sorma"), continue
+        stripped = user_msg.lower()
+        for t in _SOCRATIC_OFF_TRIGGERS + _SOCRATIC_ON_TRIGGERS:
+            stripped = stripped.replace(t, "").strip()
+        if len(stripped.split()) < 2:
+            return
+
+    # ── Continue command detection ──
+    is_continue = _is_continue_command(user_msg)
+
+    # ── Reading Mode Intercept ──
+    if state.get("reading_mode"):
+        temp_course = detect_active_course(user_msg, uid)
+        if temp_course and temp_course != state.get("current_course"):
+            _reset_reading_mode(state)
+            state["current_course"] = temp_course
+            # Fall through to normal flow (course menu etc.)
+        else:
+            typing = _TypingIndicator(update.get_bot(), chat_id)
+            typing.start()
+            try:
+                # Reading: "devam et" → sequential chunk
+                if is_continue:
+                    batch = _get_reading_batch(state["reading_file"], state["reading_position"])
+
+                    if not batch:
+                        typing.stop()
+                        msg_text = _format_completion_message(state)
+                        await send_long_message(update, msg_text, parse_mode=ParseMode.HTML)
+                        save_to_history(uid, user_msg, "[Dosya tamamlandı]", active_course=state.get("current_course"))
+                        return
+
+                    state["reading_position"] += len(batch)
+                    progress = _format_progress(state["reading_position"], state["reading_total"])
+
+                    history = get_conversation_history(uid, limit=4)
+                    llm_history = history + [{"role": "user", "content": "Devam et, sonraki bölümü öğret."}]
+
+                    extra_sys = _READING_MODE_INSTRUCTION
+                    if not state["socratic_mode"]:
+                        extra_sys += "\n" + _NO_SOCRATIC_INSTRUCTION
+
+                    response = await asyncio.to_thread(
+                        llm.chat_with_history,
+                        messages=llm_history,
+                        context_chunks=batch,
+                        study_mode=True,
+                        extra_context=_build_file_summaries_context(course=state.get("current_course")),
+                        extra_system=extra_sys,
+                    )
+
+                    footer = _format_source_footer(batch, "reading")
+                    display = f"{progress}\n📚 <b>{state['reading_file_display']}</b>\n\n{response}{footer}"
+                    typing.stop()
+                    await send_long_message(update, display, parse_mode=ParseMode.HTML)
+                    save_to_history(uid, user_msg, response, active_course=state.get("current_course"))
+                    return
+
+                # Reading: "beni test et" → quiz from read chunks
+                if _is_test_command(user_msg):
+                    all_chunks = vector_store.get_file_chunks(state["reading_file"])
+                    read_chunks = all_chunks[:state["reading_position"]]
+
+                    if not read_chunks:
+                        typing.stop()
+                        await update.message.reply_text('Henüz bir bölüm okumadık. Önce "devam et" ile başla!')
+                        return
+
+                    response = await asyncio.to_thread(
+                        llm.chat_with_history,
+                        messages=[{"role": "user", "content": "Okuduğumuz bölümlerden beni test et."}],
+                        context_chunks=read_chunks[-10:],
+                        study_mode=True,
+                        extra_system=_QUIZ_INSTRUCTION,
+                    )
+
+                    typing.stop()
+                    footer = _format_source_footer(read_chunks[-10:], "quiz")
+                    await send_long_message(update, f"🧠 {response}{footer}", parse_mode=ParseMode.HTML)
+                    save_to_history(uid, user_msg, response, active_course=state.get("current_course"))
+                    return
+
+                # Reading: free question → RAG (file scope) + recent read context
+                all_chunks = vector_store.get_file_chunks(state["reading_file"])
+                recent_read = all_chunks[max(0, state["reading_position"] - 5):state["reading_position"]]
+
+                rag_results = vector_store.hybrid_search(
+                    query=user_msg,
+                    n_results=10,
+                    course_filter=state.get("current_course"),
+                )
+                file_results = [r for r in rag_results if r.get("metadata", {}).get("filename") == state["reading_file"]]
+
+                seen_ids = {r["id"] for r in file_results}
+                for c in recent_read:
+                    if c["id"] not in seen_ids:
+                        file_results.append(c)
+                        seen_ids.add(c["id"])
+
+                history = get_conversation_history(uid, limit=4)
+                llm_history = history + [{"role": "user", "content": user_msg}]
+
+                extra_sys = _READING_QA_INSTRUCTION
+                if not state["socratic_mode"]:
+                    extra_sys += "\n" + _NO_SOCRATIC_INSTRUCTION
+
+                response = await asyncio.to_thread(
+                    llm.chat_with_history,
+                    messages=llm_history,
+                    context_chunks=file_results[:10],
+                    study_mode=True,
+                    extra_system=extra_sys,
+                )
+
+                typing.stop()
+                footer = _format_source_footer(file_results[:10], "rag_strong" if file_results else "general")
+                display = f"📚 {response}{footer}\n\n📖 Okumaya devam etmek için \"devam et\" yaz."
+                await send_long_message(update, display, parse_mode=ParseMode.HTML)
+                save_to_history(uid, user_msg, response, active_course=state.get("current_course"))
+                return
+
+            except Exception as e:
+                typing.stop()
+                logger.error(f"Reading mode error: {e}")
+                await update.message.reply_text(f"❌ Hata: {e}")
+                return
+
+    # ── Quiz without reading mode ──
+    if _is_test_command(user_msg) and not state.get("reading_mode"):
+        typing = _TypingIndicator(update.get_bot(), chat_id)
+        typing.start()
+        try:
+            course = state.get("current_course") or detect_active_course(user_msg, uid)
+            if course:
+                rag_chunks = vector_store.hybrid_search(query="konu özeti", n_results=10, course_filter=course)
+                if rag_chunks:
+                    response = await asyncio.to_thread(
+                        llm.chat_with_history,
+                        messages=[{"role": "user", "content": user_msg}],
+                        context_chunks=rag_chunks,
+                        study_mode=True,
+                        extra_system=_QUIZ_INSTRUCTION,
+                    )
+                    typing.stop()
+                    footer = _format_source_footer(rag_chunks, "quiz")
+                    await send_long_message(update, f"🧠 {response}{footer}", parse_mode=ParseMode.HTML)
+                    save_to_history(uid, user_msg, response, active_course=course)
+                    return
+            typing.stop()
+            await update.message.reply_text("Henüz materyal okumadık. Önce bir ders ve dosya seç!")
+            return
+        except Exception as e:
+            typing.stop()
+            await update.message.reply_text(f"❌ {e}")
+            return
+
+    # ── Single LLM Call Flow (Normal Mode) ──
     typing = _TypingIndicator(update.get_bot(), chat_id)
     typing.start()
 
@@ -1871,45 +2352,103 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         results = []
         top_score = 0
         course_has_materials = False
+        course_files = []
 
-        if course_filter or len(user_msg.split()) > 2:
+        if course_filter:
+            course_files = vector_store.get_files_for_course(course_name=course_filter)
+            course_has_materials = len(course_files) > 0
+
+        # ── Bug #3: Topic selection menu on first course entry ──
+        if course_filter and course_has_materials:
+            prev_course = state.get("current_course")
+            if course_filter != prev_course:
+                # New course — reset state
+                state["current_course"] = course_filter
+                state["seen_chunk_ids"] = []
+                state["last_query"] = ""
+
+                if _needs_topic_menu(user_msg):
+                    state["awaiting_topic_selection"] = True
+                    header, markup = _format_topic_menu(course_filter, course_files)
+                    typing.stop()
+                    await send_long_message(update, header, reply_markup=markup, parse_mode=ParseMode.HTML)
+                    save_to_history(uid, user_msg, "[Konu seçim menüsü gösterildi]", active_course=course_filter)
+                    return
+
+        # ── Bug #4: No-material warning for empty courses ──
+        if course_filter and not course_has_materials:
+            state["current_course"] = course_filter
+            parts = course_filter.split()
+            short = parts[0] if len(parts) == 1 else f"{parts[0]} {parts[1].split('-')[0]}"
+            warning = (
+                f"📚 <b>{short}</b>\n\n"
+                f"⚠️ Bu ders için henüz indekslenmiş materyal bulunmuyor.\n"
+                "Hoca materyalleri yükledikçe /sync ile güncelleyebilirsin.\n\n"
+                "Şu an şunları yapabilirim:\n"
+                "• Genel bilgiyle konuları açıklayabilirim (ders materyali dışı)\n"
+                "• Başka bir derse geçebiliriz\n\n"
+                "Ne yapmak istersin?"
+            )
+            # If this is a generic "let's study" message, just show the warning
+            if _needs_topic_menu(user_msg):
+                typing.stop()
+                await send_long_message(update, warning, parse_mode=ParseMode.HTML)
+                save_to_history(uid, user_msg, "[Materyal yok uyarısı]", active_course=course_filter)
+                return
+            # Otherwise (specific question), continue to LLM with no-material disclaimer
+
+        # Clear topic selection flag when user sends a message
+        if state.get("awaiting_topic_selection"):
+            state["awaiting_topic_selection"] = False
+
+        # ── Bug #2: Continue command → reuse last query, exclude seen chunks ──
+        exclude_ids = None
+        if is_continue and state["last_query"]:
+            smart_query = state["last_query"]
+            exclude_ids = set(state["seen_chunk_ids"]) if state["seen_chunk_ids"] else None
+        elif course_filter or len(user_msg.split()) > 2:
             smart_query = build_smart_query(user_msg, history)
+            # New question — reset seen chunks
+            if not is_continue:
+                state["seen_chunk_ids"] = []
+        else:
+            smart_query = None
 
-            if course_filter:
-                course_files = vector_store.get_files_for_course(course_name=course_filter)
-                course_has_materials = len(course_files) > 0
+        if smart_query:
+            if course_filter and course_has_materials:
+                # File-level pre-filtering
+                relevant_files = _get_relevant_files(smart_query, course=course_filter, top_k=5)
 
-                if course_has_materials:
-                    # File-level pre-filtering
-                    relevant_files = _get_relevant_files(smart_query, course=course_filter, top_k=5)
+                results = vector_store.hybrid_search(
+                    query=smart_query,
+                    n_results=15,
+                    course_filter=course_filter,
+                    exclude_ids=exclude_ids,
+                )
+                top_score = (1 - results[0]["distance"]) if results else 0
 
-                    results = vector_store.hybrid_search(
-                        query=smart_query,
-                        n_results=15,
-                        course_filter=course_filter,
+                # Post-filter: boost relevant files to top
+                if relevant_files and results:
+                    matched = [r for r in results if r.get("metadata", {}).get("filename", "") in relevant_files]
+                    others = [r for r in results if r.get("metadata", {}).get("filename", "") not in relevant_files]
+                    if matched:
+                        results = matched + others
+                        logger.info(f"RAG file-filter: {len(matched)} from relevant files, {len(others)} others")
+
+                # Fallback: weak results → try all courses
+                if len(results) < 2 or top_score < 0.35:
+                    all_results = vector_store.hybrid_search(
+                        query=smart_query, n_results=15, exclude_ids=exclude_ids,
                     )
-                    top_score = (1 - results[0]["distance"]) if results else 0
-
-                    # Post-filter: boost relevant files to top
-                    if relevant_files and results:
-                        matched = [r for r in results if r.get("metadata", {}).get("filename", "") in relevant_files]
-                        others = [r for r in results if r.get("metadata", {}).get("filename", "") not in relevant_files]
-                        if matched:
-                            results = matched + others
-                            logger.info(f"RAG file-filter: {len(matched)} from relevant files, {len(others)} others")
-
-                    # Fallback: weak results → try all courses
-                    if len(results) < 2 or top_score < 0.35:
-                        all_results = vector_store.hybrid_search(
-                            query=smart_query, n_results=15,
-                        )
-                        all_top = (1 - all_results[0]["distance"]) if all_results else 0
-                        if all_top > top_score:
-                            results = all_results
-                            top_score = all_top
-                            logger.info(f"RAG fallback: course → all ({all_top:.2f})")
-            else:
-                results = vector_store.hybrid_search(query=smart_query, n_results=10)
+                    all_top = (1 - all_results[0]["distance"]) if all_results else 0
+                    if all_top > top_score:
+                        results = all_results
+                        top_score = all_top
+                        logger.info(f"RAG fallback: course → all ({all_top:.2f})")
+            elif not course_filter:
+                results = vector_store.hybrid_search(
+                    query=smart_query, n_results=10, exclude_ids=exclude_ids,
+                )
                 top_score = (1 - results[0]["distance"]) if results else 0
 
             # Adaptive chunk quality filter: top_score * 0.60 or min 0.20
@@ -1918,7 +2457,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 results = [r for r in results if (1 - r["distance"]) > adaptive_threshold][:10]
                 logger.info(f"RAG: {len(results)} chunks (top={top_score:.2f} threshold={adaptive_threshold:.2f})")
 
-        low_relevance = not results or top_score < 0.3
+        # ── Bug #2: Handle "devam" with no new chunks ──
+        if is_continue and not results:
+            typing.stop()
+            await update.message.reply_text(
+                "Bu konuda elimdeki materyallerin sonuna geldik. "
+                "Başka bir konuya geçmek ister misin?"
+            )
+            save_to_history(uid, user_msg, "[Materyaller tükendi]", active_course=course_filter)
+            return
+
+        # ── Bug #2: Track seen chunk IDs ──
+        if results:
+            state["seen_chunk_ids"].extend(r.get("id", "") for r in results if r.get("id"))
+            state["last_query"] = smart_query if smart_query else user_msg
 
         # E. Build extra_context string
         if course_filter:
@@ -1932,31 +2484,53 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         llm_history = history.copy()
         llm_history.append({"role": "user", "content": user_msg})
 
-        # G. Single LLM call
+        # ── Build extra_system ──
+        extra_system = _SOURCE_RULE
+        if not state["socratic_mode"]:
+            extra_system += "\n" + _NO_SOCRATIC_INSTRUCTION
+
+        # ── No-material disclaimer in system prompt ──
+        if course_filter and not course_has_materials:
+            extra_system += (
+                "\n\nBu ders için ders materyali indekslenmemiş. ASLA materyal varmış gibi davranma. "
+                "Genel bilginle yardımcı ol ama her yanıtta şu disclaimer'ı ekle: "
+                '"⚠️ Bu bilgi genel kaynaktan, ders materyalinden değil."'
+            )
+
+        # G. Single LLM call — 3-tier confidence
+        extra_system_final = extra_system
+        if results and top_score >= _HIGH_CONFIDENCE:
+            _src_type = "rag_strong"
+        elif results and top_score >= _LOW_CONFIDENCE:
+            extra_system_final += "\n" + _RAG_PARTIAL_INSTRUCTION
+            _src_type = "rag_partial"
+        else:
+            if smart_query:
+                extra_system_final += "\n" + _NO_RAG_INSTRUCTION
+            _src_type = "general"
+
         response = await asyncio.to_thread(
             llm.chat_with_history,
             messages=llm_history,
             context_chunks=results,
             study_mode=False,
             extra_context=extra_ctx,
+            extra_system=extra_system_final,
         )
 
-        # H. Context warnings + course tag
-        display_response = response
+        # H. Source footer + context warnings + course tag
+        source_footer = _format_source_footer(results, _src_type)
+        display_response = response + source_footer
+
         if course_filter:
             parts = course_filter.split()
             short = parts[0] if len(parts) == 1 else f"{parts[0]} {parts[1].split('-')[0]}"
-            display_response = f"📚 <b>{short}</b>\n\n{response}"
+            display_response = f"📚 <b>{short}</b>\n\n{display_response}"
 
             if not course_has_materials:
                 display_response = (
                     f"ℹ️ <b>{course_filter}</b> dersinin Moodle'da materyali yok. "
                     "Genel bilgimle yanıtlıyorum:\n\n"
-                ) + display_response
-            elif low_relevance:
-                display_response = (
-                    "⚠️ Materyallerde güçlü eşleşme bulamadım. "
-                    "Genel bilgiyle yanıtlıyorum.\n\n"
                 ) + display_response
 
         typing.stop()
@@ -1971,6 +2545,62 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─── Auto-Sync Background Job ───────────────────────────────────────────────
+
+
+async def _run_post_sync_eval(bot=None):
+    """Run RAG quality eval after sync. Logs results, alerts on regression."""
+    try:
+        from tests.test_rag_quality import eval_all, generate_auto_queries, TEST_QUERIES, save_baseline
+
+        queries = TEST_QUERIES + generate_auto_queries(vector_store)
+        result = await asyncio.to_thread(
+            eval_all, vector_store,
+            search_fn=vector_store.hybrid_search,
+            queries=queries,
+            verbose=False,
+        )
+
+        logger.info(
+            f"Post-sync RAG eval: precision={result['avg_precision']:.0%} "
+            f"pass_rate={result['pass_rate']:.0%} queries={len(result['results'])}"
+        )
+
+        # Compare with baseline
+        baseline_path = Path("tests/rag_baseline.json")
+        if baseline_path.exists():
+            import json as _json
+            bl = _json.loads(baseline_path.read_text())
+            delta = result["avg_precision"] - bl["avg_precision"]
+
+            if delta < -0.05:
+                logger.warning(
+                    f"RAG REGRESSION: precision {bl['avg_precision']:.0%} → "
+                    f"{result['avg_precision']:.0%} ({delta:+.0%})"
+                )
+                if bot and OWNER_ID:
+                    try:
+                        await bot.send_message(
+                            chat_id=OWNER_ID,
+                            text=(
+                                f"⚠️ RAG Regression!\n"
+                                f"Precision: {bl['avg_precision']:.0%} → {result['avg_precision']:.0%} ({delta:+.0%})\n"
+                                f"Pass rate: {bl['pass_rate']:.0%} → {result['pass_rate']:.0%}\n"
+                                f"Queries: {len(result['results'])}"
+                            ),
+                        )
+                    except Exception:
+                        pass
+            elif delta > 0.05:
+                save_baseline(result)
+                logger.info(f"RAG baseline auto-updated: {result['avg_precision']:.0%}")
+            else:
+                logger.info(f"RAG baseline delta: {delta:+.0%} (OK)")
+
+        return result
+    except Exception as e:
+        logger.error(f"Post-sync eval failed: {e}")
+        return None
+
 
 async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE):
     if sync_lock.locked():
@@ -2025,6 +2655,10 @@ async def auto_sync_job(context: ContextTypes.DEFAULT_TYPE):
                         logger.info(f"Auto-sync: generated {n} new file summaries.")
                 except Exception as e:
                     logger.error(f"Auto-sync summary generation error: {e}")
+
+            # Post-sync RAG quality eval
+            if new_chunks > 0:
+                await _run_post_sync_eval(bot=context.bot)
 
         except Exception as e:
             logger.error(f"Auto-sync error: {e}")

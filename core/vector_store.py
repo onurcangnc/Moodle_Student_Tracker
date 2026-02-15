@@ -190,34 +190,42 @@ class VectorStore:
         query: str,
         n_results: int = 15,
         course_filter: Optional[str] = None,
+        exclude_ids: Optional[set[str]] = None,
     ) -> list[dict]:
         """RRF fusion of semantic (FAISS) + keyword (BM25) search."""
         # Fetch wider candidate pool; RRF will rank and trim to n_results
-        fetch_k = n_results * 2
+        extra = len(exclude_ids) if exclude_ids else 0
+        fetch_k = (n_results + extra) * 2
         semantic = self.query(query_text=query, n_results=fetch_k, course_filter=course_filter)
         bm25 = self.bm25_search(query, n_results=fetch_k, course_filter=course_filter)
 
         if not bm25:
-            return semantic
-        if not semantic:
-            return bm25
+            results = semantic
+        elif not semantic:
+            results = bm25
+        else:
+            k = 60  # RRF constant
+            rrf: dict[str, dict] = {}
 
-        k = 60  # RRF constant
-        rrf: dict[str, dict] = {}
-
-        for rank, r in enumerate(semantic):
-            key = r["text"][:150]
-            rrf[key] = {"score": 1.0 / (k + rank), "result": r}
-
-        for rank, r in enumerate(bm25):
-            key = r["text"][:150]
-            if key in rrf:
-                rrf[key]["score"] += 1.0 / (k + rank)
-            else:
+            for rank, r in enumerate(semantic):
+                key = r["text"][:150]
                 rrf[key] = {"score": 1.0 / (k + rank), "result": r}
 
-        combined = sorted(rrf.values(), key=lambda x: x["score"], reverse=True)
-        return [item["result"] for item in combined[:n_results]]
+            for rank, r in enumerate(bm25):
+                key = r["text"][:150]
+                if key in rrf:
+                    rrf[key]["score"] += 1.0 / (k + rank)
+                else:
+                    rrf[key] = {"score": 1.0 / (k + rank), "result": r}
+
+            combined = sorted(rrf.values(), key=lambda x: x["score"], reverse=True)
+            results = [item["result"] for item in combined]
+
+        # Exclude already-seen chunks (for "devam" deduplication)
+        if exclude_ids:
+            results = [r for r in results if r.get("id") not in exclude_ids]
+
+        return results[:n_results]
 
     # ─── Indexing ────────────────────────────────────────────────────────
 

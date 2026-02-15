@@ -320,6 +320,7 @@ class LLMEngine:
         context_chunks: list[dict] | None = None,
         study_mode: bool = False,
         extra_context: str = "",
+        extra_system: str = "",
     ) -> str:
         """
         Pure conversational chat: takes full message history + RAG chunks.
@@ -329,6 +330,7 @@ class LLMEngine:
         context_chunks: raw results from vector_store.query()
         study_mode: if True, use strict grounding prompt + study task route
         extra_context: prepended to RAG context (e.g. file summaries)
+        extra_system: appended to system prompt (e.g. socratic mode toggle)
         """
         # Format RAG context
         context_text = self._format_context(context_chunks) if context_chunks else ""
@@ -363,6 +365,9 @@ class LLMEngine:
 
         if memory_context:
             system += f"\n\n--- HAFIZA ---\n{memory_context}\n--- /HAFIZA ---"
+
+        if extra_system:
+            system += "\n\n" + extra_system
 
         # Inject RAG context into the last user message
         llm_messages = []
