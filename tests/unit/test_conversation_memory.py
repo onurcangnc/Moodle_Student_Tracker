@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from bot.services.conversation_memory import ConversationMemory
 
 
 def test_conversation_memory_ttl_and_max_messages():
     """Memory should enforce max_messages and expire entries after TTL."""
-    now = datetime(2026, 2, 16, 12, 0, tzinfo=UTC)
+    now = datetime(2026, 2, 16, 12, 0, tzinfo=timezone.utc)
 
     def fake_now():
         return now
@@ -30,7 +30,7 @@ def test_conversation_memory_ttl_and_max_messages():
 
 def test_memory_max_messages_limit():
     """Oldest messages should be dropped once max_messages is exceeded."""
-    now = datetime(2026, 2, 16, 12, 0, tzinfo=UTC)
+    now = datetime(2026, 2, 16, 12, 0, tzinfo=timezone.utc)
 
     def fake_now():
         return now
@@ -46,7 +46,7 @@ def test_memory_max_messages_limit():
 
 def test_memory_ttl_expiry():
     """Memory should expire after TTL inactivity window."""
-    now = datetime(2026, 2, 16, 12, 0, tzinfo=UTC)
+    now = datetime(2026, 2, 16, 12, 0, tzinfo=timezone.utc)
 
     def fake_now():
         return now
@@ -61,7 +61,7 @@ def test_memory_ttl_expiry():
 
 def test_memory_clear():
     """Clear should remove all memory for the target user."""
-    now = datetime(2026, 2, 16, 12, 0, tzinfo=UTC)
+    now = datetime(2026, 2, 16, 12, 0, tzinfo=timezone.utc)
     memory = ConversationMemory(max_messages=5, ttl_minutes=30, now_provider=lambda: now)
     memory.add(1, role="user", content="x")
     memory.clear(1)
@@ -70,7 +70,7 @@ def test_memory_clear():
 
 def test_memory_separate_users():
     """Separate users should maintain independent memory buckets."""
-    now = datetime(2026, 2, 16, 12, 0, tzinfo=UTC)
+    now = datetime(2026, 2, 16, 12, 0, tzinfo=timezone.utc)
     memory = ConversationMemory(max_messages=5, ttl_minutes=30, now_provider=lambda: now)
     memory.add(1, role="user", content="u1")
     memory.add(2, role="user", content="u2")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 
@@ -31,7 +31,7 @@ class ConversationMemory:
         """Initialize memory with bounded size and TTL."""
         self.max_messages = max_messages
         self.ttl = timedelta(minutes=ttl_minutes)
-        self._now = now_provider or (lambda: datetime.now(UTC))
+        self._now = now_provider or (lambda: datetime.now(timezone.utc))
         self._storage: dict[int, _MemoryBucket] = {}
 
     def _is_expired(self, bucket: _MemoryBucket, now: datetime) -> bool:
