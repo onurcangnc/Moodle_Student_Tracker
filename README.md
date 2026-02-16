@@ -1,767 +1,367 @@
 # Moodle Student Tracker
 
-<p align="center">
-  <img src="./images/1.png" alt="Bilkent Moodle" width="600"/>
-</p>
+Bilkent Moodle ders materyallerini indeksleyip **Telegram uzerinden sohbet tabanli ogretim** yapan RAG (Retrieval-Augmented Generation) botu.
 
-A **fully-automated, RAG-based personal academic assistant** for Bilkent University students. Indexes Moodle course materials, auto-authenticates STARS (grades/attendance/exams) with email 2FA, monitors university emails — all through a single Telegram bot with zero manual intervention.
-
-**Dual-mode UX:** 8-button persistent keyboard for one-tap access + inline button navigation for reading mode. Two explicit modes — 📖 **Okuma Modu** (file-scoped reading with chunk navigation) and 💬 **Normal Mod** (RAG chat + academic tools) — with seamless switching.
+Ogrenci bir kurs secer, sorusunu yazar; bot ilgili ders materyallerini hybrid arama (FAISS + BM25) ile bulur ve LLM uzerinden pedagojik bir cevap uretir.
 
 ---
 
-## Table of Contents
+## Ozellikler
 
-- [Architecture](#architecture)
-- [Design Patterns](#design-patterns)
-- [Features](#features)
-- [Data Flow](#data-flow)
-- [Memory System](#memory-system)
-- [Setup](#setup)
-- [Deployment](#deployment)
-- [Recommended Usage](#recommended-usage)
-- [Tech Stack](#tech-stack)
-- [File Structure](#file-structure)
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                             TELEGRAM BOT                                    │
-│                          (telegram_bot.py)                                  │
-│  Dual Mode (Reading/Normal) · Keyword Router · Persistent Keyboard          │
-│  8 Button Handlers · Callback Engine · 6 Background Jobs                    │
-└──────┬──────────┬──────────┬──────────┬──────────┬──────────┬──────────────┘
-       │          │          │          │          │          │
- ┌─────▼─────┐ ┌──▼──────┐ ┌▼───────┐ ┌▼────────┐│  ┌───────▼──────────┐
- │LLM Engine │ │  Sync   │ │ Vector │ │ Memory  ││  │   Notification   │
- │ (RAG +    │ │ Engine  │ │ Store  │ │(Hybrid) ││  │   Engine (Diff)  │
- │ Prompts)  │ │         │ │ FAISS+ │ │         ││  │                  │
- └──┬────┬───┘ └──┬──┬───┘ │ BM25  │ └─────────┘│  └──────────────────┘
-    │    │        │  │      └────────┘            │
-┌───▼┐ ┌─▼──────┐│ ┌▼──────────────┐              │
-│LLM │ │ Vector ││ │   Document    │              │
-│Prov│ │ Store  ││ │  Processor    │              │
-│iders│ │       ││ │ PDF/DOCX/OCR  │              │
-└─────┘ └───────┘│ └───────────────┘              │
-                 │                                 │
-         ┌───────▼───────┐                         │
-         │ Moodle Client │                         │
-         │ (Web Services)│                         │
-         └───────────────┘                         │
-                                                   │
-┌──────────────────────────┐  ┌────────────────────▼─────┐
-│     STARS Client          │  │     Webmail Client        │
-│  OAuth + Email 2FA        │◄─│     IMAP (AIRS/DAIS)     │
-│  Auto-login (10 min)      │  │     Email monitoring      │
-│  Grades · Exams ·         │  │     2FA code extraction   │
-│  Attendance · GPA         │  │                           │
-└──────────────────────────┘  └──────────────────────────┘
-```
-
-### Hexagonal Architecture (Ports & Adapters)
-
-| Layer | Files | Role |
-|-------|-------|------|
-| **UI Adapters** | `telegram_bot.py`, `main.py` | User interfaces (Telegram, CLI) |
-| **Core Logic** | `llm_engine.py`, `sync_engine.py`, `vector_store.py`, `memory.py` | Business logic, RAG pipeline, memory management |
-| **External Adapters** | `moodle_client.py`, `stars_client.py`, `webmail_client.py`, `llm_providers.py` | External service integrations |
+- **Chat-first ogretim** — soru-cevap akisiyla ders materyalinden ogrenme
+- **Hybrid RAG arama** — FAISS (semantik) + BM25 (keyword) fusion via Reciprocal Rank Fusion
+- **Teaching / Guidance modu** — yeterli materyal varsa ogretir, yoksa konulara yonlendirir
+- **Coklu kurs destegi** — kullanici bazli aktif kurs secimi
+- **Moodle senkronizasyonu** — materyalleri Moodle API'den otomatik ceker ve indeksler
+- **Admin dokuman yukleme** — Telegram uzerinden PDF/DOCX/PPTX yukleyerek indeksleme
+- **Konusma hafizasi** — kullanici bazli son 5 mesaj baglam olarak kullanilir
+- **Rate limiting** — kullanici bazli istek sinirlamasi
+- **Healthcheck** — HTTP `/health` endpointi (uptime, chunk sayisi, aktif kullanici)
+- **Docker & systemd** — her iki deployment yontemi desteklenir
 
 ---
 
-## Design Patterns
+## Mimari
 
-### Strategy Pattern — Document Extraction & LLM Providers
-Different extraction strategies per file type, common interface for LLM providers:
 ```
-DocumentProcessor._extract_pdf()  / _extract_docx() / _extract_pptx() / _extract_html()
-MultiProviderEngine → Gemini / OpenAI / GLM (all OpenAI-compatible)
-```
-
-### Factory Pattern — Task-Based Model Routing
-Environment-variable-driven model selection per task via `TaskRouter`:
-```python
-MODEL_CHAT=gemini-2.5-flash        # Main chat (RAG) + reading mode
-MODEL_STUDY=gemini-2.5-flash       # Study mode (strict grounding)
-MODEL_EXTRACTION=gpt-4.1-nano      # Memory extraction
-MODEL_TOPIC_DETECT=gpt-4.1-nano    # Topic detection
-MODEL_SUMMARY=gemini-2.5-flash     # Weekly summary
-MODEL_QUESTIONS=gemini-2.5-flash   # Practice questions + quiz eval
-MODEL_OVERVIEW=gemini-2.5-flash    # Course overview + file summaries
-```
-
-### Repository Pattern — Data Abstraction
-`VectorStore` and `DynamicMemoryDB` abstract storage. Chunk dedup, FAISS persistence, SQLite memory:
-```
-VectorStore.add_chunks()  → deduplicate → encode → FAISS index → persist
-VectorStore.hybrid_search() → FAISS (semantic) + BM25 (keyword) → RRF fusion → filter
-DynamicMemoryDB           → SQLite (WAL mode) → token-budget ranking
+                         Telegram
+                            |
+                     bot/main.py
+                     (Application)
+                            |
+              +-------------+-------------+
+              |                           |
+     bot/handlers/                 bot/middleware/
+     commands.py                   auth.py
+     messages.py                   error_handler.py
+              |
+     bot/services/
+     rag_service.py -----> core/vector_store.py (FAISS + BM25)
+     llm_service.py -----> core/llm_engine.py   (OpenAI / Gemini / GLM)
+     user_service.py       core/moodle_client.py (Moodle API)
+     document_service.py   core/sync_engine.py   (materyal sync)
+     topic_cache.py        core/document_processor.py (PDF/DOCX/PPTX)
+     conversation_memory.py
 ```
 
-### State Machine — Dual Mode + STARS Sessions
-```
-Bot Mode:    Normal ←→ Reading (via rd|normal / rd|resume)
-             Reading states: active (reading_mode=True) | paused (reading_paused=True)
+### Katmanlar
 
-STARS:       idle → awaiting_sms → ready
-             auth_time > 3500s (~58 min) → re-authenticate
-```
-
-### Chain of Responsibility — Sync Pipeline
-Sequential stages, each transforms and passes forward:
-```
-Moodle API → Download → Extract (PDF/DOCX/OCR) → Math Normalize → Chunk → Embed → FAISS+BM25 Index
-```
-
-### Observer Pattern — Background Job Queue
-6 periodic jobs via python-telegram-bot's APScheduler:
-```
-auto_sync_job        → 10 min   → Moodle sync + new material notification
-auto_stars_login_job → 10 min   → STARS re-auth + data refresh + diff notifications
-assignment_check     → 10 min   → New assignment detection
-mail_check           → 30 min   → AIRS/DAIS email check + LLM summary
-moodle_keepalive     → 2 min    → Moodle session keep-alive
-deadline_reminder    → Daily 9AM → 3-day advance deadline warning
-```
-
-### Template Method — Context Injection
-Every LLM call follows the same enrichment template:
-```
-system_prompt += _build_student_context()  →  date + schedule + STARS + assignments + courses
-```
-Context is **TTL-cached (5 min)** with manual invalidation on data changes.
-
-### Adapter Pattern — External API Normalization
-```
-MoodleClient  → Moodle Web Services REST API
-StarsClient   → OAuth 1.0 + HTML scraping (BeautifulSoup)
-WebmailClient → IMAP4_SSL (mail.bilkent.edu.tr)
-```
+| Katman | Dizin | Sorumluluk |
+|--------|-------|------------|
+| **Handlers** | `bot/handlers/` | Telegram komut ve mesaj routing |
+| **Services** | `bot/services/` | Is mantigi — RAG retrieval, LLM cagri, kullanici state |
+| **Middleware** | `bot/middleware/` | Yetkilendirme, hata yakalama |
+| **Config & State** | `bot/config.py`, `bot/state.py` | Typed runtime konfigurasyon, paylasimli state container |
+| **Core** | `core/` | Domain logic — vektor deposu, LLM engine, Moodle client, dokuman isleme |
 
 ---
 
-## Features
-
-### Dual-Mode UX
-
-The bot operates in two explicit modes with seamless switching:
-
-**📖 Okuma Modu (Reading Mode)**
-- File-scoped chunk-by-chunk reading with inline navigation buttons
-- `[◀️ Geri]` `[▶️ Devam Et]` — navigate chunks
-- `[🧠 Quiz]` — comprehensive quiz over all read chunks
-- `[✅ Bitir]` — finish and return to normal mode
-- `[💬 Normal Mod]` — pause reading (resumable) and switch to normal mode
-- Free-text questions answered from the current file's content only
-- Strict no-question LLM prompt — bot teaches, never asks
-
-**💬 Normal Mod**
-- 8-button persistent keyboard for one-tap access to all features
-- RAG-powered chat with hybrid search (FAISS + BM25)
-- Slash commands: `/calis`, `/notlar`, `/bugun`, `/haftam`, `/mail`, `/odevler`
-- Paused reading reminder on RAG responses + "devam et" to resume
-
-**Mode Transitions:**
-```
-[💬 Normal Mod] → pauses reading (state preserved) → normal mode
-[▶️ Okumaya Dön] or "devam et" → resumes from where you left off
-[✅ Bitir] → full reset → normal mode
-```
-
-### Persistent Keyboard (8 Buttons)
+## Mesaj Akisi
 
 ```
-┌─────────────────┬─────────────────┐
-│  📚 Ders Çalış  │  📊 Notlarım    │
-├─────────────────┼─────────────────┤
-│  📅 Bugün       │  📅 Bu Hafta    │
-├─────────────────┼─────────────────┤
-│  📬 Mailler     │  📝 Ödevler     │
-├─────────────────┼─────────────────┤
-│  🔄 Sync        │  ⚙️ Ayarlar     │
-└─────────────────┴─────────────────┘
+Kullanici mesaji
+    |
+    v
+[Rate limit kontrolu]
+    |
+    v
+[Aktif kurs kontrolu] --x--> "Kurs secin: /courses"
+    |
+    v
+[Hybrid RAG arama] (FAISS semantik + BM25 keyword --> RRF fusion)
+    |
+    v
+[Yeterli materyal var mi?]
+   / \
+  Da  Hayir
+  |     |
+  v     v
+Teaching   Guidance
+Mode       Mode
+  |         |
+  v         v
+LLM: materyale  LLM: mevcut konulari
+dayali cevap    oner + ornek sorular
 ```
 
-| Button | Action |
-|--------|--------|
-| 📚 Ders Çalış | Course selection → file list → enter reading mode |
-| 📊 Notlarım | CGPA, grades, attendance summary + drill-down buttons |
-| 📅 Bugün | Today's schedule (+ tomorrow preview) |
-| 📅 Bu Hafta | Full weekly schedule (Mon–Fri) |
-| 📬 Mailler | Latest AIRS/DAIS emails with LLM summary |
-| 📝 Ödevler | Assignment deadlines and submission status |
-| 🔄 Sync | Manual Moodle sync |
-| ⚙️ Ayarlar | Socratic mode toggle, clear history |
+### Teaching Mode
 
-### Full Automation (Zero Manual Intervention)
-- **Auto STARS login** — Re-authenticates every 10 min, reads email 2FA code from IMAP automatically
-- **Auto Moodle sync** — Checks for new materials every 10 min, notifies when new content is indexed
-- **Auto assignment tracking** — Detects new assignments every 10 min
-- **Auto email monitoring** — AIRS/DAIS emails checked every 30 min with LLM-summarized notifications
-- **Deadline reminders** — Daily 9 AM notifications for assignments due within 3 days
-- **STARS diff notifications** — Real-time alerts for grade changes, new exam dates, attendance updates
-- **12-hour STARS summary** — Periodic push with CGPA, upcoming exams, attendance status
+Materyal yeterli oldugunda (>= `RAG_MIN_CHUNKS` chunk, similarity >= `RAG_SIMILARITY_THRESHOLD`), bot materyale dayali pedagojik cevap uretir. Hocanin terminolojisini korur, uydurma bilgi vermez.
 
-### Hybrid RAG Search
+### Guidance Mode
 
-<p align="center">
-  <img src="./images/5.png" alt="Study Mode" width="500"/>
-  <br/>
-  <em>Progressive study mode — deep teaching with RAG-grounded content</em>
-</p>
-
-- **Hybrid search** — FAISS (semantic) + BM25 (keyword) fused via Reciprocal Rank Fusion (k=60)
-- **BM25 stemming** — Snowball TR/EN stemmers via PyStemmer (C extension, 1.1s build for 3600+ chunks)
-- **Multilingual embedding** — `paraphrase-multilingual-MiniLM-L12-v2` (50+ languages, +8% Turkish retrieval)
-- **Adaptive threshold** — `max(top_score * 0.60, 0.20)` instead of fixed cutoff
-- **Strict course filter** — course-filtered search → cross-course fallback only on zero results
-- **File summaries** — Per-file LLM-generated overviews for richer context
-- **Source attribution** — inline 📖 [dosya.pdf] tags + programmatic footer
-- **Hybrid PDF extraction** — pre-scans pages (text vs scanned), routes text→pymupdf4llm, scanned→OCR
-- **OCR quality check** — probe first 3 scanned pages, majority vote: 2+ fail → skip remaining
-- **Math-aware pipeline** — ~50 Unicode symbol normalization, formula-aware chunking
-
-### Keyword-Based Routing (Zero LLM Intent)
-Message routing uses keyword matching with zero LLM overhead:
-- `_STARS_KEYWORDS` → STARS data (grades, exams, attendance, schedule, CGPA)
-- `_SYNC_KEYWORDS` → Moodle sync
-- `_MAIL_KEYWORDS` → Email check
-- `BUTTON_ROUTES` → 8 persistent keyboard button handlers
-- Rule-based course detection (exact code → number match → history)
-- Fallback → hybrid RAG search + LLM response
-
-### STARS Integration
-
-<p align="center">
-  <img src="./images/3.png" alt="STARS Exams" width="500"/>
-  <br/>
-  <em>Exam schedule with countdown + course awareness</em>
-</p>
-
-<p align="center">
-  <img src="./images/6.jpeg" alt="Grades" width="350"/>
-  <br/>
-  <em>Grade overview — all courses at a glance</em>
-</p>
-
-<p align="center">
-  <img src="./images/4.png" alt="Attendance" width="500"/>
-  <br/>
-  <em>Attendance tracking with per-course ratio and absence details</em>
-</p>
-
-- **Fully automated** — OAuth + Email 2FA (reads verification code from IMAP)
-- **Session management** — Auto-refresh every 10 min when expired
-- **STARS diff notifications** — Grade changes, new exam dates, attendance ratio changes → instant Telegram alert
-- **Full academic awareness** — CGPA, grades, exams, attendance, schedule injected into all LLM calls
-- **Drill-down buttons** — `srs|grades_detail`, `srs|attendance` for detailed breakdowns
-
-### Email Monitoring
-
-<p align="center">
-  <img src="./images/2.jpeg" alt="Mail Summary" width="350"/>
-  <br/>
-  <em>LLM-summarized email notifications from AIRS/DAIS</em>
-</p>
-
-- AIRS (instructor) and DAIS (department) emails
-- Background check every 30 min with LLM-summarized notifications
-- Natural language: "maillerime bak" triggers on-demand check
-- **2FA code extraction** — Reads STARS verification codes from starsmsg@bilkent.edu.tr
-
-### Memory & Personalization
-- **3-layer architecture**: RAM conversation history → SQLite semantic memories → deep recall keyword search
-- **Conversation history persistence** — survives bot restart (JSON file)
-- **Deep cross-session recall** — Turkish keyword extraction + SQLite search for messages beyond 20-turn window
-- Learning progress tracking (topic mastery 0–1.0)
-- Weak topic detection and review suggestions
-- Semantic memory extraction (preferences, goals, challenges)
+Materyal yetersiz oldugunda, bot teknik detay vermeden ogrenciyi mevcut konulara yonlendirir ve daha spesifik soru ornekleri sunar.
 
 ---
 
-## Data Flow
-
-### Message Router (Keyword-Based)
+## Proje Yapisi
 
 ```
-User Message
-  │
-  ├─→ Reading Mode active? → clean wall (all text stays in reading handler)
-  │   ├─→ Quiz answer (quiz_active) → evaluate with ✅/🔶/❌
-  │   ├─→ "devam et" → next chunk batch
-  │   ├─→ "test et" → comprehensive quiz over all read chunks
-  │   └─→ Free text → file-scoped RAG question
-  │
-  ├─→ BUTTON_ROUTES match? → 8 persistent keyboard handlers (zero LLM)
-  │   ├─→ 📚 Ders Çalış → course list → file list → reading mode
-  │   ├─→ 📊 Notlarım   → STARS cache → grades/attendance/CGPA
-  │   ├─→ 📅 Bugün      → today's schedule from STARS
-  │   ├─→ 📅 Bu Hafta   → weekly schedule (Mon–Fri)
-  │   ├─→ 📬 Mailler    → IMAP fetch + LLM summary
-  │   ├─→ 📝 Ödevler    → Moodle assignments + deadlines
-  │   ├─→ 🔄 Sync       → Moodle sync pipeline
-  │   └─→ ⚙️ Ayarlar    → socratic toggle, clear history
-  │
-  ├─→ "devam et" + reading_paused? → resume reading from paused state
-  │
-  ├─→ Keyword routing (zero LLM):
-  │   ├─→ _STARS_KEYWORDS → multi-intent STARS data
-  │   ├─→ _SYNC_KEYWORDS  → sync pipeline
-  │   └─→ _MAIL_KEYWORDS  → email check
-  │
-  └─→ RAG Pipeline (fallback):
-      ├─→ Course detection (rule-based: exact code → number → history)
-      ├─→ hybrid_search() → FAISS + BM25 → RRF fusion (top 10)
-      │   └─→ Course filter → fallback to all courses only if 0 results
-      ├─→ _build_student_context() (cached 5 min)
-      ├─→ LLMEngine.chat_with_history()
-      ├─→ Paused reading reminder (if applicable)
-      └─→ Memory update + source footer
-```
-
-### Callback Router
-
-```
-Callback Query (InlineKeyboard)
-  │
-  ├─→ rd|  → Reading mode navigation
-  │   ├─→ rd|next    → next chunk batch + populate reading_chunks_read
-  │   ├─→ rd|back    → previous chunk batch
-  │   ├─→ rd|quiz    → comprehensive quiz (all read chunks)
-  │   ├─→ rd|normal  → pause reading → switch to normal mode
-  │   ├─→ rd|resume  → restore paused reading → continue
-  │   └─→ rd|finish  → full reset → return to normal mode
-  │
-  ├─→ rf|  → File selection → enter reading mode
-  ├─→ cs|  → Course selection (study menu / file navigation)
-  ├─→ srs| → STARS drill-down (grades detail, attendance)
-  └─→ set| → Settings (socratic toggle, clear history)
-```
-
-### STARS Authentication (Fully Automated)
-
-```
-auto_stars_login_job (every 10 min):
-  │
-  ├─→ Session valid? → skip
-  │
-  └─→ Session expired (>58 min):
-      ├─→ GET /srs/ → 4 redirects → login page
-      ├─→ POST credentials → detect verification type
-      ├─→ Poll IMAP (6×5s) for starsmsg@bilkent.edu.tr → extract code
-      ├─→ POST verification code → oauth/authorize → authenticated
-      ├─→ Fetch all data: grades, exams, attendance, schedule, CGPA
-      ├─→ Inject into LLM context
-      ├─→ Diff snapshot → notify grade/exam/attendance changes
-      └─→ Every 12h: send summary notification
-```
-
-### Sync Pipeline (Every 10 min)
-
-```
-auto_sync_job:
-  ├─→ Moodle API → discover courses & files
-  ├─→ Download new files to data/downloads/
-  ├─→ DocumentProcessor (hybrid extraction):
-  │   ├─→ Pre-scan: classify pages as text vs scanned
-  │   ├─→ Scanned → OCR probe (3 pages) → majority vote → early exit if bad
-  │   ├─→ Text → pymupdf4llm batch (BATCH_SIZE=50, structured Markdown)
-  │   ├─→ Math normalization (~50 Unicode symbols)
-  │   └─→ RecursiveCharacterTextSplitter (1000 char, 200 overlap)
-  ├─→ sentence-transformers encode → FAISS add + BM25 rebuild → persist
-  ├─→ Generate file summaries (GPT-4.1-mini, per-file overviews)
-  └─→ Notify user: "🆕 {n} yeni chunk indexlendi"
-```
-
-### Startup Sequence
-
-```
-post_init()
-  ├─→ Moodle: auto-login (username/password → token)
-  ├─→ Webmail: IMAP connect + seed AIRS/DAIS UIDs
-  ├─→ STARS: auto-login + email 2FA → fetch all → set diff baseline
-  ├─→ Vector store: load FAISS index + metadata + build BM25 index
-  ├─→ Study sessions: restore from data/study_sessions.json
-  ├─→ Conversation history: restore from data/conversation_history.json
-  └─→ Register 6 background jobs
+Moodle_Student_Tracker/
+|-- bot/
+|   |-- config.py               # AppConfig dataclass, .env okuma
+|   |-- state.py                # BotState container (paylasimli runtime state)
+|   |-- main.py                 # Uygulama giris noktasi, wiring
+|   |-- logging_config.py       # Structured logging ayarlari
+|   |-- exceptions.py           # Ozel exception tipleri
+|   |-- handlers/
+|   |   |-- commands.py         # /start, /help, /courses, /upload, /stats
+|   |   +-- messages.py         # Text mesaj + dokuman upload handler
+|   |-- services/
+|   |   |-- rag_service.py      # Hybrid retrieval (FAISS + BM25)
+|   |   |-- llm_service.py      # Teaching/guidance LLM cagrilari
+|   |   |-- user_service.py     # Kullanici state, rate limit, konusma hafizasi
+|   |   |-- document_service.py # Dokuman indeksleme
+|   |   |-- topic_cache.py      # Kurs konu onbellegi
+|   |   +-- conversation_memory.py
+|   |-- middleware/
+|   |   |-- auth.py             # Admin yetkilendirme
+|   |   +-- error_handler.py    # Global hata yakalama
+|   +-- utils/
+|       |-- formatters.py       # Mesaj formatlama
+|       +-- validators.py       # Girdi dogrulama
+|-- core/
+|   |-- vector_store.py         # FAISS + BM25 hybrid index
+|   |-- llm_engine.py           # Multi-provider LLM routing
+|   |-- llm_providers.py        # OpenAI/Gemini/GLM provider implementasyonlari
+|   |-- moodle_client.py        # Moodle REST API client
+|   |-- sync_engine.py          # Moodle -> lokal senkronizasyon
+|   |-- document_processor.py   # PDF, DOCX, PPTX cikarma + chunking
+|   |-- memory.py               # Konusma hafiza yoneticisi
+|   |-- stars_client.py         # Bilkent STARS entegrasyonu
+|   +-- webmail_client.py       # Bilkent webmail IMAP client
+|-- tests/
+|   |-- unit/                   # Birim testleri
+|   |-- integration/            # Entegrasyon testleri
+|   +-- e2e/                    # Uctan uca testler
+|-- scripts/
+|   |-- deploy.sh               # Lokal deploy (lint, test, push, SSH trigger)
+|   |-- deploy-remote.sh        # Sunucu deploy (git pull, pip, systemd restart)
+|   +-- moodle-bot.service      # Systemd unit dosyasi
+|-- data/                       # Runtime veri (index, cache, indirilen dosyalar)
+|-- images/                     # README ekran goruntuleri
+|-- Dockerfile
+|-- docker-compose.yml
+|-- Makefile
+|-- pyproject.toml
+|-- requirements.txt
+|-- requirements-dev.txt
+|-- .env.example
++-- LICENSE
 ```
 
 ---
 
-## Memory System
+## Hizli Baslangic
 
-Three-layer hybrid architecture:
-
-```
-┌──────────────────────────┐  ┌──────────────────────────────┐  ┌────────────────────────────┐
-│     STATIC LAYER          │  │      DYNAMIC LAYER            │  │      DEEP RECALL            │
-│     (profile.md)          │  │      (SQLite DB)              │  │      (Keyword Search)       │
-│                           │  │                               │  │                             │
-│ Identity, preferences     │  │ Semantic memories             │  │ Cross-session search        │
-│ Course list               │  │ Learning progress             │  │ Turkish keyword extraction  │
-│ Study schedule            │  │ Conversation history (20 msg) │  │ SQLite message + memory     │
-│                           │  │ Weak topic detection          │  │ search on every query       │
-│ Always in prompt          │  │ Query-time selective           │  │ Activated for >10 char      │
-│ ~300-500 tokens           │  │ ~300-800 tokens               │  │ queries, max 8 results      │
-│ Rarely updated            │  │ Updated every turn            │  │ ~100-900 tokens             │
-└──────────────────────────┘  └──────────────────────────────┘  └────────────────────────────┘
-
-Total per-turn memory cost: ~700-2200 tokens
-```
-
-**Conversation history** is persisted to JSON and survives bot restarts. The deep recall layer enables the bot to reference conversations from days or weeks ago through keyword-based SQLite search.
-
----
-
-## Setup
-
-> **Detayli adim adim kurulum icin: [SETUP.md](./SETUP.md)**
-
-### Requirements
-- Python 3.11+ (3.12 recommended)
-- Moodle 3.9+ (Web Services enabled)
-- Tesseract OCR (for scanned PDFs)
-- PyStemmer (for fast BM25 stemming)
-
-### Installation
+### 1. Projeyi klonla
 
 ```bash
-# 1. Clone and install
-git clone <repo-url>
+git clone https://github.com/onurcangnc/Moodle_Student_Tracker.git
 cd Moodle_Student_Tracker
-make install
+```
 
-# 2. Configure
+### 2. Sanal ortam olustur
+
+```bash
+python3 -m venv venv
+source venv/bin/activate        # Linux/Mac
+# venv\Scripts\activate         # Windows
+```
+
+### 3. Bagimliliklari kur
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. .env dosyasini yapilandir
+
+```bash
 cp .env.example .env
-# Edit .env with your credentials (see below)
+# .env icindeki alanlari doldur (detaylar icin SETUP.md)
+```
 
-# 3. Run
+Minimum gerekli alanlar:
+- `MOODLE_URL`, `MOODLE_USERNAME`, `MOODLE_PASSWORD`
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OWNER_ID`
+- En az bir LLM API anahtari (`OPENAI_API_KEY` veya `GEMINI_API_KEY`)
+
+### 5. Calistir
+
+```bash
+python -m bot.main
+# veya
 make run
 ```
 
-### Development Setup
+---
 
-```bash
-# Install dev dependencies (pytest, ruff, coverage tools)
-make dev
+## Komutlar
 
-# Run unit tests
-make test
+| Komut | Aciklama | Yetki |
+|-------|----------|-------|
+| `/start` | Botu baslatir, karsilama mesaji | Herkes |
+| `/help` | Kullanim rehberi | Herkes |
+| `/courses` | Kurslari listeler, aktif kurs secer | Herkes |
+| `/courses <ad>` | Belirtilen kursu aktif kurs olarak secer | Herkes |
+| `/upload` | Dokuman yukleme modu acar (sonraki dosya indekslenir) | Admin |
+| `/stats` | Bot istatistikleri (chunk, kurs, dosya sayisi) | Admin |
 
-# Run all tests
-make test-all
+**Normal kullanim:** `/courses` ile kurs sec, sonra sorunu mesaj olarak yaz.
 
-# Lint / format
-make lint
-make format
-```
+---
 
-### Environment Variables
+## Konfigurasyon
 
-```bash
-# ─── Moodle ──────────────────────────────────────────────
-MOODLE_URL=https://moodle.bilkent.edu.tr/2025-2026-spring
-MOODLE_USERNAME=
-MOODLE_PASSWORD=
+Tum konfigurasyon `.env` dosyasindan okunur. Ornek icin `.env.example` dosyasina bakin.
 
-# ─── LLM API Keys ───────────────────────────────────────
-GEMINI_API_KEY=                    # Google AI Studio
-OPENAI_API_KEY=                    # OpenAI (extraction + fallback)
-GLM_API_KEY=                       # Z.ai (optional fallback)
+### Temel degiskenler
 
-# ─── Task → Model Routing ───────────────────────────────
-MODEL_CHAT=gemini-2.5-flash
-MODEL_STUDY=gemini-2.5-flash
-MODEL_EXTRACTION=gpt-4.1-nano
-MODEL_TOPIC_DETECT=gpt-4.1-nano
-MODEL_SUMMARY=gemini-2.5-flash
-MODEL_QUESTIONS=gemini-2.5-flash
-MODEL_OVERVIEW=gemini-2.5-flash
+| Degisken | Varsayilan | Aciklama |
+|----------|------------|----------|
+| `MOODLE_URL` | — | Bilkent Moodle URL (donem bazli degisir) |
+| `MOODLE_USERNAME` | — | Moodle kullanici adi |
+| `MOODLE_PASSWORD` | — | Moodle sifresi |
+| `TELEGRAM_BOT_TOKEN` | — | @BotFather'dan alinan token |
+| `TELEGRAM_OWNER_ID` | — | Bot sahibinin Telegram chat ID'si |
+| `TELEGRAM_ADMIN_IDS` | — | Ek admin ID'leri (virgul ayirmali) |
 
-# ─── Telegram Bot ────────────────────────────────────────
-TELEGRAM_BOT_TOKEN=                # @BotFather → /newbot
-TELEGRAM_OWNER_ID=                 # Your Telegram chat ID
-LOG_LEVEL=INFO
+### LLM Routing
 
-# ─── STARS ───────────────────────────────────────────────
-STARS_USERNAME=
-STARS_PASSWORD=
+| Degisken | Varsayilan | Aciklama |
+|----------|------------|----------|
+| `OPENAI_API_KEY` | — | OpenAI API anahtari |
+| `GEMINI_API_KEY` | — | Google Gemini API anahtari |
+| `MODEL_CHAT` | `gemini-2.5-flash` | Ana sohbet modeli |
+| `MODEL_STUDY` | `gemini-2.5-flash` | Study mode modeli |
+| `MODEL_EXTRACTION` | `gpt-4.1-nano` | Hafiza cikarma |
+| `MODEL_SUMMARY` | `gemini-2.5-flash` | Ozet uretimi |
 
-# ─── Webmail IMAP ────────────────────────────────────────
-WEBMAIL_EMAIL=
-WEBMAIL_PASSWORD=
+### RAG Parametreleri
 
-# ─── Tuning (optional) ──────────────────────────────────
-EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
-AUTO_SYNC_INTERVAL=600
-ASSIGNMENT_CHECK_INTERVAL=600
-HEALTHCHECK_ENABLED=true
-HEALTHCHECK_HOST=0.0.0.0
-HEALTHCHECK_PORT=8080
-```
+| Degisken | Varsayilan | Aciklama |
+|----------|------------|----------|
+| `RAG_SIMILARITY_THRESHOLD` | `0.65` | Minimum benzerlik skoru |
+| `RAG_MIN_CHUNKS` | `2` | Teaching mode icin minimum chunk |
+| `RAG_TOP_K` | `5` | Her aramada dondurulecek chunk sayisi |
+| `EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | Embedding modeli |
+| `CHUNK_SIZE` | `1000` | Chunk boyutu (karakter) |
+| `CHUNK_OVERLAP` | `200` | Chunk overlapi |
 
-### LLM Providers
+### Operasyonel
 
-| Provider | Model | Usage | Cost |
-|----------|-------|-------|------|
-| Google | Gemini 2.5 Flash | Chat, study, reading mode, summary, questions, overview | Free tier (1500 req/day) |
-| OpenAI | GPT-4.1-nano | Memory extraction, topic detection | ~$0.005/1K req |
-| Z.ai (GLM) | glm-4.7 | Fallback (optional) | Free tier |
-
-**No LLM intent classifier** — keyword-based routing eliminates per-message classification cost.
-**Estimated monthly cost for active daily use: ~$0.50**
-
-### CLI Interface (Alternative)
-
-```bash
-# Sync Moodle materials
-python main.py sync
-
-# Interactive chat
-python main.py chat
-
-# Course summary
-python main.py summary
-
-# Web interface (requires: pip install gradio)
-python main.py web
-```
+| Degisken | Varsayilan | Aciklama |
+|----------|------------|----------|
+| `RATE_LIMIT_MAX` | `30` | Pencere basina max istek |
+| `RATE_LIMIT_WINDOW` | `60` | Rate limit penceresi (saniye) |
+| `MEMORY_MAX_MESSAGES` | `5` | Konusma hafizasindaki max mesaj |
+| `MEMORY_TTL_MINUTES` | `30` | Hafiza TTL (dakika) |
+| `HEALTHCHECK_ENABLED` | `true` | HTTP health endpoint |
+| `HEALTHCHECK_PORT` | `8080` | Health endpoint portu |
+| `LOG_LEVEL` | `INFO` | Log seviyesi |
 
 ---
 
 ## Deployment
 
-Bu proje tek sunucu + SSH deploy akisina gore tasarlanmistir. CI/CD pipeline kullanilmaz.
-
-### Ilk Kurulum (Sunucuda)
-
-1. Repo'yu klonla:
+### Systemd (onerilen)
 
 ```bash
-git clone <repo-url> /opt/moodle-bot
-cd /opt/moodle-bot
-```
-
-2. Ortam degiskenlerini hazirla:
-
-```bash
-cp .env.example .env
-# .env dosyasini doldur
-```
-
-3. Service dosyasini kopyala ve yollari kontrol et:
-
-```bash
+# Service dosyasini kopyala
 sudo cp scripts/moodle-bot.service /etc/systemd/system/moodle-bot.service
+
+# Baslatma
 sudo systemctl daemon-reload
 sudo systemctl enable moodle-bot
 sudo systemctl start moodle-bot
+
+# Log takibi
+journalctl -u moodle-bot -f
 ```
 
-4. Servis durumunu ve loglari kontrol et:
+### Docker
 
 ```bash
-sudo systemctl status moodle-bot --no-pager
-sudo journalctl -u moodle-bot -f --no-pager
-```
+# .env dosyasini ayarla
+cp .env.example .env
 
-### Gunluk Deploy (Lokal Makineden)
-
-```bash
-make deploy        # lint -> unit test -> git push -> ssh remote deploy
-make logs          # sunucu loglarini takip et
-make status        # servis durumunu kontrol et
-make restart       # servisi yeniden baslat
-```
-
-### Deploy Scriptleri
-
-- `scripts/deploy.sh`: Lokal makinede calisir (pre-deploy kontrol + push + ssh).
-- `scripts/deploy-remote.sh`: Sunucuda calisir (git pull + pip install + import check + systemd restart).
-- `scripts/moodle-bot.service`: systemd unit dosyasi.
-- Varsayilan `PROJECT_DIR` degeri `/opt/moodle-bot` olarak ayarlidir.
-
-### Docker (Opsiyonel)
-
-```bash
-docker build -t telegram-rag-bot .
+# Build ve calistir
 docker compose up -d
+
+# Log takibi
+docker compose logs -f
 ```
 
-### Re-index from scratch
+### Health Check
 
 ```bash
-ssh user@server "cd /opt/moodle-bot && rm -f data/faiss.index data/metadata.json data/sync_state.json"
-ssh user@server "sudo systemctl restart moodle-bot"
-```
-
-### Lokal Build Verification
-
-```bash
-make lint
-make test-all
-make test-cov
+curl http://localhost:8080/health
+# {"status": "ok", "uptime_seconds": 3600, "version": "abc1234", "chunks_loaded": 3661, "active_users_24h": 5}
 ```
 
 ---
 
-## Recommended Usage
+## Gelistirme
 
-### First Time Setup
-1. Fill `.env` with all credentials
-2. Run `python telegram_bot.py`
-3. Open Telegram → find your bot → send `/start`
-4. The bot will auto-login to Moodle, STARS, and Webmail
-5. First sync happens automatically — wait for "indexing complete" notification
-6. The 8-button persistent keyboard appears automatically
+```bash
+# Gelistirme bagimliklarini kur
+make dev
 
-### Daily Workflow
-- **Tap buttons** — most actions are one tap away from the persistent keyboard
-- **📚 Ders Çalış** → pick a course → pick a file → bot reads it to you chunk by chunk
-- **📊 Notlarım** → CGPA, grades, attendance at a glance
-- **📅 Bugün** → today's class schedule
-- **📬 Mailler** → latest emails summarized
-- **Or just type naturally** — "hegemonya nedir?", "sınavlarım ne zaman?"
+# Lint
+make lint
 
-### Reading Mode (Recommended for Exam Prep)
-1. Tap **📚 Ders Çalış** → select course → select file
-2. Bot enters **📖 Okuma Modu** and starts teaching chunk by chunk
-3. Navigate with inline buttons:
-   - `[▶️ Devam Et]` — next section
-   - `[◀️ Geri]` — previous section
-   - `[🧠 Quiz]` — quiz over everything you've read so far
-   - `[✅ Bitir]` — finish and return to normal mode
-4. Ask questions anytime — answered from the current file only
-5. Tap `[💬 Normal Mod]` to pause and check grades/schedule/etc.
-6. Say "devam et" or tap `[▶️ Okumaya Dön]` to resume where you left off
+# Format
+make format
 
-### Commands
+# Unit testleri calistir
+make test
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Show welcome message + persistent keyboard |
-| `/help` | Dual mode info + current mode status |
-| `/calis` | Course selection (= 📚 Ders Çalış) |
-| `/notlar` | Grades summary (= 📊 Notlarım) |
-| `/bugun` | Today's schedule (= 📅 Bugün) |
-| `/haftam` | Weekly schedule (= 📅 Bu Hafta) |
-| `/mail` | Check emails (= 📬 Mailler) |
-| `/odevler` | Assignment status (= 📝 Ödevler) |
-| `/menu` | Course list |
-| `/login` | Manual STARS login |
-| `/sync` | Manual Moodle sync |
-| `/stars` | STARS data panel |
-| `/temizle` | Clear study sessions + history |
+# Tum testleri calistir
+make test-all
 
-### Pro Tips
-- The bot **understands Turkish naturally** — no formal syntax needed
-- Compound STARS queries work: "hem notlarım hem devamsızlığım?"
-- In reading mode, **all text stays file-scoped** — no accidental course mixing
-- Paused readings survive mode switches — resume anytime with "devam et"
-- All notifications are automatic — grades, exams, assignments, emails arrive without asking
+# Coverage raporu
+make test-cov
+
+# Cache temizle
+make clean
+
+# Sunucuya deploy
+make deploy
+```
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|------------|
-| Bot Framework | python-telegram-bot 21+ (APScheduler job queue) |
-| Embedding | sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2, 384 dim) |
-| Vector DB | FAISS (IndexFlatIP, cosine similarity) |
-| Keyword Search | BM25 with Snowball TR/EN stemmers (PyStemmer C extension) |
-| Hybrid Fusion | Reciprocal Rank Fusion (k=60, 2× candidate pool) |
-| LLM | Gemini 2.5 Flash + GPT-4.1-nano |
-| Document Processing | pymupdf4llm (batch), PyMuPDF, PyPDF2, python-docx, BeautifulSoup |
-| OCR | Tesseract DPI=200 (tur+eng+equ) with probe-based quality check |
-| Text Splitting | langchain RecursiveCharacterTextSplitter (equation-aware) |
-| Memory | SQLite (WAL mode) + Markdown profile + JSON persistence |
-| Web Scraping | requests + BeautifulSoup (STARS OAuth + HTML parsing) |
-| Email | imaplib IMAP4_SSL (on-demand connection) |
-| Async | asyncio + asyncio.to_thread() (non-blocking I/O) |
+| Bilesen | Teknoloji |
+|---------|-----------|
+| Runtime | Python >= 3.10 |
+| Telegram | python-telegram-bot 21.x (asyncio) |
+| LLM | OpenAI API, Google Gemini, GLM (task-based routing) |
+| Embedding | sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2) |
+| Vector Search | FAISS (CPU) |
+| Keyword Search | rank-bm25 (Snowball TR/EN stemming) |
+| Search Fusion | Reciprocal Rank Fusion (k=60) |
+| PDF Extraction | PyMuPDF + pymupdf4llm + Tesseract OCR |
+| DOCX/PPTX | python-docx, python-pptx |
+| Chunking | langchain-text-splitters (RecursiveCharacterTextSplitter) |
+| Config | python-dotenv |
+| Lint/Format | ruff |
+| Test | pytest, pytest-asyncio, pytest-cov |
 
 ---
 
-## File Structure
+## Ekran Goruntuleri
 
-```
-.
-├── bot/
-│   ├── main.py                # Modular runtime entrypoint
-│   ├── config.py              # Env-backed runtime configuration
-│   ├── state.py               # Shared process state container
-│   ├── logging_config.py      # Structured logging setup
-│   ├── exceptions.py          # Custom exception classes
-│   ├── handlers/              # Command/callback/message handler modules
-│   ├── services/              # RAG/document/user service layer
-│   ├── middleware/            # Auth/rate-limit/error middleware
-│   └── utils/                 # Formatter/validator/helper utilities
-├── telegram_bot.py            # Backward-compatible shim entrypoint
-├── main.py                    # CLI interface (sync, chat, summary, web)
-├── core/
-│   ├── __init__.py            # Environment variable management
-│   ├── moodle_client.py       # Moodle Web Services API client
-│   ├── document_processor.py  # Hybrid PDF extraction (pymupdf4llm + OCR) + DOCX/PPTX/HTML
-│   ├── vector_store.py        # FAISS + BM25 hybrid search + dedup + RRF fusion
-│   ├── llm_engine.py          # RAG orchestration + dual prompts + student context cache
-│   ├── llm_providers.py       # Multi-provider LLM routing (TaskRouter)
-│   ├── sync_engine.py         # Moodle → index pipeline
-│   ├── memory.py              # 3-layer memory (static + dynamic SQLite + deep recall)
-│   ├── stars_client.py        # STARS scraper (OAuth + Email/SMS 2FA)
-│   └── webmail_client.py      # IMAP email monitoring + 2FA code extraction
-├── tests/
-│   ├── conftest.py            # Shared pytest fixtures
-│   ├── unit/                  # Unit tests
-│   ├── integration/           # Integration tests
-│   ├── e2e/                   # End-to-end tests
-│   ├── test_rag_quality.py    # Legacy evaluation script
-│   ├── test_reading_mode.py   # Legacy reading-mode script
-│   └── test_e2e_scenarios.py  # Legacy scenario evaluator
-├── Dockerfile                 # Container image build
-├── docker-compose.yml         # Local/production compose setup
-├── Makefile                   # Common dev commands
-├── pyproject.toml             # Ruff + pytest configuration
-├── requirements-dev.txt       # Dev dependencies
-├── scripts/
-│   ├── deploy.sh              # Local deploy command (lint/test/push/ssh)
-│   ├── deploy-remote.sh       # Remote server deploy workflow
-│   └── moodle-bot.service     # Systemd service template
-├── data/
-│   ├── downloads/             # Downloaded course files
-│   ├── file_summaries.json    # Per-file LLM-generated overviews
-│   ├── study_sessions.json    # Persistent study session state
-│   ├── conversation_history.json # Persistent conversation history
-│   ├── memory.db              # SQLite dynamic memory
-│   ├── faiss.index            # FAISS vector index
-│   ├── metadata.json          # Chunk metadata
-│   ├── sync_state.json        # Sync state
-│   └── .moodle_token          # Cached Moodle token
-├── images/                    # Screenshots for README
-├── .env                       # Environment variables (not committed)
-├── .env.example               # Example configuration
-└── requirements.txt           # Python dependencies
-```
+| | |
+|---|---|
+| ![Kurs secimi](images/1.png) | ![Soru-cevap](images/2.png) |
+| ![Materyal listesi](images/3.png) | ![Teaching mode](images/4.png) |
+| ![Moodle entegrasyonu](images/moodle1.png) | ![Senkronizasyon](images/moodle2.png) |
 
 ---
 
-## Stats
+## Lisans
 
-| Metric | Value |
-|--------|-------|
-| Indexed chunks | ~3,660 |
-| Courses | 5 |
-| Files | 28 |
-| File summaries | 28 |
-| Background jobs | 6 |
-| Persistent keyboard buttons | 8 |
-| Callback prefixes | 6 (rd\|, rf\|, cs\|, srs\|, set\|, ozet\_) |
-| Slash commands | 13 |
-| Embedding dimensions | 384 |
-| Supported languages | 50+ |
-| Hybrid search (BM25+FAISS) | precision 94%, pass rate 97% |
-| BM25 build time | ~1.1s (PyStemmer) |
-| Estimated monthly cost | ~$0.50 |
-
-
+MIT License. Detaylar icin [LICENSE](LICENSE) dosyasina bakin.
