@@ -8,10 +8,17 @@ set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-/opt/moodle-bot}"
 SERVICE_NAME="${SERVICE_NAME:-moodle-bot}"
-PYTHON="${PYTHON:-python3}"
-PIP="${PIP:-pip3}"
 BRANCH="${BRANCH:-main}"
 LOG_FILE="${PROJECT_DIR}/logs/deploy_$(date +%Y%m%d_%H%M%S).log"
+VENV_DIR="${VENV_DIR:-$PROJECT_DIR/venv}"
+
+if [ -x "$VENV_DIR/bin/python" ] && [ -x "$VENV_DIR/bin/pip" ]; then
+    PYTHON="${PYTHON:-$VENV_DIR/bin/python}"
+    PIP="${PIP:-$VENV_DIR/bin/pip}"
+else
+    PYTHON="${PYTHON:-python3}"
+    PIP="${PIP:-pip3}"
+fi
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"; }
 fail() { log "HATA: $1"; exit 1; }
@@ -26,6 +33,13 @@ log "Git pull ($BRANCH)..."
 git fetch origin "$BRANCH" || fail "git fetch basarisiz"
 git reset --hard "origin/$BRANCH" || fail "git reset basarisiz"
 log "Git pull tamamlandi: $(git log --oneline -1)"
+
+if [ "$PYTHON" = "python3" ] && [ "$PIP" = "pip3" ] && [ ! -d "$VENV_DIR" ]; then
+    log "Venv bulunamadi, olusturuluyor: $VENV_DIR"
+    python3 -m venv "$VENV_DIR" || fail "venv olusturma basarisiz"
+    PYTHON="$VENV_DIR/bin/python"
+    PIP="$VENV_DIR/bin/pip"
+fi
 
 # 2. Dependency guncelleme
 log "Dependency guncelleniyor..."
