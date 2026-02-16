@@ -27,6 +27,40 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+OPENAI_PROVIDER_EXCEPTIONS: tuple[type[BaseException], ...] = ()
+ANTHROPIC_PROVIDER_EXCEPTIONS: tuple[type[BaseException], ...] = ()
+
+try:
+    from openai import APIConnectionError, APIError, APITimeoutError, RateLimitError
+
+    OPENAI_PROVIDER_EXCEPTIONS = (APIConnectionError, APIError, APITimeoutError, RateLimitError)
+except ImportError:
+    OPENAI_PROVIDER_EXCEPTIONS = ()
+
+try:
+    from anthropic import APIConnectionError as AnthropicAPIConnectionError
+    from anthropic import APIError as AnthropicAPIError
+    from anthropic import APITimeoutError as AnthropicAPITimeoutError
+    from anthropic import RateLimitError as AnthropicRateLimitError
+
+    ANTHROPIC_PROVIDER_EXCEPTIONS = (
+        AnthropicAPIConnectionError,
+        AnthropicAPIError,
+        AnthropicAPITimeoutError,
+        AnthropicRateLimitError,
+    )
+except ImportError:
+    ANTHROPIC_PROVIDER_EXCEPTIONS = ()
+
+LLM_PROVIDER_EXCEPTIONS = (
+    ConnectionError,
+    TimeoutError,
+    OSError,
+    RuntimeError,
+    ValueError,
+    TypeError,
+) + OPENAI_PROVIDER_EXCEPTIONS + ANTHROPIC_PROVIDER_EXCEPTIONS
+
 
 # ─── Provider Definitions ────────────────────────────────────────────────────
 
@@ -384,8 +418,15 @@ class MultiProviderEngine:
             result = adapter.complete(system, messages, max_tokens)
             logger.debug(f"[{task}] → {model_key}: OK")
             return result
-        except Exception as e:
-            logger.error(f"[{task}] {model_key} failed: {e}")
+        except LLM_PROVIDER_EXCEPTIONS as exc:
+            logger.error(
+                "LLM request failed for task=%s model=%s: %s",
+                task,
+                model_key,
+                exc,
+                exc_info=True,
+                extra={"task": task, "model_key": model_key},
+            )
             # Fallback: try another model
             return self._fallback_complete(task, system, messages, max_tokens, failed=model_key)
 

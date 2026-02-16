@@ -288,9 +288,15 @@ class StarsClient:
 
             return {"status": "error", "message": "Doğrulama sonrası yönlendirme başarısız."}
 
-        except Exception as e:
-            logger.error(f"STARS SMS verify error: {e}", exc_info=True)
-            return {"status": "error", "message": f"Doğrulama hatası: {e}"}
+        except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError, OSError) as exc:
+            logger.error(
+                "STARS SMS verify failed for user=%s: %s",
+                user_id,
+                exc,
+                exc_info=True,
+                extra={"user_id": user_id, "verify_url": ss._verify_url},
+            )
+            return {"status": "error", "message": f"Doğrulama hatası: {exc}"}
 
     def logout(self, user_id: int):
         ss = self._sessions.pop(user_id, None)

@@ -12,7 +12,7 @@ import json
 import logging
 import re
 
-from core.llm_providers import MultiProviderEngine
+from core.llm_providers import LLM_PROVIDER_EXCEPTIONS, MultiProviderEngine
 from core.memory import HybridMemoryManager
 from core.vector_store import VectorStore
 
@@ -412,9 +412,14 @@ class LLMEngine:
 
             return reply
 
-        except Exception as e:
-            logger.error(f"Chat error: {e}")
-            return f"Hata: {e}"
+        except LLM_PROVIDER_EXCEPTIONS as exc:
+            logger.error(
+                "Chat completion failed: %s",
+                exc,
+                exc_info=True,
+                extra={"course": course or "", "study_mode": study_mode},
+            )
+            return f"Hata: {exc}"
 
     # ─── Weekly Summary ──────────────────────────────────────────────────
 
@@ -460,9 +465,14 @@ class LLMEngine:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=4096,
             )
-        except Exception as e:
-            logger.error(f"Summary generation failed: {e}")
-            return f"Özet oluşturma hatası: {e}"
+        except LLM_PROVIDER_EXCEPTIONS as exc:
+            logger.error(
+                "Weekly summary generation failed: %s",
+                exc,
+                exc_info=True,
+                extra={"course": course_name, "section": section_name},
+            )
+            return f"Özet oluşturma hatası: {exc}"
 
     # ─── Course Overview ─────────────────────────────────────────────────
 
@@ -487,8 +497,9 @@ class LLMEngine:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=4096,
             )
-        except Exception as e:
-            return f"Hata: {e}"
+        except LLM_PROVIDER_EXCEPTIONS as exc:
+            logger.error("Course overview generation failed: %s", exc, exc_info=True)
+            return f"Hata: {exc}"
 
     # ─── Exam Prep ───────────────────────────────────────────────────────
 
@@ -516,8 +527,14 @@ class LLMEngine:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=4096,
             )
-        except Exception as e:
-            return f"Hata: {e}"
+        except LLM_PROVIDER_EXCEPTIONS as exc:
+            logger.error(
+                "Practice question generation failed: %s",
+                exc,
+                exc_info=True,
+                extra={"topic": topic, "course": course or ""},
+            )
+            return f"Hata: {exc}"
 
     # ─── Tutor Mode ──────────────────────────────────────────────────────
 
@@ -609,9 +626,15 @@ class LLMEngine:
                 if parsed and isinstance(parsed, dict):
                     return parsed
                 logger.warning(f"Tutor step attempt {attempt+1}: non-dict JSON, retrying...")
-            except Exception as e:
-                last_error = e
-                logger.warning(f"Tutor step attempt {attempt+1} failed: {e}")
+            except LLM_PROVIDER_EXCEPTIONS as exc:
+                last_error = exc
+                logger.warning(
+                    "Tutor step attempt %s failed: %s",
+                    attempt + 1,
+                    exc,
+                    exc_info=True,
+                    extra={"course": course_name, "topic": topic, "step": step},
+                )
 
             if attempt < max_retries - 1:
                 import time as _time
@@ -699,8 +722,13 @@ class LLMEngine:
                 return parsed
             logger.warning("Quiz generation returned non-list or empty JSON")
             return []
-        except Exception as e:
-            logger.error(f"Quiz generation error: {e}")
+        except LLM_PROVIDER_EXCEPTIONS as exc:
+            logger.error(
+                "Quiz generation failed: %s",
+                exc,
+                exc_info=True,
+                extra={"course": course_name, "topic": topic, "difficulty": difficulty},
+            )
             return []
 
     # ─── Progressive Study Mode ──────────────────────────────────────────
@@ -736,8 +764,8 @@ class LLMEngine:
             if parsed and isinstance(parsed, list) and all(isinstance(s, str) for s in parsed):
                 return parsed
             logger.warning(f"Study plan parse failed, raw: {raw[:200]}")
-        except Exception as e:
-            logger.error(f"Study plan generation error: {e}")
+        except LLM_PROVIDER_EXCEPTIONS as exc:
+            logger.error("Study plan generation failed: %s", exc, exc_info=True, extra={"topic": topic})
         return []
 
     def teach_subtopic(
@@ -780,9 +808,14 @@ class LLMEngine:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=8192,
             )
-        except Exception as e:
-            logger.error(f"Teach subtopic error: {e}")
-            return f"Hata: {e}"
+        except LLM_PROVIDER_EXCEPTIONS as exc:
+            logger.error(
+                "Teach subtopic failed: %s",
+                exc,
+                exc_info=True,
+                extra={"topic": topic, "subtopic": subtopic},
+            )
+            return f"Hata: {exc}"
 
     def generate_mini_quiz(self, context_text: str, subtopic: str, n_questions: int = 3) -> tuple[str, str]:
         """Generate a mini-quiz for a subtopic.
@@ -821,9 +854,14 @@ class LLMEngine:
                 parts = raw.split(sep, 1)
                 return parts[0].strip(), sep + "\n" + parts[1].strip()
             return raw.strip(), ""
-        except Exception as e:
-            logger.error(f"Mini quiz error: {e}")
-            return f"Quiz oluşturulamadı: {e}", ""
+        except LLM_PROVIDER_EXCEPTIONS as exc:
+            logger.error(
+                "Mini quiz generation failed: %s",
+                exc,
+                exc_info=True,
+                extra={"subtopic": subtopic, "question_count": n_questions},
+            )
+            return f"Quiz oluşturulamadı: {exc}", ""
 
     def reteach_simpler(self, context_text: str, topic: str, subtopic: str) -> str:
         """Re-explain a subtopic in simpler terms."""
@@ -854,9 +892,14 @@ class LLMEngine:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=6144,
             )
-        except Exception as e:
-            logger.error(f"Reteach error: {e}")
-            return f"Hata: {e}"
+        except LLM_PROVIDER_EXCEPTIONS as exc:
+            logger.error(
+                "Reteach generation failed: %s",
+                exc,
+                exc_info=True,
+                extra={"topic": topic, "subtopic": subtopic},
+            )
+            return f"Hata: {exc}"
 
     # ─── Helpers ─────────────────────────────────────────────────────────
 

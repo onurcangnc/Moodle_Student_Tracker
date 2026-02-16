@@ -17,5 +17,9 @@ class RateLimitExceededError(BotBaseError):
     """Raised when user exceeds configured rate limits."""
 
 
+class InsufficientContextError(BotBaseError):
+    """Raised when retrieval context is insufficient for a grounded answer."""
+
+
 class AuthorizationError(BotBaseError):
     """Raised when an unauthorized user attempts restricted actions."""

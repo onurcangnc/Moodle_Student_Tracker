@@ -69,8 +69,13 @@ class SyncEngine:
             mem = HybridMemoryManager()
             mem.update_profile_courses([c.fullname for c in courses])
             logger.info("Profile courses updated.")
-        except Exception as e:
-            logger.debug(f"Profile update skipped: {e}")
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            logger.debug(
+                "Profile course update skipped: %s",
+                exc,
+                exc_info=True,
+                extra={"course_count": len(courses)},
+            )
 
         # Update sync timestamp
         self.sync_state["last_full_sync"] = datetime.now(timezone.utc).isoformat()
@@ -161,8 +166,14 @@ class SyncEngine:
                     )
                     self.vector_store.add_chunks([chunk])
                     chunk_count += 1
-        except Exception as e:
-            logger.debug(f"URL module sync skipped: {e}")
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+            logger.debug(
+                "URL module sync skipped for course=%s: %s",
+                course.shortname,
+                exc,
+                exc_info=True,
+                extra={"course_id": course.id, "course_name": course.fullname},
+            )
 
         self._save_state()
         logger.info(f"[{course.shortname}] Indexed {chunk_count} chunks.")

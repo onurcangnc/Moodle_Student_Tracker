@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core import config
+from core.llm_providers import LLM_PROVIDER_EXCEPTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -807,8 +808,13 @@ class HybridMemoryManager:
                 )
                 if entry.content:
                     self.db.add_memory(entry)
-        except Exception as e:
-            logger.debug(f"Memory extraction skipped: {e}")
+        except LLM_PROVIDER_EXCEPTIONS as exc:
+            logger.debug(
+                "Memory extraction skipped: %s",
+                exc,
+                exc_info=True,
+                extra={"course": course or "", "source_message_id": source_id},
+            )
 
     def _detect_topics(self, user_msg: str, course: str):
         if not course or len(user_msg) < 15:
@@ -824,8 +830,13 @@ class HybridMemoryManager:
             for topic in self._parse_json(text):
                 if isinstance(topic, str) and topic:
                     self.db.update_learning(course, topic, mastery_delta=0.05, asked=True)
-        except Exception as e:
-            logger.debug(f"Topic detection skipped: {e}")
+        except LLM_PROVIDER_EXCEPTIONS as exc:
+            logger.debug(
+                "Topic detection skipped: %s",
+                exc,
+                exc_info=True,
+                extra={"course": course or ""},
+            )
 
     # ─── Manual Controls ─────────────────────────────────────────────────
 

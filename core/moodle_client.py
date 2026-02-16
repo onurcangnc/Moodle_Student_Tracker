@@ -588,8 +588,14 @@ class MoodleClient:
                             if gradefordisplay:
                                 grade = gradefordisplay
 
-                except Exception as e:
-                    logger.debug(f"Could not get submission status for {assign_id}: {e}")
+                except (requests.RequestException, KeyError, TypeError, ValueError, RuntimeError, OSError) as exc:
+                    logger.debug(
+                        "Could not fetch submission status for assignment=%s: %s",
+                        assign_id,
+                        exc,
+                        exc_info=True,
+                        extra={"assignment_id": assign_id, "course_id": cid},
+                    )
 
                 assignments.append(
                     Assignment(

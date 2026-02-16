@@ -195,8 +195,14 @@ class DocumentProcessor:
 
         try:
             pages = extractor(file_path)
-        except Exception as e:
-            logger.error(f"Extraction failed [{file_path.name}]: {e}")
+        except (OSError, RuntimeError, TypeError, ValueError, UnicodeError) as exc:
+            logger.error(
+                "Extraction failed for file=%s: %s",
+                file_path.name,
+                exc,
+                exc_info=True,
+                extra={"file_path": str(file_path), "file_extension": ext},
+            )
             return []
 
         if not pages:
@@ -303,8 +309,14 @@ class DocumentProcessor:
                             text = pd.get("text", "").strip()
                             if text:
                                 result_pages[batch[i]] = text
-                    except Exception as e:
-                        logger.debug(f"pymupdf4llm batch failed for {path.name}: {e}")
+                    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                        logger.debug(
+                            "pymupdf4llm batch failed for file=%s: %s",
+                            path.name,
+                            exc,
+                            exc_info=True,
+                            extra={"file_path": str(path), "batch_start": batch_start},
+                        )
                         doc = fitz.open(str(path))
                         for pi in batch:
                             text = doc[pi].get_text("text").strip()
@@ -324,8 +336,14 @@ class DocumentProcessor:
 
         except ImportError:
             logger.debug("pymupdf4llm not installed, using raw extraction")
-        except Exception as e:
-            logger.debug(f"pymupdf4llm failed for {path.name}: {e}")
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            logger.debug(
+                "pymupdf4llm extraction failed for file=%s: %s",
+                path.name,
+                exc,
+                exc_info=True,
+                extra={"file_path": str(path)},
+            )
 
         # Fallback: raw PyMuPDF extraction
         return self._extract_pdf_raw(path)
@@ -358,9 +376,15 @@ class DocumentProcessor:
             if pages:
                 return pages
         except ImportError:
-            pass
-        except Exception as e:
-            logger.debug(f"PyMuPDF failed, trying PyPDF2: {e}")
+            logger.debug("PyMuPDF not installed, trying PyPDF2 fallback for file=%s", path.name)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            logger.debug(
+                "PyMuPDF extraction failed for file=%s, trying PyPDF2: %s",
+                path.name,
+                exc,
+                exc_info=True,
+                extra={"file_path": str(path)},
+            )
 
         # Fallback: PyPDF2 (no OCR support here)
         try:
@@ -371,8 +395,14 @@ class DocumentProcessor:
                 text = page.extract_text() or ""
                 if text.strip():
                     pages.append(text.strip())
-        except Exception as e:
-            logger.error(f"PDF extraction failed [{path.name}]: {e}")
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError, UnicodeError) as exc:
+            logger.error(
+                "PDF extraction failed for file=%s: %s",
+                path.name,
+                exc,
+                exc_info=True,
+                extra={"file_path": str(path)},
+            )
 
         return pages
 
@@ -422,8 +452,15 @@ class DocumentProcessor:
                         logger.debug("OCR extended language retry failed on page %s: %s", page_num + 1, exc)
 
             return text.strip()
-        except Exception as e:
-            logger.warning(f"OCR failed on page {page_num + 1} of {filename}: {e}")
+        except (OSError, RuntimeError, TypeError, ValueError, UnicodeError) as exc:
+            logger.warning(
+                "OCR failed for file=%s page=%s: %s",
+                filename,
+                page_num + 1,
+                exc,
+                exc_info=True,
+                extra={"file_name": filename, "page_num": page_num + 1},
+            )
             return ""
 
     # ─── Other Extractors ─────────────────────────────────────────────────
@@ -436,8 +473,14 @@ class DocumentProcessor:
             doc = Document(str(path))
             full_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
             return [full_text] if full_text else []
-        except Exception as e:
-            logger.error(f"DOCX extraction failed [{path.name}]: {e}")
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            logger.error(
+                "DOCX extraction failed for file=%s: %s",
+                path.name,
+                exc,
+                exc_info=True,
+                extra={"file_path": str(path)},
+            )
             return []
 
     def _extract_pptx(self, path: Path) -> list[str]:
@@ -458,8 +501,14 @@ class DocumentProcessor:
                 if texts:
                     slides.append(f"[Slide {i+1}]\n" + "\n".join(texts))
             return slides
-        except Exception as e:
-            logger.error(f"PPTX extraction failed [{path.name}]: {e}")
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError) as exc:
+            logger.error(
+                "PPTX extraction failed for file=%s: %s",
+                path.name,
+                exc,
+                exc_info=True,
+                extra={"file_path": str(path)},
+            )
             return []
 
     def _extract_html(self, path: Path) -> list[str]:
@@ -476,8 +525,14 @@ class DocumentProcessor:
 
             text = soup.get_text(separator="\n", strip=True)
             return [text] if text else []
-        except Exception as e:
-            logger.error(f"HTML extraction failed [{path.name}]: {e}")
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError, UnicodeError) as exc:
+            logger.error(
+                "HTML extraction failed for file=%s: %s",
+                path.name,
+                exc,
+                exc_info=True,
+                extra={"file_path": str(path)},
+            )
             return []
 
     def _extract_text(self, path: Path) -> list[str]:
@@ -485,8 +540,14 @@ class DocumentProcessor:
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
             return [text] if text.strip() else []
-        except Exception as e:
-            logger.error(f"Text extraction failed [{path.name}]: {e}")
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            logger.error(
+                "Text extraction failed for file=%s: %s",
+                path.name,
+                exc,
+                exc_info=True,
+                extra={"file_path": str(path)},
+            )
             return []
 
     # ─── Math Normalization ───────────────────────────────────────────────

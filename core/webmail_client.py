@@ -17,6 +17,18 @@ logger = logging.getLogger("core.webmail_client")
 
 IMAP_HOST = "mail.bilkent.edu.tr"
 IMAP_TIMEOUT = 30  # seconds
+IMAP_OPERATION_EXCEPTIONS = (
+    imaplib.IMAP4.error,
+    imaplib.IMAP4.abort,
+    imaplib.IMAP4.readonly,
+    OSError,
+    TimeoutError,
+    ConnectionError,
+    ValueError,
+    TypeError,
+    UnicodeError,
+    AttributeError,
+)
 
 
 class WebmailClient:
@@ -43,8 +55,14 @@ class WebmailClient:
             self._last_seen_uids = self._get_airs_dais_uids()
             logger.info(f"IMAP login OK: {email_addr} ({len(self._last_seen_uids)} existing AIRS/DAIS mails)")
             return True
-        except Exception as e:
-            logger.error(f"IMAP login failed: {e}")
+        except IMAP_OPERATION_EXCEPTIONS as exc:
+            logger.error(
+                "IMAP login failed for email=%s: %s",
+                email_addr,
+                exc,
+                exc_info=True,
+                extra={"email": email_addr},
+            )
             self._authenticated = False
             self._email = ""
             self._password = ""
@@ -76,8 +94,13 @@ class WebmailClient:
                             all_uids.update(data[0].split())
                     except (imaplib.IMAP4.error, OSError) as exc:
                         logger.debug(f"IMAP seed search failed for {criteria}: {exc}")
-        except Exception as e:
-            logger.error(f"IMAP seed UIDs error: {e}")
+        except IMAP_OPERATION_EXCEPTIONS as exc:
+            logger.error(
+                "IMAP seed UID retrieval failed: %s",
+                exc,
+                exc_info=True,
+                extra={"email": self._email},
+            )
         return all_uids
 
     def check_new_airs_dais(self) -> list[dict]:
@@ -108,10 +131,21 @@ class WebmailClient:
                                     new_mails.append(mail_data)
                                     seen_in_this_batch.add(uid)
                                     self._last_seen_uids.add(uid)
-                        except Exception as e:
-                            logger.error(f"IMAP search error: {e}")
-        except Exception as e:
-            logger.error(f"IMAP connection error (check_new): {e}")
+                        except IMAP_OPERATION_EXCEPTIONS as exc:
+                            logger.error(
+                                "IMAP search failed for criteria=%s: %s",
+                                criteria,
+                                exc,
+                                exc_info=True,
+                                extra={"email": self._email, "mode": "check_new", "label": label},
+                            )
+        except IMAP_OPERATION_EXCEPTIONS as exc:
+            logger.error(
+                "IMAP connection failed during check_new: %s",
+                exc,
+                exc_info=True,
+                extra={"email": self._email, "mode": "check_new"},
+            )
 
         return new_mails
 
@@ -142,10 +176,21 @@ class WebmailClient:
                                     mail_data["source"] = label
                                     mails.append(mail_data)
                                     seen_uids.add(uid)
-                        except Exception as e:
-                            logger.error(f"IMAP search error: {e}")
-        except Exception as e:
-            logger.error(f"IMAP connection error (check_all): {e}")
+                        except IMAP_OPERATION_EXCEPTIONS as exc:
+                            logger.error(
+                                "IMAP search failed for criteria=%s: %s",
+                                criteria,
+                                exc,
+                                exc_info=True,
+                                extra={"email": self._email, "mode": "check_all", "label": label},
+                            )
+        except IMAP_OPERATION_EXCEPTIONS as exc:
+            logger.error(
+                "IMAP connection failed during check_all: %s",
+                exc,
+                exc_info=True,
+                extra={"email": self._email, "mode": "check_all"},
+            )
 
         return mails
 
@@ -180,12 +225,23 @@ class WebmailClient:
                                     mail_data["source"] = label
                                     mails.append(mail_data)
                                     seen_uids.add(uid)
-                        except Exception as e:
-                            logger.error(f"IMAP search error: {e}")
+                        except IMAP_OPERATION_EXCEPTIONS as exc:
+                            logger.error(
+                                "IMAP search failed for criteria=%s: %s",
+                                criteria,
+                                exc,
+                                exc_info=True,
+                                extra={"email": self._email, "mode": "get_recent", "label": label},
+                            )
                     if len(mails) >= limit:
                         break
-        except Exception as e:
-            logger.error(f"IMAP connection error (get_recent): {e}")
+        except IMAP_OPERATION_EXCEPTIONS as exc:
+            logger.error(
+                "IMAP connection failed during get_recent: %s",
+                exc,
+                exc_info=True,
+                extra={"email": self._email, "mode": "get_recent", "limit": limit},
+            )
 
         return mails[:limit]
 
@@ -233,8 +289,13 @@ class WebmailClient:
 
             return result
 
-        except Exception as e:
-            logger.error(f"IMAP fetch error for uid {uid}: {e}")
+        except IMAP_OPERATION_EXCEPTIONS as exc:
+            logger.error(
+                "IMAP fetch failed for uid=%s: %s",
+                uid.decode(errors="ignore") if isinstance(uid, bytes) else str(uid),
+                exc,
+                exc_info=True,
+            )
             return None
 
     @staticmethod
@@ -312,8 +373,13 @@ class WebmailClient:
                 logger.info(f"No verification code found in email body: {body[:100]}")
                 return None
 
-        except Exception as e:
-            logger.error(f"IMAP STARS verification code fetch error: {e}")
+        except IMAP_OPERATION_EXCEPTIONS as exc:
+            logger.error(
+                "IMAP STARS verification fetch failed: %s",
+                exc,
+                exc_info=True,
+                extra={"email": self._email, "max_age_seconds": max_age_seconds},
+            )
             return None
 
     def noop(self):
