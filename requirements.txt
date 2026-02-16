@@ -1,41 +1,25 @@
-# Moodle AI Assistant - Dependencies
-# Requires: Python 3.11 or 3.12 (recommended)
+# Moodle Student Tracker - production dependencies
+# Requires Python >=3.10
 
-# Core
-requests>=2.31.0
-python-dotenv>=1.0.0
-
-# LLM Providers (GLM + OpenAI only)
-openai>=1.50.0
-
-# Vector Store & Embeddings (no C++ compiler needed!)
-faiss-cpu>=1.9.0
-sentence-transformers>=3.0.0
-
-# Document Processing
-PyPDF2>=3.0.0
-pymupdf>=1.24.0
-pymupdf4llm>=0.0.17
-python-docx>=1.1.0
-beautifulsoup4>=4.12.0
-markdownify>=0.13.0
-
-# OCR (scanned PDF fallback)
-pytesseract>=0.3.10
-Pillow>=10.0.0
-
-# Text Processing
-tiktoken>=0.7.0
-langchain-text-splitters>=0.2.0
-rank-bm25>=0.2.2
-snowballstemmer>=2.2.0
-
-# Web UI (optional — install separately: pip install gradio)
-# gradio>=4.40.0
-
-# Utilities
-rich>=13.7.0
-schedule>=1.2.0
-
-# Telegram Bot
-python-telegram-bot[job-queue]>=21.0
+beautifulsoup4==4.12.3
+faiss-cpu==1.13.2
+langchain-text-splitters==0.2.4
+markdownify==0.13.1
+numpy>=1.24.0,<3.0
+openai==1.52.2
+Pillow>=10.0.0,<13.0
+PyPDF2==3.0.1
+pymupdf==1.24.11
+pymupdf4llm==0.0.17
+python-docx==1.1.2
+python-dotenv==1.0.1
+python-pptx==1.0.2
+python-telegram-bot[job-queue]==21.6
+pytesseract==0.3.13
+rank-bm25==0.2.2
+requests==2.32.3
+rich==13.9.2
+schedule==1.2.2
+sentence-transformers==3.2.1
+snowballstemmer==2.2.0
+tiktoken==0.12.0

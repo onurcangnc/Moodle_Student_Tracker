@@ -38,7 +38,7 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core import config
@@ -390,7 +390,7 @@ class DynamicMemoryDB:
     # ─── Session ─────────────────────────────────────────────────────────
 
     def create_session(self, active_course: str = "") -> int:
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO sessions (started_at, active_course) VALUES (?, ?)",
@@ -399,7 +399,7 @@ class DynamicMemoryDB:
             return cur.lastrowid
 
     def end_session(self, session_id: int, summary: str = ""):
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             conn.execute(
                 "UPDATE sessions SET ended_at = ?, summary = ? WHERE id = ?",
@@ -409,7 +409,7 @@ class DynamicMemoryDB:
     # ─── Messages ────────────────────────────────────────────────────────
 
     def add_message(self, session_id: int, role: str, content: str, rag_sources: str = "") -> int:
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             cur = conn.execute(
                 """INSERT INTO messages (session_id, role, content, timestamp, rag_sources)
@@ -453,7 +453,7 @@ class DynamicMemoryDB:
     # ─── Semantic Memory ─────────────────────────────────────────────────
 
     def add_memory(self, entry: MemoryEntry) -> int:
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             existing = conn.execute(
                 """SELECT id FROM semantic_memory
@@ -527,7 +527,7 @@ class DynamicMemoryDB:
         return selected
 
     def _touch_memory(self, memory_id: int):
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         try:
             with self._conn() as conn:
                 conn.execute(
@@ -560,7 +560,7 @@ class DynamicMemoryDB:
         correct: bool = False,
         notes: str = "",
     ):
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             existing = conn.execute(
                 "SELECT * FROM learning_progress WHERE course = ? AND topic = ?",

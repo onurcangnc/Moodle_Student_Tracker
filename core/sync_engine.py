@@ -7,7 +7,7 @@ Moodle → Download files → Process documents → Index in vector store
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from core import config
 from core.document_processor import DocumentProcessor
@@ -73,7 +73,7 @@ class SyncEngine:
             logger.debug(f"Profile update skipped: {e}")
 
         # Update sync timestamp
-        self.sync_state["last_full_sync"] = datetime.now(UTC).isoformat()
+        self.sync_state["last_full_sync"] = datetime.now(timezone.utc).isoformat()
         self._save_state()
 
         logger.info(f"\n✅ Sync complete. Total new chunks indexed: {total_chunks}")
@@ -133,7 +133,7 @@ class SyncEngine:
                     "filename": moodle_file.filename,
                     "course": course.fullname,
                     "chunks": len(chunks),
-                    "synced_at": datetime.now(UTC).isoformat(),
+                    "synced_at": datetime.now(timezone.utc).isoformat(),
                 }
 
         # 3. Index URL modules (link + description as text chunks)

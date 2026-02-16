@@ -10,7 +10,7 @@ import imaplib
 import logging
 import re
 from contextlib import contextmanager
-from datetime import UTC
+from datetime import timezone
 from email.header import decode_header
 
 logger = logging.getLogger("core.webmail_client")
@@ -290,7 +290,7 @@ class WebmailClient:
 
                 try:
                     mail_date = parsedate_to_datetime(msg.get("Date", ""))
-                    age = (datetime.now(UTC) - mail_date).total_seconds()
+                    age = (datetime.now(timezone.utc) - mail_date).total_seconds()
                     if age > max_age_seconds:
                         logger.info(f"STARS verification email too old: {age:.0f}s > {max_age_seconds}s")
                         return None
