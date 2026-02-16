@@ -145,6 +145,11 @@ def check_rate_limit(user_id: int) -> bool:
     return True
 
 
+def record_user_activity(user_id: int, timestamp: float | None = None) -> None:
+    """Record user activity timestamp for health/operational metrics."""
+    STATE.user_last_seen[user_id] = timestamp if timestamp is not None else time.time()
+
+
 def begin_upload_session(user_id: int) -> None:
     """Mark user as awaiting a document upload."""
     STATE.pending_upload_users.add(user_id)

@@ -1,4 +1,4 @@
-.PHONY: install dev test test-all test-cov lint format run clean deploy logs status restart
+.PHONY: install dev test test-all test-cov lint format run clean deploy logs status restart health
 
 REMOTE_HOST ?= user@server-ip
 
@@ -41,6 +41,9 @@ status:
 
 restart:
 	ssh $(REMOTE_HOST) "sudo systemctl restart moodle-bot"
+
+health:
+	ssh $(REMOTE_HOST) "curl -s http://localhost:8080/health | python3 -m json.tool"
 
 # === Temizlik ===
 clean:

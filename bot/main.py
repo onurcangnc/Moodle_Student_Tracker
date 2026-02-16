@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 from telegram import Update
 from telegram.ext import Application
@@ -26,6 +29,42 @@ from core.sync_engine import SyncEngine
 from core.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def get_git_version() -> str:
+    """Read the short git commit hash for health endpoint metadata."""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(PROJECT_ROOT),
+            text=True,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def _build_health_payload(started_at_monotonic: float, version: str) -> dict[str, object]:
+    """Build health endpoint payload with runtime and index metrics."""
+    uptime_seconds = int(max(0.0, time.monotonic() - started_at_monotonic))
+    chunks_loaded = 0
+    store = STATE.vector_store
+    if store is not None:
+        try:
+            stats = store.get_stats()
+            chunks_loaded = int(stats.get("total_chunks", 0))
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            logger.warning("Vector store stats unavailable for health payload", exc_info=True)
+
+    cutoff = time.time() - 86400
+    active_users_24h = sum(1 for ts in STATE.user_last_seen.values() if ts >= cutoff)
+    return {
+        "status": "ok",
+        "uptime_seconds": uptime_seconds,
+        "version": version,
+        "chunks_loaded": chunks_loaded,
+        "active_users_24h": active_users_24h,
+    }
 
 
 def _ensure_event_loop() -> None:
@@ -37,7 +76,7 @@ def _ensure_event_loop() -> None:
         asyncio.set_event_loop(loop)
 
 
-def _start_health_server() -> None:
+def _start_health_server(started_at_monotonic: float, version: str) -> None:
     """Start lightweight HTTP server exposing /health endpoint."""
     if not CONFIG.healthcheck_enabled:
         logger.info("Healthcheck server disabled by configuration.")
@@ -50,7 +89,7 @@ def _start_health_server() -> None:
                 self.end_headers()
                 return
 
-            payload = json.dumps({"status": "ok"}).encode("utf-8")
+            payload = json.dumps(_build_health_payload(started_at_monotonic, version)).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -117,6 +156,8 @@ def create_application() -> Application:
 def main() -> None:
     """Start Telegram polling with modular runtime wiring."""
     setup_logging(CONFIG.log_level)
+    STATE.started_at_monotonic = time.monotonic()
+    STATE.startup_version = get_git_version()
     try:
         _validate_startup_config()
     except RuntimeError as exc:
@@ -130,7 +171,7 @@ def main() -> None:
         logger.error(str(exc))
         sys.exit(1)
 
-    _start_health_server()
+    _start_health_server(STATE.started_at_monotonic, STATE.startup_version)
 
     app = create_application()
     logger.info(

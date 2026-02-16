@@ -42,6 +42,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if message is None or user is None or not message.text:
         return
 
+    user_service.record_user_activity(user.id)
     if not user_service.check_rate_limit(user.id):
         await message.reply_text("Cok hizli mesaj gonderdiniz. Lutfen bir dakika sonra tekrar deneyin.")
         return
@@ -83,6 +84,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if message is None or user is None or message.document is None:
         return
 
+    user_service.record_user_activity(user.id)
     if not await admin_only(update):
         return
 

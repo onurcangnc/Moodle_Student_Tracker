@@ -29,6 +29,8 @@ log "========== Deploy basliyor =========="
 
 # 1. Git pull
 cd "$PROJECT_DIR" || fail "Proje dizini bulunamadi: $PROJECT_DIR"
+PREV_COMMIT="$(git rev-parse HEAD)"
+log "Mevcut commit (rollback noktasi): $PREV_COMMIT"
 log "Git pull ($BRANCH)..."
 git fetch origin "$BRANCH" || fail "git fetch basarisiz"
 git reset --hard "origin/$BRANCH" || fail "git reset basarisiz"
@@ -56,11 +58,49 @@ sudo systemctl restart "$SERVICE_NAME" || fail "Servis restart basarisiz"
 # 5. Servis saglik kontrolu
 sleep 5
 if systemctl is-active --quiet "$SERVICE_NAME"; then
-    log "Servis calisiyor"
+    log "Servis process kontrolu PASS"
 else
-    log "UYARI: Servis aktif degil!"
-    sudo journalctl -u "$SERVICE_NAME" --no-pager -n 20 | tee -a "$LOG_FILE"
-    fail "Servis baslatilamadi"
+    log "UYARI: Servis process kontrolu FAIL, rollback tetikleniyor"
+    git reset --hard "$PREV_COMMIT" || log "Rollback git reset basarisiz"
+    "$PIP" install -r requirements.txt --quiet || log "Rollback pip install basarisiz"
+    sudo systemctl restart "$SERVICE_NAME" || true
+    sleep 5
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        log "Rollback basarili - $PREV_COMMIT commit'ine donuldu"
+    else
+        log "KRITIK: Rollback sonrasi servis baslatilamadi"
+        sudo journalctl -u "$SERVICE_NAME" --no-pager -n 30 | tee -a "$LOG_FILE"
+    fi
+    exit 1
+fi
+
+log "Health check bekleniyor..."
+HEALTH_OK=false
+for i in $(seq 1 6); do
+    sleep 5
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health 2>/dev/null || echo "000")
+    if [ "$HTTP_CODE" = "200" ]; then
+        HEALTH_OK=true
+        HEALTH_BODY=$(curl -s http://localhost:8080/health)
+        log "Health check PASS - $HEALTH_BODY"
+        break
+    fi
+    log "Health check bekleniyor... ($i/6)"
+done
+
+if [ "$HEALTH_OK" = false ]; then
+    log "UYARI: Health check 30 saniyede gecmedi - rollback tetikleniyor"
+    git reset --hard "$PREV_COMMIT" || log "Rollback git reset basarisiz"
+    "$PIP" install -r requirements.txt --quiet || log "Rollback pip install basarisiz"
+    sudo systemctl restart "$SERVICE_NAME" || true
+    sleep 5
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        log "Rollback basarili - $PREV_COMMIT commit'ine donuldu"
+    else
+        log "KRITIK: Rollback sonrasi servis baslatilamadi"
+        sudo journalctl -u "$SERVICE_NAME" --no-pager -n 30 | tee -a "$LOG_FILE"
+    fi
+    exit 1
 fi
 
 log "========== Deploy tamamlandi =========="

@@ -40,8 +40,11 @@ class BotState:
     active_courses: dict[int, str] = field(default_factory=dict)
     pending_upload_users: set[int] = field(default_factory=set)
     rate_limit_windows: dict[int, list[float]] = field(default_factory=dict)
+    user_last_seen: dict[int, float] = field(default_factory=dict)
     conversation_history: dict[int, list[dict[str, str]]] = field(default_factory=dict)
     file_summaries: dict[str, dict] = field(default_factory=dict)
+    started_at_monotonic: float = 0.0
+    startup_version: str = "unknown"
 
 
 STATE = BotState()
