@@ -5,16 +5,15 @@ Orchestrates the full pipeline:
 Moodle → Download files → Process documents → Index in vector store
 """
 
-import logging
 import json
-from pathlib import Path
-from datetime import datetime, timezone
+import logging
+from datetime import UTC, datetime
 
 from core import config
-from core.moodle_client import MoodleClient, Course
 from core.document_processor import DocumentProcessor
-from core.vector_store import VectorStore
 from core.memory import HybridMemoryManager
+from core.moodle_client import Course, MoodleClient
+from core.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +73,7 @@ class SyncEngine:
             logger.debug(f"Profile update skipped: {e}")
 
         # Update sync timestamp
-        self.sync_state["last_full_sync"] = datetime.now(timezone.utc).isoformat()
+        self.sync_state["last_full_sync"] = datetime.now(UTC).isoformat()
         self._save_state()
 
         logger.info(f"\n✅ Sync complete. Total new chunks indexed: {total_chunks}")
@@ -87,6 +86,7 @@ class SyncEngine:
         topics_text = self.moodle.get_course_topics_text(course)
         if topics_text:
             from core.document_processor import DocumentChunk
+
             structure_chunk = DocumentChunk(
                 text=topics_text,
                 metadata={
@@ -133,7 +133,7 @@ class SyncEngine:
                     "filename": moodle_file.filename,
                     "course": course.fullname,
                     "chunks": len(chunks),
-                    "synced_at": datetime.now(timezone.utc).isoformat(),
+                    "synced_at": datetime.now(UTC).isoformat(),
                 }
 
         # 3. Index URL modules (link + description as text chunks)
@@ -141,6 +141,7 @@ class SyncEngine:
             url_modules = self.moodle.discover_url_modules(course)
             if url_modules:
                 from core.document_processor import DocumentChunk
+
                 for um in url_modules:
                     text = f"[URL: {um['name']}]\n{um['url']}"
                     if um["description"]:
@@ -194,7 +195,7 @@ class SyncEngine:
         if self.state_file.exists():
             try:
                 return json.loads(self.state_file.read_text())
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 return {}
         return {}
 

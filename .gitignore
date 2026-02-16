@@ -23,3 +23,16 @@ venv/
 # OS
 Thumbs.db
 .DS_Store
+nul
+
+# Cache
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Claude local settings
+.claude/settings.local.json

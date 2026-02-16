@@ -1,8 +1,8 @@
 """Centralized configuration."""
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
@@ -55,12 +55,14 @@ class Config:
             )
 
         # At least one LLM provider needed
-        has_any_llm = any([
-            os.getenv("GEMINI_API_KEY"),
-            os.getenv("OPENAI_API_KEY"),
-            os.getenv("GLM_API_KEY"),
-            os.getenv("ANTHROPIC_API_KEY"),
-        ])
+        has_any_llm = any(
+            [
+                os.getenv("GEMINI_API_KEY"),
+                os.getenv("OPENAI_API_KEY"),
+                os.getenv("GLM_API_KEY"),
+                os.getenv("ANTHROPIC_API_KEY"),
+            ]
+        )
         if not has_any_llm:
             errors.append(
                 "No LLM API key configured. Set at least one of:\n"

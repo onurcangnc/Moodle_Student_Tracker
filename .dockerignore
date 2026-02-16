@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+tests/
+scripts/
+*.md
+!README.md
+.gitignore
+Makefile

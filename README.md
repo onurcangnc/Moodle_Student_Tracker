@@ -431,14 +431,31 @@ Total per-turn memory cost: ~700-2200 tokens
 # 1. Clone and install
 git clone <repo-url>
 cd Moodle_Student_Tracker
-pip install -r requirements.txt
+make install
 
 # 2. Configure
 cp .env.example .env
 # Edit .env with your credentials (see below)
 
 # 3. Run
-python telegram_bot.py
+make run
+```
+
+### Development Setup
+
+```bash
+# Install dev dependencies (pytest, ruff, coverage tools)
+make dev
+
+# Run unit tests
+make test
+
+# Run all tests
+make test-all
+
+# Lint / format
+make lint
+make format
 ```
 
 ### Environment Variables
@@ -466,6 +483,7 @@ MODEL_OVERVIEW=gemini-2.5-flash
 # ─── Telegram Bot ────────────────────────────────────────
 TELEGRAM_BOT_TOKEN=                # @BotFather → /newbot
 TELEGRAM_OWNER_ID=                 # Your Telegram chat ID
+LOG_LEVEL=INFO
 
 # ─── STARS ───────────────────────────────────────────────
 STARS_USERNAME=
@@ -479,6 +497,9 @@ WEBMAIL_PASSWORD=
 EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
 AUTO_SYNC_INTERVAL=600
 ASSIGNMENT_CHECK_INTERVAL=600
+HEALTHCHECK_ENABLED=true
+HEALTHCHECK_HOST=0.0.0.0
+HEALTHCHECK_PORT=8080
 ```
 
 ### LLM Providers
@@ -512,32 +533,76 @@ python main.py web
 
 ## Deployment
 
-### Production (systemd)
+Bu proje tek sunucu + SSH deploy akisina gore tasarlanmistir. CI/CD pipeline kullanilmaz.
+
+### Ilk Kurulum (Sunucuda)
+
+1. Repo'yu klonla:
 
 ```bash
-# Copy files to server
-scp telegram_bot.py main.py root@server:/opt/moodle-bot/
-scp -r core/ root@server:/opt/moodle-bot/core/
+git clone <repo-url> /opt/moodle-student-tracker
+cd /opt/moodle-student-tracker
+```
 
-# Syntax check before deploy
-python -c "import ast; ast.parse(open('telegram_bot.py').read()); print('OK')"
+2. Ortam degiskenlerini hazirla:
 
-# Restart service
-ssh root@server "systemctl restart moodle-bot"
+```bash
+cp .env.example .env
+# .env dosyasini doldur
+```
 
-# Verify
-ssh root@server "systemctl status moodle-bot --no-pager"
+3. Service dosyasini kopyala ve yollari kontrol et:
 
-# View logs
-ssh root@server "journalctl -u moodle-bot -f"
+```bash
+sudo cp scripts/telegram-bot.service /etc/systemd/system/telegram-bot.service
+sudo systemctl daemon-reload
+sudo systemctl enable telegram-bot
+sudo systemctl start telegram-bot
+```
+
+4. Servis durumunu ve loglari kontrol et:
+
+```bash
+sudo systemctl status telegram-bot --no-pager
+sudo journalctl -u telegram-bot -f --no-pager
+```
+
+### Gunluk Deploy (Lokal Makineden)
+
+```bash
+make deploy        # lint -> unit test -> git push -> ssh remote deploy
+make logs          # sunucu loglarini takip et
+make status        # servis durumunu kontrol et
+make restart       # servisi yeniden baslat
+```
+
+### Deploy Scriptleri
+
+- `scripts/deploy.sh`: Lokal makinede calisir (pre-deploy kontrol + push + ssh).
+- `scripts/deploy-remote.sh`: Sunucuda calisir (git pull + pip install + import check + systemd restart).
+- `scripts/telegram-bot.service`: systemd unit dosyasi.
+- Varsayilan `PROJECT_DIR` degeri `/opt/moodle-student-tracker` olarak ayarlidir.
+
+### Docker (Opsiyonel)
+
+```bash
+docker build -t telegram-rag-bot .
+docker compose up -d
 ```
 
 ### Re-index from scratch
 
 ```bash
-ssh root@server "cd /opt/moodle-bot && rm -f data/faiss.index data/metadata.json data/sync_state.json"
-ssh root@server "systemctl restart moodle-bot"
-# Then send /sync in Telegram
+ssh user@server "cd /opt/moodle-student-tracker && rm -f data/faiss.index data/metadata.json data/sync_state.json"
+ssh user@server "sudo systemctl restart telegram-bot"
+```
+
+### Lokal Build Verification
+
+```bash
+make lint
+make test-all
+make test-cov
 ```
 
 ---
@@ -623,10 +688,20 @@ ssh root@server "systemctl restart moodle-bot"
 
 ```
 .
-├── telegram_bot.py            # Main bot (dual mode + 8 button handlers + callback engine + 6 jobs)
+├── bot/
+│   ├── main.py                # Modular runtime entrypoint
+│   ├── config.py              # Env-backed runtime configuration
+│   ├── state.py               # Shared process state container
+│   ├── logging_config.py      # Structured logging setup
+│   ├── exceptions.py          # Custom exception classes
+│   ├── handlers/              # Command/callback/message handler modules
+│   ├── services/              # RAG/document/user service layer
+│   ├── middleware/            # Auth/rate-limit/error middleware
+│   └── utils/                 # Formatter/validator/helper utilities
+├── telegram_bot.py            # Backward-compatible shim entrypoint
 ├── main.py                    # CLI interface (sync, chat, summary, web)
 ├── core/
-│   ├── config.py              # Environment variable management
+│   ├── __init__.py            # Environment variable management
 │   ├── moodle_client.py       # Moodle Web Services API client
 │   ├── document_processor.py  # Hybrid PDF extraction (pymupdf4llm + OCR) + DOCX/PPTX/HTML
 │   ├── vector_store.py        # FAISS + BM25 hybrid search + dedup + RRF fusion
@@ -637,8 +712,22 @@ ssh root@server "systemctl restart moodle-bot"
 │   ├── stars_client.py        # STARS scraper (OAuth + Email/SMS 2FA)
 │   └── webmail_client.py      # IMAP email monitoring + 2FA code extraction
 ├── tests/
-│   ├── test_rag_quality.py    # RAG quality suite (34 queries, precision/pass_rate metrics)
-│   └── rag_baseline.json      # RAG baseline for regression comparison
+│   ├── conftest.py            # Shared pytest fixtures
+│   ├── unit/                  # Unit tests
+│   ├── integration/           # Integration tests
+│   ├── e2e/                   # End-to-end tests
+│   ├── test_rag_quality.py    # Legacy evaluation script
+│   ├── test_reading_mode.py   # Legacy reading-mode script
+│   └── test_e2e_scenarios.py  # Legacy scenario evaluator
+├── Dockerfile                 # Container image build
+├── docker-compose.yml         # Local/production compose setup
+├── Makefile                   # Common dev commands
+├── pyproject.toml             # Ruff + pytest configuration
+├── requirements-dev.txt       # Dev dependencies
+├── scripts/
+│   ├── deploy.sh              # Local deploy command (lint/test/push/ssh)
+│   ├── deploy-remote.sh       # Remote server deploy workflow
+│   └── telegram-bot.service   # Systemd service template
 ├── data/
 │   ├── downloads/             # Downloaded course files
 │   ├── file_summaries.json    # Per-file LLM-generated overviews
@@ -674,3 +763,5 @@ ssh root@server "systemctl restart moodle-bot"
 | Hybrid search (BM25+FAISS) | precision 94%, pass rate 97% |
 | BM25 build time | ~1.1s (PyStemmer) |
 | Estimated monthly cost | ~$0.50 |
+
+

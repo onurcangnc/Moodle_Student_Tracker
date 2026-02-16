@@ -11,13 +11,10 @@ Multi-provider LLM integration with:
 import json
 import logging
 import re
-from typing import Optional
 
-
-from core import config
-from core.vector_store import VectorStore
-from core.memory import HybridMemoryManager
 from core.llm_providers import MultiProviderEngine
+from core.memory import HybridMemoryManager
+from core.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +140,7 @@ Summary format:
 
 # ─── Safe JSON Parser ──────────────────────────────────────────────────────
 
+
 def _safe_parse_json(raw: str, fallback=None):
     """Robustly parse JSON from LLM output.
     Handles: markdown fences, extra text before/after JSON, common LLM quirks.
@@ -153,7 +151,7 @@ def _safe_parse_json(raw: str, fallback=None):
     text = raw.strip()
 
     # 1. Strip markdown code fences (```json ... ``` or ``` ... ```)
-    fence_match = re.search(r'```(?:json)?\s*\n?(.*?)```', text, re.DOTALL)
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
     if fence_match:
         text = fence_match.group(1).strip()
 
@@ -164,7 +162,7 @@ def _safe_parse_json(raw: str, fallback=None):
         pass
 
     # 3. Try to find JSON object {...} or array [...]
-    for pattern in [r'(\{.*\})', r'(\[.*\])']:
+    for pattern in [r"(\{.*\})", r"(\[.*\])"]:
         m = re.search(pattern, text, re.DOTALL)
         if m:
             try:
@@ -179,6 +177,7 @@ def _safe_parse_json(raw: str, fallback=None):
 
 # ─── LLM Engine ─────────────────────────────────────────────────────────────
 
+
 class LLMEngine:
     """Claude-powered LLM engine with RAG + persistent memory."""
 
@@ -190,7 +189,7 @@ class LLMEngine:
         self.stars_context: str = ""  # All STARS data (grades, exams, attendance)
         self.assignments_context: str = ""  # Moodle assignment deadlines
         self.moodle_courses: list[dict] = []  # All enrolled courses [{shortname, fullname}]
-        self.active_course: Optional[str] = None
+        self.active_course: str | None = None
         self._student_ctx_cache: str | None = None
         self._student_ctx_ts: float = 0  # monotonic timestamp
 
@@ -206,11 +205,14 @@ class LLMEngine:
         Cached for 5 minutes (invalidated on data changes).
         """
         import time as _time
+
         now = _time.monotonic()
         if self._student_ctx_cache is not None and (now - self._student_ctx_ts) < 300:
             return self._student_ctx_cache
 
-        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+        from datetime import timezone as _tz
 
         parts = []
 
@@ -218,8 +220,21 @@ class LLMEngine:
         _tr_tz = _tz(_td(hours=3))
         _now = _dt.now(_tr_tz)
         _days_tr = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
-        _months_tr = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
-                       "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+        _months_tr = [
+            "",
+            "Ocak",
+            "Şubat",
+            "Mart",
+            "Nisan",
+            "Mayıs",
+            "Haziran",
+            "Temmuz",
+            "Ağustos",
+            "Eylül",
+            "Ekim",
+            "Kasım",
+            "Aralık",
+        ]
         parts.append(
             f"Bugün: {_now.day} {_months_tr[_now.month]} {_now.year}, "
             f"{_days_tr[_now.weekday()]}, saat {_now.strftime('%H:%M')}."
@@ -245,9 +260,7 @@ class LLMEngine:
                     if c not in course_files:
                         course_files[c] = {}
                     course_files[c][fname] = course_files[c].get(fname, 0) + 1
-            total_chunks = sum(
-                sum(files.values()) for files in course_files.values()
-            )
+            total_chunks = sum(sum(files.values()) for files in course_files.values())
 
             lines = []
             if self.moodle_courses:
@@ -263,12 +276,10 @@ class LLMEngine:
                     if matched_files:
                         count = sum(matched_files.values())
                         file_names = ", ".join(
-                            f.replace(".pdf", "").replace(".docx", "")[:40]
-                            for f in sorted(matched_files.keys())
+                            f.replace(".pdf", "").replace(".docx", "")[:40] for f in sorted(matched_files.keys())
                         )
                         lines.append(
-                            f"- {sn} ({fn}): {count} parça, {len(matched_files)} dosya\n"
-                            f"  Dosyalar: {file_names}"
+                            f"- {sn} ({fn}): {count} parça, {len(matched_files)} dosya\n" f"  Dosyalar: {file_names}"
                         )
                     else:
                         lines.append(f"- {sn} ({fn}): ❌ Henüz materyal yüklenmemiş")
@@ -276,19 +287,13 @@ class LLMEngine:
                 for c in sorted(course_files.keys()):
                     fmap = course_files[c]
                     count = sum(fmap.values())
-                    file_names = ", ".join(
-                        f.replace(".pdf", "").replace(".docx", "")[:40]
-                        for f in sorted(fmap.keys())
-                    )
+                    file_names = ", ".join(f.replace(".pdf", "").replace(".docx", "")[:40] for f in sorted(fmap.keys()))
                     lines.append(f"- {c}: {count} parça, {len(fmap)} dosya\n  Dosyalar: {file_names}")
 
             if lines:
-                parts.append(
-                    f"KAYITLI DERSLER VE MATERYAL DURUMU ({total_chunks} toplam parça):\n"
-                    + "\n".join(lines)
-                )
-        except Exception:
-            pass
+                parts.append(f"KAYITLI DERSLER VE MATERYAL DURUMU ({total_chunks} toplam parça):\n" + "\n".join(lines))
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            logger.debug("Student context enrichment skipped: %s", exc)
 
         result = "\n\n" + "\n\n".join(parts)
         self._student_ctx_cache = result
@@ -297,7 +302,7 @@ class LLMEngine:
 
     # ─── Relevance Check ─────────────────────────────────────────────────
 
-    def get_relevance_score(self, query: str, course_filter: Optional[str] = None) -> float:
+    def get_relevance_score(self, query: str, course_filter: str | None = None) -> float:
         """Return best similarity score for a query against indexed materials.
         Score range: 0.0 (no match) to 1.0 (perfect match).
         """
@@ -487,7 +492,7 @@ class LLMEngine:
 
     # ─── Exam Prep ───────────────────────────────────────────────────────
 
-    def generate_practice_questions(self, topic: str, course: Optional[str] = None) -> str:
+    def generate_practice_questions(self, topic: str, course: str | None = None) -> str:
         """Generate practice questions on a topic based on course materials."""
         chunks = self.vector_store.query(topic, n_results=8, course_filter=course)
         context = self._format_context(chunks)
@@ -580,8 +585,11 @@ class LLMEngine:
             "explanation": "Could not generate this step. Please try again.",
             "key_points": [],
             "has_question": False,
-            "question": "", "options": [], "correct": "",
-            "why_correct": "", "why_others_wrong": "",
+            "question": "",
+            "options": [],
+            "correct": "",
+            "why_correct": "",
+            "why_others_wrong": "",
             "next_preview": "",
         }
 
@@ -592,7 +600,8 @@ class LLMEngine:
         for attempt in range(max_retries):
             try:
                 raw = self.engine.complete(
-                    task="chat", system=system,
+                    task="chat",
+                    system=system,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=2048,
                 )
@@ -606,6 +615,7 @@ class LLMEngine:
 
             if attempt < max_retries - 1:
                 import time as _time
+
                 _time.sleep(2)
 
         # All retries failed — build fallback from raw context
@@ -679,7 +689,8 @@ class LLMEngine:
 
         try:
             raw = self.engine.complete(
-                task="chat", system=system,
+                task="chat",
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=3000,
             )
@@ -716,7 +727,8 @@ class LLMEngine:
         )
         try:
             raw = self.engine.complete(
-                task="study", system=system,
+                task="study",
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=500,
             )
@@ -745,8 +757,7 @@ class LLMEngine:
         covered_text = ""
         if covered:
             covered_text = (
-                "ÖNCEKİ ADIMLARDA ÖĞRETİLENLER (tekrar etme):\n"
-                + "\n".join(f"- {c}" for c in covered) + "\n\n"
+                "ÖNCEKİ ADIMLARDA ÖĞRETİLENLER (tekrar etme):\n" + "\n".join(f"- {c}" for c in covered) + "\n\n"
             )
 
         prompt = (
@@ -764,7 +775,8 @@ class LLMEngine:
 
         try:
             return self.engine.complete(
-                task="study", system=system,
+                task="study",
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=8192,
             )
@@ -799,7 +811,8 @@ class LLMEngine:
         )
         try:
             raw = self.engine.complete(
-                task="study", system=system,
+                task="study",
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=2048,
             )
@@ -836,7 +849,8 @@ class LLMEngine:
         )
         try:
             return self.engine.complete(
-                task="study", system=system,
+                task="study",
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=6144,
             )
@@ -864,7 +878,7 @@ class LLMEngine:
         """Get memory system statistics."""
         return self.mem_manager.get_stats()
 
-    def list_memories(self, course: Optional[str] = None) -> list:
+    def list_memories(self, course: str | None = None) -> list:
         return self.mem_manager.list_memories(course)
 
     def add_memory(self, category: str, content: str, course: str = ""):
@@ -873,7 +887,7 @@ class LLMEngine:
     def forget_memory(self, memory_id: int):
         self.mem_manager.forget(memory_id)
 
-    def get_learning_progress(self, course: Optional[str] = None):
+    def get_learning_progress(self, course: str | None = None):
         return self.mem_manager.get_learning_progress(course)
 
     def get_profile_path(self) -> str:
@@ -884,23 +898,24 @@ class LLMEngine:
     def _sanitize_chunk(text: str) -> str:
         """Strip known prompt injection patterns from chunk text."""
         import re
+
         # Remove lines that look like injection attempts
         injection_patterns = [
-            r'(?i)ignore\s+(all\s+)?previous\s+instructions',
-            r'(?i)ignore\s+(all\s+)?above',
-            r'(?i)disregard\s+(all\s+)?(previous|above|prior)',
-            r'(?i)you\s+are\s+now\s+a',
-            r'(?i)new\s+role\s*:',
-            r'(?i)system\s*prompt\s*:',
-            r'(?i)IMPORTANT\s*:\s*ignore',
-            r'(?i)override\s+(system|instructions)',
-            r'(?i)forget\s+(everything|all|your)',
-            r'(?i)rolünü\s+değiştir',
-            r'(?i)talimatları\s+(unut|yoksay|görmezden)',
-            r'(?i)önceki\s+talimatları\s+(unut|yoksay)',
+            r"(?i)ignore\s+(all\s+)?previous\s+instructions",
+            r"(?i)ignore\s+(all\s+)?above",
+            r"(?i)disregard\s+(all\s+)?(previous|above|prior)",
+            r"(?i)you\s+are\s+now\s+a",
+            r"(?i)new\s+role\s*:",
+            r"(?i)system\s*prompt\s*:",
+            r"(?i)IMPORTANT\s*:\s*ignore",
+            r"(?i)override\s+(system|instructions)",
+            r"(?i)forget\s+(everything|all|your)",
+            r"(?i)rolünü\s+değiştir",
+            r"(?i)talimatları\s+(unut|yoksay|görmezden)",
+            r"(?i)önceki\s+talimatları\s+(unut|yoksay)",
         ]
         for pattern in injection_patterns:
-            text = re.sub(pattern, '[FILTERED]', text)
+            text = re.sub(pattern, "[FILTERED]", text)
         return text
 
     def _format_context(self, chunks: list[dict]) -> str:

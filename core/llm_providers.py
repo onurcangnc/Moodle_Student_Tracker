@@ -19,20 +19,17 @@ All providers use OpenAI-compatible chat completion format.
 Gemini/GLM natively support this. Claude uses the Anthropic SDK.
 """
 
-import os
-import json
 import logging
-from enum import Enum
-from typing import Optional
-from dataclasses import dataclass, field
+import os
 from abc import ABC, abstractmethod
-
-from core import config
+from dataclasses import dataclass
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
 
 # ─── Provider Definitions ────────────────────────────────────────────────────
+
 
 class Provider(str, Enum):
     ANTHROPIC = "anthropic"
@@ -45,17 +42,19 @@ class Provider(str, Enum):
 @dataclass
 class ModelConfig:
     """Configuration for a specific model."""
+
     provider: Provider
     model_id: str
     api_key: str = ""
     base_url: str = ""  # For OpenAI-compatible endpoints
-    input_cost_per_mtok: float = 0.0   # $/1M input tokens
+    input_cost_per_mtok: float = 0.0  # $/1M input tokens
     output_cost_per_mtok: float = 0.0  # $/1M output tokens
     max_tokens: int = 4096
     description: str = ""
 
 
 # ─── Preset Model Configs ───────────────────────────────────────────────────
+
 
 def _get_presets() -> dict[str, ModelConfig]:
     """Build model presets from environment variables."""
@@ -91,7 +90,6 @@ def _get_presets() -> dict[str, ModelConfig]:
             output_cost_per_mtok=25.0,
             description="Most capable, use sparingly",
         ),
-
         # ─── OpenAI ─────────────────────────────────────
         "gpt-5-mini": ModelConfig(
             provider=Provider.OPENAI,
@@ -125,7 +123,6 @@ def _get_presets() -> dict[str, ModelConfig]:
             output_cost_per_mtok=14.0,
             description="Frontier OpenAI model",
         ),
-
         # ─── GLM (Z.ai - OpenAI compatible) ─────────────
         "glm-4.7": ModelConfig(
             provider=Provider.GLM,
@@ -145,7 +142,6 @@ def _get_presets() -> dict[str, ModelConfig]:
             output_cost_per_mtok=1.55,
             description="Cheaper GLM option",
         ),
-
         # ─── Google Gemini (OpenAI-compatible) ─────────────
         "gemini-2.5-flash": ModelConfig(
             provider=Provider.GEMINI,
@@ -170,21 +166,23 @@ def _get_presets() -> dict[str, ModelConfig]:
 
 # ─── Task-Based Model Router ────────────────────────────────────────────────
 
+
 @dataclass
 class TaskRouter:
     """
     Routes tasks to optimal models based on cost/quality tradeoff.
     User configures which model handles which task.
     """
+
     # Task → model key mapping (defaults: Gemini Flash + OpenAI nano/mini)
-    chat: str = "gemini-2.5-flash"              # Main conversation (RAG)
-    study: str = "gemini-2.5-flash"             # Study mode (strict grounding, deep teaching)
-    extraction: str = "gpt-4.1-nano"            # Memory extraction (cheapest)
-    intent: str = "gpt-4.1-mini"               # Intent classification (needs Turkish understanding)
-    topic_detect: str = "gpt-4.1-nano"          # Topic detection (cheapest)
-    summary: str = "gemini-2.5-flash"           # Weekly summaries
-    questions: str = "gemini-2.5-flash"         # Practice questions
-    overview: str = "gemini-2.5-flash"          # Course overview
+    chat: str = "gemini-2.5-flash"  # Main conversation (RAG)
+    study: str = "gemini-2.5-flash"  # Study mode (strict grounding, deep teaching)
+    extraction: str = "gpt-4.1-nano"  # Memory extraction (cheapest)
+    intent: str = "gpt-4.1-mini"  # Intent classification (needs Turkish understanding)
+    topic_detect: str = "gpt-4.1-nano"  # Topic detection (cheapest)
+    summary: str = "gemini-2.5-flash"  # Weekly summaries
+    questions: str = "gemini-2.5-flash"  # Practice questions
+    overview: str = "gemini-2.5-flash"  # Course overview
 
     @classmethod
     def from_env(cls) -> "TaskRouter":
@@ -245,6 +243,7 @@ class TaskRouter:
 
 # ─── Provider Adapters ───────────────────────────────────────────────────────
 
+
 class LLMAdapter(ABC):
     """Abstract LLM adapter interface."""
 
@@ -259,6 +258,7 @@ class AnthropicAdapter(LLMAdapter):
 
     def __init__(self, model_config: ModelConfig):
         import anthropic
+
         self.client = anthropic.Anthropic(api_key=model_config.api_key)
         self.model = model_config.model_id
 
@@ -277,6 +277,7 @@ class OpenAIAdapter(LLMAdapter):
 
     def __init__(self, model_config: ModelConfig):
         from openai import OpenAI
+
         kwargs = {"api_key": model_config.api_key}
         if model_config.base_url:
             kwargs["base_url"] = model_config.base_url
@@ -301,6 +302,7 @@ class GLMAdapter(LLMAdapter):
 
     def __init__(self, model_config: ModelConfig):
         from openai import OpenAI
+
         self.client = OpenAI(
             api_key=model_config.api_key,
             base_url=model_config.base_url,
@@ -319,6 +321,7 @@ class GLMAdapter(LLMAdapter):
 
 # ─── Adapter Factory ────────────────────────────────────────────────────────
 
+
 def create_adapter(model_config: ModelConfig) -> LLMAdapter:
     """Create the appropriate adapter for a model config."""
     if model_config.provider == Provider.ANTHROPIC:
@@ -332,6 +335,7 @@ def create_adapter(model_config: ModelConfig) -> LLMAdapter:
 
 
 # ─── Multi-Provider Engine ──────────────────────────────────────────────────
+
 
 class MultiProviderEngine:
     """
@@ -350,10 +354,7 @@ class MultiProviderEngine:
         if model_key not in self._adapters:
             model_config = self.presets.get(model_key)
             if not model_config:
-                raise ValueError(
-                    f"Unknown model: '{model_key}'. "
-                    f"Available: {list(self.presets.keys())}"
-                )
+                raise ValueError(f"Unknown model: '{model_key}'. " f"Available: {list(self.presets.keys())}")
             if not model_config.api_key:
                 raise ValueError(
                     f"No API key configured for '{model_key}' "
@@ -365,8 +366,7 @@ class MultiProviderEngine:
 
         return self._adapters[model_key]
 
-    def complete(self, task: str, system: str, messages: list[dict],
-                 max_tokens: int = 4096) -> str:
+    def complete(self, task: str, system: str, messages: list[dict], max_tokens: int = 4096) -> str:
         """
         Route a task to the appropriate model and get a completion.
 
@@ -389,8 +389,7 @@ class MultiProviderEngine:
             # Fallback: try another model
             return self._fallback_complete(task, system, messages, max_tokens, failed=model_key)
 
-    def _fallback_complete(self, task: str, system: str, messages: list[dict],
-                           max_tokens: int, failed: str) -> str:
+    def _fallback_complete(self, task: str, system: str, messages: list[dict], max_tokens: int, failed: str) -> str:
         """Try alternative models if the primary fails."""
         # Fallback priority: glm → openai → anthropic (if available)
         fallback_chain = ["gemini-2.5-flash", "glm-4.7", "gpt-4.1-mini", "gpt-5-mini", "claude-haiku", "claude-sonnet"]
@@ -408,23 +407,26 @@ class MultiProviderEngine:
                 result = adapter.complete(system, messages, max_tokens)
                 logger.info(f"[{task}] Fallback to {model_key}: OK")
                 return result
-            except Exception:
+            except (ConnectionError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
+                logger.warning(f"[{task}] Fallback to {model_key} failed: {exc}")
                 continue
 
-        return f"Tüm modeller başarısız oldu. API key'lerinizi kontrol edin."
+        return "Tüm modeller başarısız oldu. API key'lerinizi kontrol edin."
 
     def get_available_models(self) -> list[dict]:
         """List all models with configured API keys."""
         available = []
         for key, mc in self.presets.items():
-            available.append({
-                "key": key,
-                "provider": mc.provider.value,
-                "model_id": mc.model_id,
-                "has_key": bool(mc.api_key),
-                "cost": f"${mc.input_cost_per_mtok}/${mc.output_cost_per_mtok} per MTok",
-                "description": mc.description,
-            })
+            available.append(
+                {
+                    "key": key,
+                    "provider": mc.provider.value,
+                    "model_id": mc.model_id,
+                    "has_key": bool(mc.api_key),
+                    "cost": f"${mc.input_cost_per_mtok}/${mc.output_cost_per_mtok} per MTok",
+                    "description": mc.description,
+                }
+            )
         return available
 
     def estimate_costs(self, turns_per_day: int = 20) -> dict:

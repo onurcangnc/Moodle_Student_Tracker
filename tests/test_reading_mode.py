@@ -22,13 +22,13 @@ Run:
 
 import sys
 import time
-import json
 from dataclasses import dataclass
 
 sys.path.insert(0, ".")
 
 
 # ─── Result Tracking ─────────────────────────────────────────────────────────
+
 
 @dataclass
 class StepResult:
@@ -50,15 +50,16 @@ class StepResult:
 
 def run_tests(live: bool = False, verbose: bool = False):
     # ─── Imports ──────────────────────────────────────────────────────────
-    from core.vector_store import VectorStore
     from core.llm_engine import LLMEngine
     from core.memory import MemoryManager
+    from core.vector_store import VectorStore
 
     vs = VectorStore()
     vs.initialize()
 
     # Initialize telegram_bot module globals BEFORE importing functions
     import telegram_bot as bot_module
+
     bot_module.vector_store = vs
 
     llm_engine = LLMEngine(vs)
@@ -79,34 +80,33 @@ def run_tests(live: bool = False, verbose: bool = False):
     llm = llm_engine if live else None
 
     # Import bot logic functions
+    from telegram import InlineKeyboardMarkup
+
     from telegram_bot import (
-        _get_user_state,
-        _reset_reading_mode,
-        _start_reading_mode,
-        _check_socratic_toggle,
-        _is_continue_command,
-        _is_test_command,
-        _needs_topic_menu,
-        _format_topic_menu,
-        _format_progress,
-        _get_reading_batch,
-        _format_completion_message,
-        _format_source_footer,
-        _extract_sources,
-        detect_active_course,
-        _user_state,
         _HIGH_CONFIDENCE,
         _LOW_CONFIDENCE,
-        _READING_MODE_INSTRUCTION,
-        _READING_QA_INSTRUCTION,
+        _NO_RAG_INSTRUCTION,
         _NO_SOCRATIC_INSTRUCTION,
         _QUIZ_INSTRUCTION,
         _RAG_PARTIAL_INSTRUCTION,
-        _NO_RAG_INSTRUCTION,
+        _READING_MODE_INSTRUCTION,
+        _READING_QA_INSTRUCTION,
         _SOURCE_RULE,
         READING_BATCH_SIZE,
+        _check_socratic_toggle,
+        _format_progress,
+        _format_source_footer,
+        _format_topic_menu,
+        _get_reading_batch,
+        _get_user_state,
+        _is_continue_command,
+        _is_test_command,
+        _needs_topic_menu,
+        _reset_reading_mode,
+        _start_reading_mode,
+        _user_state,
+        detect_active_course,
     )
-    from telegram import InlineKeyboardMarkup
 
     results: list[StepResult] = []
     TEST_UID = 99999  # fake user id
@@ -158,8 +158,7 @@ def run_tests(live: bool = False, verbose: bool = False):
         checks["keyboard_has_buttons"] = False
         checks["callback_starts_rf"] = False
 
-    results.append(StepResult(1, "EDEB 201 çalışalım → Menu", checks,
-                              f"detected={detected}"))
+    results.append(StepResult(1, "EDEB 201 çalışalım → Menu", checks, f"detected={detected}"))
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 2: File button click → reading mode start + first batch
@@ -230,8 +229,14 @@ def run_tests(live: bool = False, verbose: bool = False):
         checks["reading_mode_on"] = False
         checks["batch_not_empty"] = False
 
-    results.append(StepResult(2, "File button → First batch + progress", checks,
-                              f"file={target_file['filename'] if target_file else 'None'}"))
+    results.append(
+        StepResult(
+            2,
+            "File button → First batch + progress",
+            checks,
+            f"file={target_file['filename'] if target_file else 'None'}",
+        )
+    )
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 3: "devam et" x3 → New chunks each time
@@ -253,7 +258,9 @@ def run_tests(live: bool = False, verbose: bool = False):
             checks[f"continue_{i+1}_batch_size"] = 0 < len(batch) <= READING_BATCH_SIZE
 
             progress = _format_progress(state["reading_position"], state["reading_total"])
-            checks[f"continue_{i+1}_progress_updated"] = f"{state['reading_position']}/{state['reading_total']}" in progress
+            checks[f"continue_{i+1}_progress_updated"] = (
+                f"{state['reading_position']}/{state['reading_total']}" in progress
+            )
 
             footer = _format_source_footer(batch, "reading")
             checks[f"continue_{i+1}_has_footer"] = "📄" in footer or "Kaynak" in footer
@@ -274,10 +281,9 @@ def run_tests(live: bool = False, verbose: bool = False):
             checks[f"continue_{i+1}_new_chunks"] = False  # file ended too early
 
     # Verify positions are strictly increasing
-    checks["positions_increasing"] = all(positions[i] < positions[i+1] for i in range(len(positions)-1))
+    checks["positions_increasing"] = all(positions[i] < positions[i + 1] for i in range(len(positions) - 1))
 
-    results.append(StepResult(3, '"devam et" x3 → Sequential chunks', checks,
-                              f"positions={positions}"))
+    results.append(StepResult(3, '"devam et" x3 → Sequential chunks', checks, f"positions={positions}"))
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 4: "burada ne demek istiyor" → RAG (file scope) + footer
@@ -292,7 +298,7 @@ def run_tests(live: bool = False, verbose: bool = False):
 
     # RAG search — file scope
     all_chunks = vs.get_file_chunks(state["reading_file"])
-    recent_read = all_chunks[max(0, state["reading_position"] - 5):state["reading_position"]]
+    recent_read = all_chunks[max(0, state["reading_position"] - 5) : state["reading_position"]]
     checks["recent_read_not_empty"] = len(recent_read) > 0
 
     rag_results = vs.hybrid_search(
@@ -327,8 +333,9 @@ def run_tests(live: bool = False, verbose: bool = False):
             print(f"  [Step 4] Response: {response[:300]}...")
         time.sleep(1)
 
-    results.append(StepResult(4, '"burada ne demek istiyor" → File-scoped RAG', checks,
-                              f"file_results={len(file_results)}"))
+    results.append(
+        StepResult(4, '"burada ne demek istiyor" → File-scoped RAG', checks, f"file_results={len(file_results)}")
+    )
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 5: "devam et" → Position preserved after QA
@@ -363,8 +370,14 @@ def run_tests(live: bool = False, verbose: bool = False):
         checks["continues_from_correct_pos"] = True  # file ended, still ok
         checks["batch_not_empty"] = False
 
-    results.append(StepResult(5, '"devam et" → Position preserved after QA', checks,
-                              f"pos_before={pos_before_qa}, pos_after={state['reading_position']}"))
+    results.append(
+        StepResult(
+            5,
+            '"devam et" → Position preserved after QA',
+            checks,
+            f"pos_before={pos_before_qa}, pos_after={state['reading_position']}",
+        )
+    )
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 6: "soru sorma" → Socratic toggle off
@@ -416,7 +429,7 @@ def run_tests(live: bool = False, verbose: bool = False):
                 print(f"\n  [Step 7] Response ({len(response)} chars):")
                 print(f"  {response[:300]}...")
                 if "?" in response:
-                    print(f"  ⚠️ Found '?' in response — socratic should be off!")
+                    print("  ⚠️ Found '?' in response — socratic should be off!")
             time.sleep(1)
     else:
         checks["extra_sys_has_no_socratic"] = True
@@ -434,7 +447,7 @@ def run_tests(live: bool = False, verbose: bool = False):
     checks["in_reading_mode"] = state.get("reading_mode", False)
 
     all_chunks = vs.get_file_chunks(state["reading_file"])
-    read_chunks = all_chunks[:state["reading_position"]]
+    read_chunks = all_chunks[: state["reading_position"]]
     checks["has_read_chunks"] = len(read_chunks) > 0
     checks["read_chunks_count"] = len(read_chunks) > 0  # at least some
 
@@ -461,8 +474,7 @@ def run_tests(live: bool = False, verbose: bool = False):
             print(f"  [Step 8] Response: {response[:300]}...")
         time.sleep(1)
 
-    results.append(StepResult(8, '"beni test et" → Quiz from read chunks', checks,
-                              f"read_chunks={len(read_chunks)}"))
+    results.append(StepResult(8, '"beni test et" → Quiz from read chunks', checks, f"read_chunks={len(read_chunks)}"))
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 9: "KVKK nedir" → 3-tier RAG confidence + correct footer
@@ -539,8 +551,7 @@ def run_tests(live: bool = False, verbose: bool = False):
         checks["footer_correct"] = "💡" in footer
 
     _ts = f"{1 - rag[0]['distance']:.3f}" if rag else "0"
-    results.append(StepResult(9, '"KVKK nedir" → 3-tier confidence', checks,
-                              f"top_score={_ts}"))
+    results.append(StepResult(9, '"KVKK nedir" → 3-tier confidence', checks, f"top_score={_ts}"))
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 10: "CTIS 474 çalışacağım" → No-material warning
@@ -578,13 +589,14 @@ def run_tests(live: bool = False, verbose: bool = False):
             if has_materials:
                 print(f"  [Step 10] → Shows inline keyboard (file count: {len(course_files)})")
             else:
-                print(f"  [Step 10] → Shows no-material warning")
+                print("  [Step 10] → Shows no-material warning")
     else:
         checks["menu_generated"] = False
         checks["menu_has_buttons"] = False
 
-    results.append(StepResult(10, '"CTIS 474 çalışacağım" → Course detection + menu/warning', checks,
-                              f"detected={detected}"))
+    results.append(
+        StepResult(10, '"CTIS 474 çalışacağım" → Course detection + menu/warning', checks, f"detected={detected}")
+    )
 
     # ═══════════════════════════════════════════════════════════════════════
     # REPORT
@@ -622,6 +634,7 @@ def run_tests(live: bool = False, verbose: bool = False):
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Reading Mode E2E Tests")
     parser.add_argument("--live", action="store_true", help="Run with actual LLM calls")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")

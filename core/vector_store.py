@@ -13,7 +13,6 @@ import pickle
 import re
 import time
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import snowballstemmer
@@ -54,7 +53,7 @@ class VectorStore:
         self._texts: list[str] = []
         self._metadatas: list[dict] = []
         self._dimension: int = 0
-        self._bm25_index: Optional[BM25Okapi] = None
+        self._bm25_index: BM25Okapi | None = None
 
     # ─── Persistence paths ───────────────────────────────────────────────
 
@@ -87,7 +86,7 @@ class VectorStore:
         # Load existing index or create new
         if self._index_path.exists() and self._meta_path.exists():
             self._index = faiss.read_index(str(self._index_path))
-            with open(self._meta_path, "r", encoding="utf-8") as f:
+            with open(self._meta_path, encoding="utf-8") as f:
                 saved = json.load(f)
             self._ids = saved["ids"]
             self._texts = saved["texts"]
@@ -118,13 +117,18 @@ class VectorStore:
     def _save(self):
         """Persist index and metadata to disk."""
         import faiss
+
         faiss.write_index(self._index, str(self._index_path))
         with open(self._meta_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "ids": self._ids,
-                "texts": self._texts,
-                "metadatas": self._metadatas,
-            }, f, ensure_ascii=False)
+            json.dump(
+                {
+                    "ids": self._ids,
+                    "texts": self._texts,
+                    "metadatas": self._metadatas,
+                },
+                f,
+                ensure_ascii=False,
+            )
         # Restrict file permissions (owner-only read/write)
         try:
             os.chmod(self._meta_path, 0o600)
@@ -155,7 +159,7 @@ class VectorStore:
         self,
         query: str,
         n_results: int = 15,
-        course_filter: Optional[str] = None,
+        course_filter: str | None = None,
     ) -> list[dict]:
         """BM25 keyword search. Returns same format as query()."""
         if not self._bm25_index:
@@ -174,13 +178,15 @@ class VectorStore:
             meta = self._metadatas[idx]
             if course_filter and course_filter.lower() not in meta.get("course", "").lower():
                 continue
-            results.append({
-                "id": self._ids[idx],
-                "text": self._texts[idx],
-                "metadata": meta,
-                "distance": 1.0 - min(score / 20.0, 1.0),
-                "bm25_score": score,
-            })
+            results.append(
+                {
+                    "id": self._ids[idx],
+                    "text": self._texts[idx],
+                    "metadata": meta,
+                    "distance": 1.0 - min(score / 20.0, 1.0),
+                    "bm25_score": score,
+                }
+            )
             if len(results) >= n_results:
                 break
         return results
@@ -189,15 +195,18 @@ class VectorStore:
         self,
         query: str,
         n_results: int = 15,
-        course_filter: Optional[str] = None,
-        exclude_ids: Optional[set[str]] = None,
-        filename_filter: Optional[list[str]] = None,
+        course_filter: str | None = None,
+        exclude_ids: set[str] | None = None,
+        filename_filter: list[str] | None = None,
     ) -> list[dict]:
         """RRF fusion of semantic (FAISS) + keyword (BM25) search."""
+        start = time.perf_counter()
         # Fetch wider candidate pool; RRF will rank and trim to n_results
         extra = len(exclude_ids) if exclude_ids else 0
         fetch_k = (n_results + extra) * 2
-        semantic = self.query(query_text=query, n_results=fetch_k, course_filter=course_filter, filename_filter=filename_filter)
+        semantic = self.query(
+            query_text=query, n_results=fetch_k, course_filter=course_filter, filename_filter=filename_filter
+        )
         bm25 = self.bm25_search(query, n_results=fetch_k, course_filter=course_filter)
 
         # Post-filter BM25 by filename (bm25_search doesn't support native filter)
@@ -230,7 +239,17 @@ class VectorStore:
         if exclude_ids:
             results = [r for r in results if r.get("id") not in exclude_ids]
 
-        return results[:n_results]
+        final = results[:n_results]
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        logger.info(
+            "Hybrid vector search completed in %.2f ms (query_len=%s, semantic=%s, bm25=%s, returned=%s)",
+            elapsed_ms,
+            len(query),
+            len(semantic),
+            len(bm25),
+            len(final),
+        )
+        return final
 
     # ─── Indexing ────────────────────────────────────────────────────────
 
@@ -246,7 +265,7 @@ class VectorStore:
             return
 
         for i in range(0, len(new_chunks), batch_size):
-            batch = new_chunks[i:i + batch_size]
+            batch = new_chunks[i : i + batch_size]
             # Use embedding_text for encoding if available (math-normalized), original text for storage
             embed_texts = [c.embedding_text or c.text for c in batch]
             embeddings = self._encode(embed_texts)
@@ -268,7 +287,8 @@ class VectorStore:
 
     def delete_by_course(self, course_name: str):
         """Remove all chunks from a specific course."""
-        self._delete_where(lambda m: m.get("course") == course_name)
+        normalized_course = course_name.strip().lower()
+        self._delete_where(lambda m: normalized_course in str(m.get("course", "")).strip().lower())
         logger.info(f"Deleted all chunks for course: {course_name}")
 
     def _delete_where(self, predicate):
@@ -298,11 +318,12 @@ class VectorStore:
         self,
         query_text: str,
         n_results: int = 5,
-        course_filter: Optional[str] = None,
-        section_filter: Optional[str] = None,
-        filename_filter: Optional[list[str]] = None,
+        course_filter: str | None = None,
+        section_filter: str | None = None,
+        filename_filter: list[str] | None = None,
     ) -> list[dict]:
         """Semantic search over indexed documents."""
+        start = time.perf_counter()
         if not self._ids:
             return []
 
@@ -315,7 +336,7 @@ class VectorStore:
         scores, indices = self._index.search(query_vec, search_k)
 
         hits = []
-        for score, idx in zip(scores[0], indices[0]):
+        for score, idx in zip(scores[0], indices[0], strict=False):
             if idx < 0 or idx >= len(self._ids):
                 continue
             meta = self._metadatas[idx]
@@ -328,15 +349,25 @@ class VectorStore:
             if filename_filter and meta.get("filename") not in filename_filter:
                 continue
 
-            hits.append({
-                "id": self._ids[idx],
-                "text": self._texts[idx],
-                "metadata": meta,
-                "distance": float(1 - score),  # convert similarity to distance
-            })
+            hits.append(
+                {
+                    "id": self._ids[idx],
+                    "text": self._texts[idx],
+                    "metadata": meta,
+                    "distance": float(1 - score),  # convert similarity to distance
+                }
+            )
             if len(hits) >= n_results:
                 break
 
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        logger.debug(
+            "Semantic vector search completed in %.2f ms (query_len=%s, requested=%s, returned=%s)",
+            elapsed_ms,
+            len(query_text),
+            n_results,
+            len(hits),
+        )
         return hits
 
     def query_by_course_and_topic(
@@ -381,13 +412,15 @@ class VectorStore:
         chunks = []
         for idx, meta in enumerate(self._metadatas):
             if meta.get("filename") == filename:
-                chunks.append({
-                    "id": self._ids[idx],
-                    "text": self._texts[idx],
-                    "metadata": meta,
-                    "distance": 0.0,
-                    "chunk_index": int(meta.get("chunk_index", 0)),
-                })
+                chunks.append(
+                    {
+                        "id": self._ids[idx],
+                        "text": self._texts[idx],
+                        "metadata": meta,
+                        "distance": 0.0,
+                        "chunk_index": int(meta.get("chunk_index", 0)),
+                    }
+                )
         chunks.sort(key=lambda x: x["chunk_index"])
         if max_chunks > 0:
             chunks = chunks[:max_chunks]
@@ -415,6 +448,7 @@ class VectorStore:
     def reset(self):
         """Delete all data and recreate index."""
         import faiss
+
         self._index = faiss.IndexFlatIP(self._dimension)
         self._ids = []
         self._texts = []

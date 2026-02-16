@@ -2,6 +2,7 @@
 RAG Quality Eval — static + auto-generated queries with baseline tracking.
 Run: cd /opt/moodle-bot && source venv/bin/activate && python tests/test_rag_quality.py
 """
+
 import json
 import re
 import sys
@@ -14,39 +15,141 @@ sys.path.insert(0, ".")
 # ─── Static Test Queries ──────────────────────────────────────────────────────
 TEST_QUERIES = [
     # CTIS 363 — Ethical and Social Issues
-    {"query": "privacy and surveillance", "expected_keywords": ["privacy", "surveillance", "data", "personal", "monitor"], "course": "CTIS 363"},
-    {"query": "intellectual property copyright", "expected_keywords": ["intellectual", "property", "copyright", "patent", "software"], "course": "CTIS 363"},
-    {"query": "computer ethics history", "expected_keywords": ["ethics", "computer", "history", "moral", "technology"], "course": "CTIS 363"},
+    {
+        "query": "privacy and surveillance",
+        "expected_keywords": ["privacy", "surveillance", "data", "personal", "monitor"],
+        "course": "CTIS 363",
+    },
+    {
+        "query": "intellectual property copyright",
+        "expected_keywords": ["intellectual", "property", "copyright", "patent", "software"],
+        "course": "CTIS 363",
+    },
+    {
+        "query": "computer ethics history",
+        "expected_keywords": ["ethics", "computer", "history", "moral", "technology"],
+        "course": "CTIS 363",
+    },
     # CTIS 465 — Microservice Development
-    {"query": "microservice architecture", "expected_keywords": ["microservice", "service", "architecture", "api", "deploy"], "course": "CTIS 465"},
-    {"query": "docker container", "expected_keywords": ["docker", "container", "image", "deploy"], "course": "CTIS 465"},
+    {
+        "query": "microservice architecture",
+        "expected_keywords": ["microservice", "service", "architecture", "api", "deploy"],
+        "course": "CTIS 465",
+    },
+    {
+        "query": "docker container",
+        "expected_keywords": ["docker", "container", "image", "deploy"],
+        "course": "CTIS 465",
+    },
     # EDEB 201 — Turkish Fiction
-    {"query": "Felatun Bey ile Rakım Efendi", "expected_keywords": ["felatun", "rakım", "ahmet", "mithat"], "course": "EDEB 201"},
+    {
+        "query": "Felatun Bey ile Rakım Efendi",
+        "expected_keywords": ["felatun", "rakım", "ahmet", "mithat"],
+        "course": "EDEB 201",
+    },
     {"query": "Kiralık Konak romanı", "expected_keywords": ["kiralık", "konak", "roman"], "course": "EDEB 201"},
-    {"query": "Tanzimat dönemi edebiyat", "expected_keywords": ["tanzimat", "edebiyat", "batı", "roman"], "course": "EDEB 201"},
-    {"query": "Doğu Batı çatışması Türk romanı", "expected_keywords": ["doğu", "batı", "roman", "çatışma"], "course": "EDEB 201"},
+    {
+        "query": "Tanzimat dönemi edebiyat",
+        "expected_keywords": ["tanzimat", "edebiyat", "batı", "roman"],
+        "course": "EDEB 201",
+    },
+    {
+        "query": "Doğu Batı çatışması Türk romanı",
+        "expected_keywords": ["doğu", "batı", "roman", "çatışma"],
+        "course": "EDEB 201",
+    },
     # HCIV 102 — History of Civilization II
-    {"query": "Columbian Exchange disease", "expected_keywords": ["columbian", "exchange", "disease", "food", "america"], "course": "HCIV 102"},
-    {"query": "Ottoman Empire discovery", "expected_keywords": ["ottoman", "discovery", "columbus", "new world"], "course": "HCIV 102"},
-    {"query": "what is history Carr", "expected_keywords": ["history", "carr", "historian", "fact", "interpretation"], "course": "HCIV 102"},
-    {"query": "note taking strategies", "expected_keywords": ["note", "taking", "strategy", "lecture"], "course": "HCIV 102"},
+    {
+        "query": "Columbian Exchange disease",
+        "expected_keywords": ["columbian", "exchange", "disease", "food", "america"],
+        "course": "HCIV 102",
+    },
+    {
+        "query": "Ottoman Empire discovery",
+        "expected_keywords": ["ottoman", "discovery", "columbus", "new world"],
+        "course": "HCIV 102",
+    },
+    {
+        "query": "what is history Carr",
+        "expected_keywords": ["history", "carr", "historian", "fact", "interpretation"],
+        "course": "HCIV 102",
+    },
+    {
+        "query": "note taking strategies",
+        "expected_keywords": ["note", "taking", "strategy", "lecture"],
+        "course": "HCIV 102",
+    },
     # Cross-course / general
-    {"query": "Şerif Mardin modernleşme", "expected_keywords": ["mardin", "modernleşme", "batılılaşma", "tanzimat"], "course": None},
+    {
+        "query": "Şerif Mardin modernleşme",
+        "expected_keywords": ["mardin", "modernleşme", "batılılaşma", "tanzimat"],
+        "course": None,
+    },
     {"query": "Nurdan Gürbilek Kör Ayna", "expected_keywords": ["gürbilek", "kör", "ayna", "şark"], "course": None},
 ]
 
 
 # ─── Auto Query Generation ────────────────────────────────────────────────────
 STOPWORDS = {
-    "bu", "bir", "ile", "için", "olan", "gibi", "daha", "kadar",
-    "this", "that", "with", "from", "have", "will", "been", "which",
-    "their", "about", "would", "there", "could", "other", "into",
-    "çok", "ama", "veya", "hem", "sonra", "önce", "arasında",
-    "yani", "zaten", "ancak", "böyle", "şekilde", "olarak",
-    "olduğu", "olduğunu", "olmak", "değil", "yapan", "eden",
-    "üzerinde", "ayrıca", "bkz", "sayfa", "ders", "hafta",
-    "page", "chapter", "section", "figure", "table", "also",
-    "olan", "oldu", "çünkü", "dolayısıyla", "böylece", "fakat",
+    "bu",
+    "bir",
+    "ile",
+    "için",
+    "olan",
+    "gibi",
+    "daha",
+    "kadar",
+    "this",
+    "that",
+    "with",
+    "from",
+    "have",
+    "will",
+    "been",
+    "which",
+    "their",
+    "about",
+    "would",
+    "there",
+    "could",
+    "other",
+    "into",
+    "çok",
+    "ama",
+    "veya",
+    "hem",
+    "sonra",
+    "önce",
+    "arasında",
+    "yani",
+    "zaten",
+    "ancak",
+    "böyle",
+    "şekilde",
+    "olarak",
+    "olduğu",
+    "olduğunu",
+    "olmak",
+    "değil",
+    "yapan",
+    "eden",
+    "üzerinde",
+    "ayrıca",
+    "bkz",
+    "sayfa",
+    "ders",
+    "hafta",
+    "page",
+    "chapter",
+    "section",
+    "figure",
+    "table",
+    "also",
+    "oldu",
+    "çünkü",
+    "dolayısıyla",
+    "böylece",
+    "fakat",
 }
 
 
@@ -76,13 +179,15 @@ def generate_auto_queries(vs) -> list[dict]:
         top_kw = [w for w, c in freq.most_common(8) if c >= 2]
 
         if len(top_kw) >= 3:
-            auto.append({
-                "query": " ".join(top_kw[:3]),
-                "expected_keywords": top_kw[:5],
-                "course": course or None,
-                "source_file": fname,
-                "auto_generated": True,
-            })
+            auto.append(
+                {
+                    "query": " ".join(top_kw[:3]),
+                    "expected_keywords": top_kw[:5],
+                    "course": course or None,
+                    "source_file": fname,
+                    "auto_generated": True,
+                }
+            )
 
     return auto
 
@@ -98,14 +203,22 @@ def eval_single(q, vs, search_fn=None, threshold=0.25, max_chunks=10):
         results = search_fn(query=q["query"], n_results=15, course_filter=q.get("course"))
 
     if not results:
-        return {"query": q["query"], "total_results": 0, "after_filter": 0,
-                "top_score": 0, "avg_score": 0, "keyword_precision": 0,
-                "found_keywords": [], "missing_keywords": q["expected_keywords"],
-                "unique_files": 0, "filenames": []}
+        return {
+            "query": q["query"],
+            "total_results": 0,
+            "after_filter": 0,
+            "top_score": 0,
+            "avg_score": 0,
+            "keyword_precision": 0,
+            "found_keywords": [],
+            "missing_keywords": q["expected_keywords"],
+            "unique_files": 0,
+            "filenames": [],
+        }
 
     scores = [(1 - r["distance"]) for r in results]
     top_score = scores[0]
-    filtered = [r for r, s in zip(results, scores) if s > threshold][:max_chunks]
+    filtered = [r for r, s in zip(results, scores, strict=False) if s > threshold][:max_chunks]
 
     all_text = " ".join(r.get("text", "").lower() for r in filtered)
     expected = q["expected_keywords"]
@@ -119,7 +232,7 @@ def eval_single(q, vs, search_fn=None, threshold=0.25, max_chunks=10):
         "total_results": len(results),
         "after_filter": len(filtered),
         "top_score": round(top_score, 4),
-        "avg_score": round(sum(scores[:len(filtered)]) / max(len(filtered), 1), 4),
+        "avg_score": round(sum(scores[: len(filtered)]) / max(len(filtered), 1), 4),
         "keyword_precision": round(precision, 2),
         "found_keywords": found,
         "missing_keywords": [k for k in expected if k.lower() not in all_text],
@@ -142,7 +255,9 @@ def eval_all(vs, search_fn=None, queries=None, threshold=0.25, max_chunks=10, ve
         if verbose:
             status = "✅" if r["keyword_precision"] >= 0.6 else "⚠️" if r["keyword_precision"] >= 0.3 else "❌"
             tag = " [auto]" if q.get("auto_generated") else ""
-            print(f"{status} {r['query']:<40} kw={r['keyword_precision']:.0%} top={r['top_score']:.3f} chunks={r['after_filter']}{tag}")
+            print(
+                f"{status} {r['query']:<40} kw={r['keyword_precision']:.0%} top={r['top_score']:.3f} chunks={r['after_filter']}{tag}"
+            )
             if r["missing_keywords"] and verbose:
                 print(f"   missing: {r['missing_keywords']}")
 
@@ -151,11 +266,13 @@ def eval_all(vs, search_fn=None, queries=None, threshold=0.25, max_chunks=10, ve
     pass_rate = sum(1 for r in results if r["keyword_precision"] >= 0.6) / len(results)
 
     print(f"\n{'='*70}")
-    print(f"AGGREGATE: kw_precision={avg_prec:.0%}  top_score={avg_top:.3f}  pass_rate={pass_rate:.0%}  total={len(results)}")
+    print(
+        f"AGGREGATE: kw_precision={avg_prec:.0%}  top_score={avg_top:.3f}  pass_rate={pass_rate:.0%}  total={len(results)}"
+    )
 
     # Breakdown
-    static_r = [r for r, q in zip(results, queries) if not q.get("auto_generated")]
-    auto_r = [r for r, q in zip(results, queries) if q.get("auto_generated")]
+    static_r = [r for r, q in zip(results, queries, strict=False) if not q.get("auto_generated")]
+    auto_r = [r for r, q in zip(results, queries, strict=False) if q.get("auto_generated")]
     if static_r:
         sp = sum(r["keyword_precision"] for r in static_r) / len(static_r)
         print(f"  Static: {sp:.0%} ({len(static_r)} queries)")
@@ -163,7 +280,13 @@ def eval_all(vs, search_fn=None, queries=None, threshold=0.25, max_chunks=10, ve
         ap = sum(r["keyword_precision"] for r in auto_r) / len(auto_r)
         print(f"  Auto:   {ap:.0%} ({len(auto_r)} queries)")
 
-    return {"results": results, "queries": queries, "avg_precision": avg_prec, "avg_top": avg_top, "pass_rate": pass_rate}
+    return {
+        "results": results,
+        "queries": queries,
+        "avg_precision": avg_prec,
+        "avg_top": avg_top,
+        "pass_rate": pass_rate,
+    }
 
 
 def compare_search(vs, verbose=True):
@@ -186,7 +309,7 @@ def compare_search(vs, verbose=True):
     print("=== DELTA ===")
     print(f"{'query':<40} {'sem':>5} {'hyb':>5} {'delta':>6}")
     print("-" * 60)
-    for s, h, q in zip(sem["results"], hyb["results"], queries):
+    for s, h, q in zip(sem["results"], hyb["results"], queries, strict=False):
         d = h["keyword_precision"] - s["keyword_precision"]
         if d != 0 or verbose:
             m = "+" if d > 0 else "-" if d < 0 else " "
@@ -239,6 +362,7 @@ def compare_baseline(current: dict):
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import argparse
+
     from core.vector_store import VectorStore
 
     parser = argparse.ArgumentParser(description="RAG Quality Eval")
@@ -266,8 +390,9 @@ if __name__ == "__main__":
             queries = TEST_QUERIES
             print(f"Static queries: {len(queries)}\n")
 
-        result = eval_all(vs, queries=queries, threshold=args.threshold,
-                          max_chunks=args.max_chunks, verbose=args.verbose)
+        result = eval_all(
+            vs, queries=queries, threshold=args.threshold, max_chunks=args.max_chunks, verbose=args.verbose
+        )
 
         if args.save_baseline:
             save_baseline(result)

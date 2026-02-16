@@ -12,10 +12,11 @@ Math-aware pipeline:
 """
 
 import io
-import re
 import logging
-from pathlib import Path
+import re
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from core import config
 
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 try:
     import pytesseract
     from PIL import Image
+
     OCR_AVAILABLE = True
 except ImportError:
     OCR_AVAILABLE = False
@@ -34,55 +36,102 @@ except ImportError:
 
 MATH_SYMBOL_MAP = {
     # Greek lowercase
-    "\u03b1": "alpha", "\u03b2": "beta", "\u03b3": "gamma",
-    "\u03b4": "delta", "\u03b5": "epsilon", "\u03b6": "zeta",
-    "\u03b7": "eta", "\u03b8": "theta", "\u03b9": "iota",
-    "\u03ba": "kappa", "\u03bb": "lambda", "\u03bc": "mu",
-    "\u03bd": "nu", "\u03be": "xi", "\u03c0": "pi",
-    "\u03c1": "rho", "\u03c3": "sigma", "\u03c4": "tau",
-    "\u03c5": "upsilon", "\u03c6": "phi", "\u03c7": "chi",
-    "\u03c8": "psi", "\u03c9": "omega",
+    "\u03b1": "alpha",
+    "\u03b2": "beta",
+    "\u03b3": "gamma",
+    "\u03b4": "delta",
+    "\u03b5": "epsilon",
+    "\u03b6": "zeta",
+    "\u03b7": "eta",
+    "\u03b8": "theta",
+    "\u03b9": "iota",
+    "\u03ba": "kappa",
+    "\u03bb": "lambda",
+    "\u03bc": "mu",
+    "\u03bd": "nu",
+    "\u03be": "xi",
+    "\u03c0": "pi",
+    "\u03c1": "rho",
+    "\u03c3": "sigma",
+    "\u03c4": "tau",
+    "\u03c5": "upsilon",
+    "\u03c6": "phi",
+    "\u03c7": "chi",
+    "\u03c8": "psi",
+    "\u03c9": "omega",
     # Greek uppercase
-    "\u0393": "Gamma", "\u0394": "Delta", "\u0398": "Theta",
-    "\u039b": "Lambda", "\u039e": "Xi", "\u03a0": "Pi",
-    "\u03a3": "Sigma", "\u03a6": "Phi", "\u03a8": "Psi",
+    "\u0393": "Gamma",
+    "\u0394": "Delta",
+    "\u0398": "Theta",
+    "\u039b": "Lambda",
+    "\u039e": "Xi",
+    "\u03a0": "Pi",
+    "\u03a3": "Sigma",
+    "\u03a6": "Phi",
+    "\u03a8": "Psi",
     "\u03a9": "Omega",
     # Operators
-    "\u222b": " integral ", "\u222c": " double integral ",
+    "\u222b": " integral ",
+    "\u222c": " double integral ",
     "\u222d": " triple integral ",
-    "\u2211": " sum ", "\u220f": " product ",
-    "\u221a": " sqrt ", "\u221b": " cube root ",
-    "\u2202": " partial ", "\u2207": " nabla ",
+    "\u2211": " sum ",
+    "\u220f": " product ",
+    "\u221a": " sqrt ",
+    "\u221b": " cube root ",
+    "\u2202": " partial ",
+    "\u2207": " nabla ",
     "\u221e": " infinity ",
     # Relations
-    "\u2260": " != ", "\u2264": " <= ", "\u2265": " >= ",
-    "\u2248": " approximately ", "\u2261": " equivalent ",
+    "\u2260": " != ",
+    "\u2264": " <= ",
+    "\u2265": " >= ",
+    "\u2248": " approximately ",
+    "\u2261": " equivalent ",
     "\u221d": " proportional ",
     # Set theory
-    "\u2208": " in ", "\u2209": " not in ",
-    "\u2282": " subset ", "\u2283": " superset ",
-    "\u2286": " subset_eq ", "\u2287": " superset_eq ",
-    "\u222a": " union ", "\u2229": " intersection ",
+    "\u2208": " in ",
+    "\u2209": " not in ",
+    "\u2282": " subset ",
+    "\u2283": " superset ",
+    "\u2286": " subset_eq ",
+    "\u2287": " superset_eq ",
+    "\u222a": " union ",
+    "\u2229": " intersection ",
     "\u2205": " empty set ",
     # Logic
-    "\u2227": " and ", "\u2228": " or ", "\u00ac": " not ",
-    "\u2200": " for all ", "\u2203": " there exists ",
-    "\u21d2": " implies ", "\u21d4": " iff ",
+    "\u2227": " and ",
+    "\u2228": " or ",
+    "\u00ac": " not ",
+    "\u2200": " for all ",
+    "\u2203": " there exists ",
+    "\u21d2": " implies ",
+    "\u21d4": " iff ",
     # Arrows
-    "\u2192": " -> ", "\u2190": " <- ",
+    "\u2192": " -> ",
+    "\u2190": " <- ",
     "\u2194": " <-> ",
     # Superscripts / subscripts
-    "\u00b2": "^2", "\u00b3": "^3",
-    "\u2070": "^0", "\u00b9": "^1",
-    "\u2074": "^4", "\u2075": "^5",
-    "\u2076": "^6", "\u2077": "^7",
-    "\u2078": "^8", "\u2079": "^9",
+    "\u00b2": "^2",
+    "\u00b3": "^3",
+    "\u2070": "^0",
+    "\u00b9": "^1",
+    "\u2074": "^4",
+    "\u2075": "^5",
+    "\u2076": "^6",
+    "\u2077": "^7",
+    "\u2078": "^8",
+    "\u2079": "^9",
     "\u207f": "^n",
-    "\u2080": "_0", "\u2081": "_1", "\u2082": "_2",
-    "\u2083": "_3", "\u2084": "_4",
+    "\u2080": "_0",
+    "\u2081": "_1",
+    "\u2082": "_2",
+    "\u2083": "_3",
+    "\u2084": "_4",
     # Misc
-    "\u00d7": " * ", "\u00f7": " / ",
-    "\u00b1": " +/- ", "\u2213": " -/+ ",
+    "\u00d7": " * ",
+    "\u00f7": " / ",
+    "\u00b1": " +/- ",
+    "\u2213": " -/+ ",
     "\u2026": "...",
 }
 
@@ -93,6 +142,7 @@ _MATH_CHARS = set(MATH_SYMBOL_MAP.keys()) | set("=+-*/^_{}[]()0123456789<>|\\")
 @dataclass
 class DocumentChunk:
     """A chunk of text with metadata for vector storage."""
+
     text: str
     embedding_text: str = ""
     metadata: dict = field(default_factory=dict)
@@ -125,11 +175,12 @@ class DocumentProcessor:
         Extract text from a file, then chunk it.
         Returns list of DocumentChunks with rich metadata.
         """
+        start = time.perf_counter()
         ext = file_path.suffix.lower()
         extractor = {
             ".pdf": self._extract_pdf,
             ".docx": self._extract_docx,
-            ".doc": self._extract_docx,   # best effort
+            ".doc": self._extract_docx,  # best effort
             ".pptx": self._extract_pptx,
             ".txt": self._extract_text,
             ".md": self._extract_text,
@@ -164,7 +215,8 @@ class DocumentProcessor:
 
         # Chunk the pages
         chunks = self._chunk_pages(pages, base_meta)
-        logger.info(f"Processed {file_path.name}: {len(pages)} pages → {len(chunks)} chunks")
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        logger.info(f"Processed {file_path.name}: {len(pages)} pages → {len(chunks)} chunks in {elapsed_ms:.2f} ms")
         return chunks
 
     # ─── PDF Extraction ───────────────────────────────────────────────────
@@ -178,8 +230,8 @@ class DocumentProcessor:
         No timeout needed. No quality loss. Fast on any PDF size.
         """
         try:
-            import pymupdf4llm
             import fitz
+            import pymupdf4llm
 
             doc = fitz.open(str(path))
             total_pages = len(doc)
@@ -238,7 +290,7 @@ class DocumentProcessor:
             if text_page_indices:
                 BATCH_SIZE = 50
                 for batch_start in range(0, len(text_page_indices), BATCH_SIZE):
-                    batch = text_page_indices[batch_start:batch_start + BATCH_SIZE]
+                    batch = text_page_indices[batch_start : batch_start + BATCH_SIZE]
                     try:
                         batch_data = pymupdf4llm.to_markdown(
                             str(path),
@@ -285,6 +337,7 @@ class DocumentProcessor:
 
         try:
             import fitz
+
             doc = fitz.open(str(path))
             for page_num, page in enumerate(doc):
                 text = page.get_text("text").strip()
@@ -312,6 +365,7 @@ class DocumentProcessor:
         # Fallback: PyPDF2 (no OCR support here)
         try:
             from PyPDF2 import PdfReader
+
             reader = PdfReader(str(path))
             for page in reader.pages:
                 text = page.extract_text() or ""
@@ -350,25 +404,22 @@ class DocumentProcessor:
             # Pass 1: Turkish + English with PSM 6 (uniform block — better for academic pages)
             try:
                 text = pytesseract.image_to_string(img, lang="tur+eng", config="--psm 6")
-            except Exception:
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.debug("OCR primary language pass failed on page %s: %s", page_num + 1, exc)
                 text = pytesseract.image_to_string(img, lang="eng")
 
             # Pass 2: Extended languages + equ if pass 1 was insufficient
             if len(text.strip()) < 20:
                 try:
-                    text = pytesseract.image_to_string(
-                        img, lang="tur+eng+equ",
-                        config="--psm 6"
-                    )
-                except Exception:
+                    text = pytesseract.image_to_string(img, lang="tur+eng+equ", config="--psm 6")
+                except (OSError, RuntimeError, ValueError) as exc:
+                    logger.debug("OCR secondary language pass failed on page %s: %s", page_num + 1, exc)
                     try:
-                        text = pytesseract.image_to_string(
-                            img, lang="tur+eng+fra+deu+lat+ita+spa"
-                        )
+                        text = pytesseract.image_to_string(img, lang="tur+eng+fra+deu+lat+ita+spa")
                         if text.strip():
                             logger.debug(f"OCR extended lang retry on page {page_num + 1} of {filename}")
-                    except Exception:
-                        pass  # keep pass 1 result
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        logger.debug("OCR extended language retry failed on page %s: %s", page_num + 1, exc)
 
             return text.strip()
         except Exception as e:
@@ -381,6 +432,7 @@ class DocumentProcessor:
         """Extract text from DOCX."""
         try:
             from docx import Document
+
             doc = Document(str(path))
             full_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
             return [full_text] if full_text else []
@@ -392,6 +444,7 @@ class DocumentProcessor:
         """Extract text from PPTX, one page per slide."""
         try:
             from pptx import Presentation
+
             prs = Presentation(str(path))
             slides = []
             for i, slide in enumerate(prs.slides):
@@ -413,6 +466,7 @@ class DocumentProcessor:
         """Extract text from HTML."""
         try:
             from bs4 import BeautifulSoup
+
             html = path.read_text(encoding="utf-8", errors="ignore")
             soup = BeautifulSoup(html, "html.parser")
 
@@ -523,11 +577,13 @@ class DocumentProcessor:
                 "total_chunks": len(chunks_text),
                 "has_math": has_math,
             }
-            result.append(DocumentChunk(
-                text=clean_text,
-                embedding_text=embedding_text,
-                metadata=meta,
-            ))
+            result.append(
+                DocumentChunk(
+                    text=clean_text,
+                    embedding_text=embedding_text,
+                    metadata=meta,
+                )
+            )
 
         return result
 
@@ -535,13 +591,14 @@ class DocumentProcessor:
         """Split text into chunks with overlap. Uses equation-aware separators."""
         try:
             from langchain_text_splitters import RecursiveCharacterTextSplitter
+
             splitter = RecursiveCharacterTextSplitter(
                 chunk_size=self.chunk_size,
                 chunk_overlap=self.chunk_overlap,
                 separators=[
                     "<<<END_MATH>>>\n<<<MATH_BLOCK>>>",  # between equation blocks
-                    "<<<END_MATH>>>",   # after equation block
-                    "<<<MATH_BLOCK>>>", # before equation block
+                    "<<<END_MATH>>>",  # after equation block
+                    "<<<MATH_BLOCK>>>",  # before equation block
                     "\n\n",
                     "\n",
                     ". ",

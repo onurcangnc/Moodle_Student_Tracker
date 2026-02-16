@@ -12,10 +12,9 @@ Run:
 """
 
 import json
-import re
 import sys
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -50,7 +49,9 @@ SCENARIOS: list[Scenario] = [
     # CTIS 363 — Ethical and Social Issues in Information Systems
     # ══════════════════════════════════════════════════════════════════════════
     Scenario(
-        id="CTIS363-01", course_code="CTIS 363", level="easy",
+        id="CTIS363-01",
+        course_code="CTIS 363",
+        level="easy",
         user_message="CTIS 363 çalışacağım",
         skill="course_detection",
         expected_behavior="Kursu tanır, ana konuları özetler, 'hangi konudan başlayalım?' sorar",
@@ -60,7 +61,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS363-02", course_code="CTIS 363", level="easy",
+        id="CTIS363-02",
+        course_code="CTIS 363",
+        level="easy",
         user_message="privacy nedir kısaca açıkla",
         skill="rag_retrieval",
         expected_behavior="Mahremiyet kavramını 3-5 cümleyle açıklar, kontrol sorusu sorar",
@@ -72,7 +75,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS363-03", course_code="CTIS 363", level="easy",
+        id="CTIS363-03",
+        course_code="CTIS 363",
+        level="easy",
         user_message="ACM etik kodları nelerdir",
         skill="rag_retrieval",
         expected_behavior="ACM Code of Ethics ana maddelerini özetler",
@@ -82,7 +87,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["acm", "ethics", "code", "etik"],
     ),
     Scenario(
-        id="CTIS363-04", course_code="CTIS 363", level="medium",
+        id="CTIS363-04",
+        course_code="CTIS 363",
+        level="medium",
         user_message="KVKK ile GDPR arasındaki farklar neler",
         skill="rag_retrieval",
         expected_behavior="İki mevzuatı karşılaştırır, temel farkları listeler",
@@ -92,7 +99,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["kvkk", "gdpr", "veri", "koruma"],
     ),
     Scenario(
-        id="CTIS363-05", course_code="CTIS 363", level="medium",
+        id="CTIS363-05",
+        course_code="CTIS 363",
+        level="medium",
         user_message="whistleblowing etik mi yoksa ihanet mi?",
         skill="response_quality",
         expected_behavior="İki perspektifi sunar, 'sen ne düşünüyorsun?' sorar",
@@ -103,7 +112,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS363-06", course_code="CTIS 363", level="medium",
+        id="CTIS363-06",
+        course_code="CTIS 363",
+        level="medium",
         user_message="devam et",
         skill="context_tracking",
         expected_behavior="Önceki konuyu (whistleblowing) derinleştirir — gerçek vakalar, yasal korumalar",
@@ -113,7 +124,9 @@ SCENARIOS: list[Scenario] = [
         prior_topic="whistleblowing",
     ),
     Scenario(
-        id="CTIS363-07", course_code="CTIS 363", level="medium",
+        id="CTIS363-07",
+        course_code="CTIS 363",
+        level="medium",
         user_message="anlamadım",
         skill="context_tracking",
         expected_behavior="Aynı konuyu daha basit dille, analoji ile açıklar",
@@ -123,7 +136,9 @@ SCENARIOS: list[Scenario] = [
         prior_topic="whistleblowing",
     ),
     Scenario(
-        id="CTIS363-08", course_code="CTIS 363", level="hard",
+        id="CTIS363-08",
+        course_code="CTIS 363",
+        level="hard",
         user_message="Bir şirket çalışanlarını AI ile izlerse bu etik midir? Hangi framework ile değerlendirirsin?",
         skill="synthesis",
         expected_behavior="Surveillance + AI etiği + etik frameworkler birleştirilerek analiz",
@@ -134,7 +149,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS363-09", course_code="CTIS 363", level="hard",
+        id="CTIS363-09",
+        course_code="CTIS 363",
+        level="hard",
         user_message="beni test et",
         skill="quiz_mode",
         expected_behavior="CTIS 363 konularından tek bir soru sorar, cevabı bekler",
@@ -144,7 +161,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS363-10", course_code="CTIS 363", level="hard",
+        id="CTIS363-10",
+        course_code="CTIS 363",
+        level="hard",
         user_message="Dijital uçurum ile yapay zeka etiği arasında nasıl bir bağlantı var?",
         skill="synthesis",
         expected_behavior="Digital divide ve AI ethics konularını birleştiren analiz",
@@ -153,12 +172,13 @@ SCENARIOS: list[Scenario] = [
         expected_course="CTIS 363-1 Ethical and Social Issues in Information Systems",
         expected_keywords=["dijital", "uçurum", "divide", "yapay", "zeka", "ethics"],
     ),
-
     # ══════════════════════════════════════════════════════════════════════════
     # HCIV 102 — History of Civilization II
     # ══════════════════════════════════════════════════════════════════════════
     Scenario(
-        id="HCIV102-01", course_code="HCIV 102", level="easy",
+        id="HCIV102-01",
+        course_code="HCIV 102",
+        level="easy",
         user_message="HCIV 102 çalışmam lazım",
         skill="course_detection",
         expected_behavior="Kursu tanır, dönemleri/konuları özetler, başlangıç noktası sorar",
@@ -168,7 +188,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="HCIV102-02", course_code="HCIV 102", level="easy",
+        id="HCIV102-02",
+        course_code="HCIV 102",
+        level="easy",
         user_message="Fransız Devrimi neden çıktı",
         skill="rag_retrieval",
         expected_behavior="Temel sebepleri kısa özetler, 'sence en belirleyici faktör hangisi?' sorar",
@@ -178,7 +200,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="HCIV102-03", course_code="HCIV 102", level="easy",
+        id="HCIV102-03",
+        course_code="HCIV 102",
+        level="easy",
         user_message="Sanayi Devrimi ne zaman başladı",
         skill="rag_retrieval",
         expected_behavior="Tarih ve yer bilgisi + kısa bağlam",
@@ -187,7 +211,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["industrial", "sanayi", "revolution", "devrim", "england", "ingiltere"],
     ),
     Scenario(
-        id="HCIV102-04", course_code="HCIV 102", level="medium",
+        id="HCIV102-04",
+        course_code="HCIV 102",
+        level="medium",
         user_message="Fransız Devrimi ile Amerikan Devrimi arasındaki farklar",
         skill="rag_retrieval",
         expected_behavior="İki devrimi karşılaştırır, benzerlik ve farkları sunar",
@@ -196,7 +222,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["fransız", "amerikan", "french", "american", "revolution", "devrim"],
     ),
     Scenario(
-        id="HCIV102-05", course_code="HCIV 102", level="medium",
+        id="HCIV102-05",
+        course_code="HCIV 102",
+        level="medium",
         user_message="emperyalizm ve kolonizasyon aynı şey mi",
         skill="response_quality",
         expected_behavior="İki kavramı ayırır, örneklerle açıklar, düşündürücü soru sorar",
@@ -206,7 +234,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="HCIV102-06", course_code="HCIV 102", level="medium",
+        id="HCIV102-06",
+        course_code="HCIV 102",
+        level="medium",
         user_message="Soğuk Savaş'ın ana cepheleri nelerdi",
         skill="rag_retrieval",
         expected_behavior="Proxy wars, ideolojik rekabet, silahlanma yarışı vb. özetler",
@@ -215,7 +245,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["soğuk", "cold", "war", "savaş"],
     ),
     Scenario(
-        id="HCIV102-07", course_code="HCIV 102", level="medium",
+        id="HCIV102-07",
+        course_code="HCIV 102",
+        level="medium",
         user_message="anlamadım basit anlat",
         skill="context_tracking",
         expected_behavior="Soğuk Savaş'ı günlük dil ve analoji ile yeniden açıklar",
@@ -225,7 +257,9 @@ SCENARIOS: list[Scenario] = [
         prior_topic="Soğuk Savaş",
     ),
     Scenario(
-        id="HCIV102-08", course_code="HCIV 102", level="hard",
+        id="HCIV102-08",
+        course_code="HCIV 102",
+        level="hard",
         user_message="I. Dünya Savaşı olmasaydı II. Dünya Savaşı olur muydu? Tartış.",
         skill="synthesis",
         expected_behavior="Nedensellik zincirini analiz eder, farklı perspektifler sunar",
@@ -235,7 +269,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="HCIV102-09", course_code="HCIV 102", level="hard",
+        id="HCIV102-09",
+        course_code="HCIV 102",
+        level="hard",
         user_message="beni test et",
         skill="quiz_mode",
         expected_behavior="HCIV 102 konularından tek soru sorar",
@@ -245,7 +281,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="HCIV102-10", course_code="HCIV 102", level="hard",
+        id="HCIV102-10",
+        course_code="HCIV 102",
+        level="hard",
         user_message="Sanayi Devrimi'nin emperyalizme etkisini ve bunun bugünkü küresel eşitsizliğe yansımasını açıkla",
         skill="synthesis",
         expected_behavior="Sanayi Devrimi → emperyalizm → modern eşitsizlik zincirini kurar",
@@ -253,12 +291,13 @@ SCENARIOS: list[Scenario] = [
         fail_criteria="Konuları izole açıklama, bağ kuramama",
         expected_keywords=["sanayi", "industrial", "emperyalizm", "imperialism", "eşitsizlik"],
     ),
-
     # ══════════════════════════════════════════════════════════════════════════
     # CTIS 474 — Information Systems Auditing
     # ══════════════════════════════════════════════════════════════════════════
     Scenario(
-        id="CTIS474-01", course_code="CTIS 474", level="easy",
+        id="CTIS474-01",
+        course_code="CTIS 474",
+        level="easy",
         user_message="CTIS 474 çalışacağım",
         skill="course_detection",
         expected_behavior="IS Auditing kursunu tanır, ana konuları listeler",
@@ -268,7 +307,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS474-02", course_code="CTIS 474", level="easy",
+        id="CTIS474-02",
+        course_code="CTIS 474",
+        level="easy",
         user_message="COBIT nedir",
         skill="rag_retrieval",
         expected_behavior="COBIT framework'ünü kısa özetler",
@@ -278,7 +319,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["cobit", "framework", "governance", "control"],
     ),
     Scenario(
-        id="CTIS474-03", course_code="CTIS 474", level="easy",
+        id="CTIS474-03",
+        course_code="CTIS 474",
+        level="easy",
         user_message="IT audit süreci nasıl işler",
         skill="rag_retrieval",
         expected_behavior="Planlama → yürütme → raporlama adımlarını özetler",
@@ -289,7 +332,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS474-04", course_code="CTIS 474", level="medium",
+        id="CTIS474-04",
+        course_code="CTIS 474",
+        level="medium",
         user_message="COBIT ile ITIL arasındaki fark ne",
         skill="rag_retrieval",
         expected_behavior="İki framework'ü karşılaştırır, kullanım alanlarını belirtir",
@@ -299,7 +344,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["cobit", "itil"],
     ),
     Scenario(
-        id="CTIS474-05", course_code="CTIS 474", level="medium",
+        id="CTIS474-05",
+        course_code="CTIS 474",
+        level="medium",
         user_message="risk değerlendirme nasıl yapılır adım adım",
         skill="rag_retrieval",
         expected_behavior="Risk assessment metodolojisini adım adım özetler",
@@ -309,7 +356,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["risk", "değerlendirme", "assessment"],
     ),
     Scenario(
-        id="CTIS474-06", course_code="CTIS 474", level="medium",
+        id="CTIS474-06",
+        course_code="CTIS 474",
+        level="medium",
         user_message="penetrasyon testi ile IT audit arasındaki ilişki ne",
         skill="synthesis",
         expected_behavior="Pentest'in audit sürecindeki rolünü açıklar",
@@ -319,7 +368,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["penetrasyon", "pentest", "audit", "denetim"],
     ),
     Scenario(
-        id="CTIS474-07", course_code="CTIS 474", level="medium",
+        id="CTIS474-07",
+        course_code="CTIS 474",
+        level="medium",
         user_message="devam et, daha detay ver",
         skill="context_tracking",
         expected_behavior="Pentest-audit ilişkisini derinleştirir (raporlama, bulgu sınıflandırma)",
@@ -329,7 +380,9 @@ SCENARIOS: list[Scenario] = [
         prior_topic="penetrasyon testi ve audit",
     ),
     Scenario(
-        id="CTIS474-08", course_code="CTIS 474", level="hard",
+        id="CTIS474-08",
+        course_code="CTIS 474",
+        level="hard",
         user_message="Bir şirketin ERP sistemi hacklenirse auditor olarak ilk ne yaparsın?",
         skill="synthesis",
         expected_behavior="Incident response + audit prosedürü + BCP perspektifinden yaklaşır",
@@ -340,7 +393,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS474-09", course_code="CTIS 474", level="hard",
+        id="CTIS474-09",
+        course_code="CTIS 474",
+        level="hard",
         user_message="beni test et",
         skill="quiz_mode",
         expected_behavior="CTIS 474 konusundan tek soru",
@@ -350,7 +405,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS474-10", course_code="CTIS 474", level="hard",
+        id="CTIS474-10",
+        course_code="CTIS 474",
+        level="hard",
         user_message="SOX compliance'ı sağlamak için IT auditor hangi kontrolleri test etmeli? Bunu COBIT ile nasıl eşlersin?",
         skill="synthesis",
         expected_behavior="SOX gereksinimleri + COBIT kontrolleri eşleştirmesi",
@@ -359,12 +416,13 @@ SCENARIOS: list[Scenario] = [
         expected_course="CTIS 474-1 Information Systems Auditing",
         expected_keywords=["sox", "cobit", "compliance", "control"],
     ),
-
     # ══════════════════════════════════════════════════════════════════════════
     # EDEB 201 — Introduction to Turkish Fiction
     # ══════════════════════════════════════════════════════════════════════════
     Scenario(
-        id="EDEB201-01", course_code="EDEB 201", level="easy",
+        id="EDEB201-01",
+        course_code="EDEB 201",
+        level="easy",
         user_message="EDEB 201 çalışacağım",
         skill="course_detection",
         expected_behavior="Kursu tanır, dönemleri/yazarları özetler",
@@ -374,7 +432,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="EDEB201-02", course_code="EDEB 201", level="easy",
+        id="EDEB201-02",
+        course_code="EDEB 201",
+        level="easy",
         user_message="Tanzimat edebiyatı ne zaman başladı",
         skill="rag_retrieval",
         expected_behavior="Tarih + kısa bağlam + 'bu dönemin hangi özelliği seni ilgilendiriyor?' sorusu",
@@ -385,7 +445,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="EDEB201-03", course_code="EDEB 201", level="easy",
+        id="EDEB201-03",
+        course_code="EDEB 201",
+        level="easy",
         user_message="Servet-i Fünun döneminin özellikleri",
         skill="rag_retrieval",
         expected_behavior="Ana özellikleri özetler, temsilci yazarları belirtir",
@@ -395,7 +457,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["servet", "fünun"],
     ),
     Scenario(
-        id="EDEB201-04", course_code="EDEB 201", level="medium",
+        id="EDEB201-04",
+        course_code="EDEB 201",
+        level="medium",
         user_message="Tanzimat ile Servet-i Fünun edebiyatı arasındaki farklar",
         skill="rag_retrieval",
         expected_behavior="İki dönemi tematik, stilistik ve toplumsal açıdan karşılaştırır",
@@ -405,7 +469,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["tanzimat", "servet", "fünun"],
     ),
     Scenario(
-        id="EDEB201-05", course_code="EDEB 201", level="medium",
+        id="EDEB201-05",
+        course_code="EDEB 201",
+        level="medium",
         user_message="Türk edebiyatında doğu-batı çatışması nasıl işlenmiş",
         skill="rag_retrieval",
         expected_behavior="Farklı dönemlerden örneklerle temayı analiz eder",
@@ -416,7 +482,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="EDEB201-06", course_code="EDEB 201", level="medium",
+        id="EDEB201-06",
+        course_code="EDEB 201",
+        level="medium",
         user_message="köy romanı nedir, önemli örnekleri",
         skill="rag_retrieval",
         expected_behavior="Köy romanı tanımı, temsilcileri, toplumsal bağlamı",
@@ -426,7 +494,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["köy", "roman"],
     ),
     Scenario(
-        id="EDEB201-07", course_code="EDEB 201", level="medium",
+        id="EDEB201-07",
+        course_code="EDEB 201",
+        level="medium",
         user_message="anlamadım, daha basit anlat",
         skill="context_tracking",
         expected_behavior="Köy romanını günlük dille, somut örnekle yeniden açıklar",
@@ -436,7 +506,9 @@ SCENARIOS: list[Scenario] = [
         prior_topic="köy romanı",
     ),
     Scenario(
-        id="EDEB201-08", course_code="EDEB 201", level="hard",
+        id="EDEB201-08",
+        course_code="EDEB 201",
+        level="hard",
         user_message="Oğuz Atay'ın Tutunamayanlar'daki anlatı tekniği geleneksel Türk romanından nasıl ayrılıyor?",
         skill="synthesis",
         expected_behavior="Postmodern teknikler vs. geleneksel anlatı karşılaştırması",
@@ -446,7 +518,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["oğuz", "atay", "tutunamayanlar"],
     ),
     Scenario(
-        id="EDEB201-09", course_code="EDEB 201", level="hard",
+        id="EDEB201-09",
+        course_code="EDEB 201",
+        level="hard",
         user_message="beni test et",
         skill="quiz_mode",
         expected_behavior="Türk edebiyatı konusundan tek soru",
@@ -456,7 +530,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="EDEB201-10", course_code="EDEB 201", level="hard",
+        id="EDEB201-10",
+        course_code="EDEB 201",
+        level="hard",
         user_message="Cumhuriyet dönemi edebiyatında kadın temsilinin değişimini Tanzimat'tan bugüne karşılaştır",
         skill="synthesis",
         expected_behavior="Dönemler arası karşılaştırma, eser ve karakter örnekleriyle",
@@ -465,12 +541,13 @@ SCENARIOS: list[Scenario] = [
         expected_course="EDEB 201-2 Introduction to Turkish Fiction",
         expected_keywords=["kadın", "tanzimat", "cumhuriyet", "roman"],
     ),
-
     # ══════════════════════════════════════════════════════════════════════════
     # CTIS 465 — Microservice Development
     # ══════════════════════════════════════════════════════════════════════════
     Scenario(
-        id="CTIS465-01", course_code="CTIS 465", level="easy",
+        id="CTIS465-01",
+        course_code="CTIS 465",
+        level="easy",
         user_message="CTIS 465 çalışacağım",
         skill="course_detection",
         expected_behavior="Microservice Development kursunu tanır, konuları listeler",
@@ -480,7 +557,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS465-02", course_code="CTIS 465", level="easy",
+        id="CTIS465-02",
+        course_code="CTIS 465",
+        level="easy",
         user_message="microservice nedir monolith'ten farkı ne",
         skill="rag_retrieval",
         expected_behavior="Kısa tanım, temel fark, kontrol sorusu",
@@ -491,7 +570,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS465-03", course_code="CTIS 465", level="easy",
+        id="CTIS465-03",
+        course_code="CTIS 465",
+        level="easy",
         user_message="API gateway ne işe yarar",
         skill="rag_retrieval",
         expected_behavior="API gateway'in rolünü kısa açıklar",
@@ -501,7 +582,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["api", "gateway"],
     ),
     Scenario(
-        id="CTIS465-04", course_code="CTIS 465", level="medium",
+        id="CTIS465-04",
+        course_code="CTIS 465",
+        level="medium",
         user_message="circuit breaker pattern nedir ne zaman kullanılır",
         skill="rag_retrieval",
         expected_behavior="Pattern'ı açıklar, kullanım senaryosu verir, Socratic soru",
@@ -512,7 +595,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS465-05", course_code="CTIS 465", level="medium",
+        id="CTIS465-05",
+        course_code="CTIS 465",
+        level="medium",
         user_message="Kafka ile RabbitMQ arasındaki fark ne, hangisini ne zaman kullanırım",
         skill="rag_retrieval",
         expected_behavior="İki message broker'ı karşılaştırır, kullanım senaryolarını belirtir",
@@ -522,7 +607,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["kafka", "rabbitmq", "message"],
     ),
     Scenario(
-        id="CTIS465-06", course_code="CTIS 465", level="medium",
+        id="CTIS465-06",
+        course_code="CTIS 465",
+        level="medium",
         user_message="saga pattern nedir",
         skill="rag_retrieval",
         expected_behavior="Distributed transaction yönetimini saga ile açıklar",
@@ -532,7 +619,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["saga", "pattern", "transaction"],
     ),
     Scenario(
-        id="CTIS465-07", course_code="CTIS 465", level="medium",
+        id="CTIS465-07",
+        course_code="CTIS 465",
+        level="medium",
         user_message="devam et daha detay ver",
         skill="context_tracking",
         expected_behavior="Saga pattern'ı derinleştirir — compensating transactions, failure handling",
@@ -542,7 +631,9 @@ SCENARIOS: list[Scenario] = [
         prior_topic="saga pattern",
     ),
     Scenario(
-        id="CTIS465-08", course_code="CTIS 465", level="hard",
+        id="CTIS465-08",
+        course_code="CTIS 465",
+        level="hard",
         user_message="E-ticaret uygulaması için microservice mimarisi tasarla: hangi servisler, hangi iletişim pattern'ları, hangi veritabanı stratejisi?",
         skill="synthesis",
         expected_behavior="Servis decomposition + iletişim + DB strategy birlikte tasarlar",
@@ -553,7 +644,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS465-09", course_code="CTIS 465", level="hard",
+        id="CTIS465-09",
+        course_code="CTIS 465",
+        level="hard",
         user_message="beni test et",
         skill="quiz_mode",
         expected_behavior="Microservice konusundan tek soru",
@@ -563,7 +656,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS465-10", course_code="CTIS 465", level="hard",
+        id="CTIS465-10",
+        course_code="CTIS 465",
+        level="hard",
         user_message="Kubernetes pod'u crash loop'a girdi, service mesh üzerinden distributed tracing ile debug et — adımları anlat",
         skill="synthesis",
         expected_behavior="K8s + service mesh + tracing birleştirilerek debug süreci",
@@ -572,12 +667,13 @@ SCENARIOS: list[Scenario] = [
         expected_course="CTIS 465-1 Microservice Development",
         expected_keywords=["kubernetes", "pod", "service", "mesh", "tracing"],
     ),
-
     # ══════════════════════════════════════════════════════════════════════════
     # CTIS 456 — Senior Project II
     # ══════════════════════════════════════════════════════════════════════════
     Scenario(
-        id="CTIS456-01", course_code="CTIS 456", level="easy",
+        id="CTIS456-01",
+        course_code="CTIS 456",
+        level="easy",
         user_message="CTIS 456 çalışacağım",
         skill="course_detection",
         expected_behavior="Senior Project II tanır, proje süreç aşamalarını listeler",
@@ -587,7 +683,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS456-02", course_code="CTIS 456", level="easy",
+        id="CTIS456-02",
+        course_code="CTIS 456",
+        level="easy",
         user_message="SRS dokümanı nedir ne içerir",
         skill="rag_retrieval",
         expected_behavior="Software Requirements Specification'ı kısaca özetler",
@@ -597,7 +695,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["srs", "requirements", "specification", "gereksinim"],
     ),
     Scenario(
-        id="CTIS456-03", course_code="CTIS 456", level="easy",
+        id="CTIS456-03",
+        course_code="CTIS 456",
+        level="easy",
         user_message="Agile ile Waterfall farkı ne",
         skill="rag_retrieval",
         expected_behavior="Temel farkları özetler, 'projenizde hangisini kullanıyorsunuz?' sorar",
@@ -608,7 +708,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS456-04", course_code="CTIS 456", level="medium",
+        id="CTIS456-04",
+        course_code="CTIS 456",
+        level="medium",
         user_message="sprint planning nasıl yapılır best practice'ler ne",
         skill="rag_retrieval",
         expected_behavior="Sprint planning sürecini adım adım, best practice'lerle açıklar",
@@ -618,7 +720,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["sprint", "planning"],
     ),
     Scenario(
-        id="CTIS456-05", course_code="CTIS 456", level="medium",
+        id="CTIS456-05",
+        course_code="CTIS 456",
+        level="medium",
         user_message="UML diyagramlarından hangilerini projemde kullanmalıyım",
         skill="response_quality",
         expected_behavior="Senior project bağlamında en faydalı UML diyagramlarını önerir",
@@ -629,7 +733,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS456-06", course_code="CTIS 456", level="medium",
+        id="CTIS456-06",
+        course_code="CTIS 456",
+        level="medium",
         user_message="test planı nasıl yazılır",
         skill="rag_retrieval",
         expected_behavior="Test planı bileşenlerini ve yazım sürecini özetler",
@@ -639,7 +745,9 @@ SCENARIOS: list[Scenario] = [
         expected_keywords=["test", "plan"],
     ),
     Scenario(
-        id="CTIS456-07", course_code="CTIS 456", level="medium",
+        id="CTIS456-07",
+        course_code="CTIS 456",
+        level="medium",
         user_message="anlamadım, UAT ile unit test farkını basit anlat",
         skill="context_tracking",
         expected_behavior="Test türlerini basit dille, analoji ile ayırır",
@@ -649,7 +757,9 @@ SCENARIOS: list[Scenario] = [
         prior_topic="test planı",
     ),
     Scenario(
-        id="CTIS456-08", course_code="CTIS 456", level="hard",
+        id="CTIS456-08",
+        course_code="CTIS 456",
+        level="hard",
         user_message="Projemizin deadline'ı yaklaşıyor ama 3 sprint'lik iş var, 1 sprint'imiz kaldı. Nasıl önceliklendirme yapmalıyım?",
         skill="synthesis",
         expected_behavior="MoSCoW veya benzeri prioritization + risk yönetimi + pratik tavsiye",
@@ -660,7 +770,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS456-09", course_code="CTIS 456", level="hard",
+        id="CTIS456-09",
+        course_code="CTIS 456",
+        level="hard",
         user_message="beni test et",
         skill="quiz_mode",
         expected_behavior="Senior Project konusundan tek soru",
@@ -670,7 +782,9 @@ SCENARIOS: list[Scenario] = [
         requires_question=True,
     ),
     Scenario(
-        id="CTIS456-10", course_code="CTIS 456", level="hard",
+        id="CTIS456-10",
+        course_code="CTIS 456",
+        level="hard",
         user_message="Final sunumunda jüri 'sisteminiz ölçeklenebilir mi?' diye sorarsa nasıl cevap vermeliyim? Teknik ve sunum açısından hazırla.",
         skill="synthesis",
         expected_behavior="Scalability açıklaması + sunum tekniği + ikna stratejisi",
@@ -695,13 +809,15 @@ def eval_course_detection(scenarios: list[Scenario], detect_fn) -> list[dict]:
             continue
         detected = detect_fn(s.user_message)
         match = detected and s.expected_course.lower() in detected.lower()
-        results.append({
-            "id": s.id,
-            "message": s.user_message,
-            "expected": s.expected_course,
-            "detected": detected or "(None)",
-            "pass": match,
-        })
+        results.append(
+            {
+                "id": s.id,
+                "message": s.user_message,
+                "expected": s.expected_course,
+                "detected": detected or "(None)",
+                "pass": match,
+            }
+        )
     return results
 
 
@@ -723,32 +839,43 @@ def eval_rag_retrieval(scenarios: list[Scenario], vs, search_fn=None, threshold=
             hits = search_fn(query=s.user_message, n_results=15, course_filter=course_filter)
 
         if not hits:
-            results.append({
-                "id": s.id, "message": s.user_message,
-                "total_hits": 0, "keyword_precision": 0,
-                "found": [], "missing": s.expected_keywords, "pass": False,
-            })
+            results.append(
+                {
+                    "id": s.id,
+                    "message": s.user_message,
+                    "total_hits": 0,
+                    "keyword_precision": 0,
+                    "found": [],
+                    "missing": s.expected_keywords,
+                    "pass": False,
+                }
+            )
             continue
 
         # Apply threshold
         scores = [(1 - r["distance"]) for r in hits]
         top_score = scores[0]
         adaptive = max(top_score * 0.60, 0.20)
-        filtered = [r for r, sc in zip(hits, scores) if sc > adaptive][:10]
+        filtered = [r for r, sc in zip(hits, scores, strict=False) if sc > adaptive][:10]
 
         all_text = " ".join(r.get("text", "").lower() for r in filtered)
         found = [kw for kw in s.expected_keywords if kw.lower() in all_text]
         missing = [kw for kw in s.expected_keywords if kw.lower() not in all_text]
         precision = len(found) / len(s.expected_keywords) if s.expected_keywords else 0
 
-        results.append({
-            "id": s.id, "message": s.user_message,
-            "total_hits": len(hits), "after_filter": len(filtered),
-            "top_score": round(top_score, 3),
-            "keyword_precision": round(precision, 2),
-            "found": found, "missing": missing,
-            "pass": precision >= 0.6,
-        })
+        results.append(
+            {
+                "id": s.id,
+                "message": s.user_message,
+                "total_hits": len(hits),
+                "after_filter": len(filtered),
+                "top_score": round(top_score, 3),
+                "keyword_precision": round(precision, 2),
+                "found": found,
+                "missing": missing,
+                "pass": precision >= 0.6,
+            }
+        )
 
     return results
 
@@ -763,10 +890,14 @@ def eval_live_response(scenarios: list[Scenario], llm, vs, detect_fn) -> list[di
     for s in scenarios:
         if s.requires_context:
             # Context-dependent scenarios need sequential sending — skip in auto
-            results.append({
-                "id": s.id, "message": s.user_message,
-                "skipped": True, "reason": "requires_context",
-            })
+            results.append(
+                {
+                    "id": s.id,
+                    "message": s.user_message,
+                    "skipped": True,
+                    "reason": "requires_context",
+                }
+            )
             continue
 
         # Detect course
@@ -791,10 +922,14 @@ def eval_live_response(scenarios: list[Scenario], llm, vs, detect_fn) -> list[di
                 context_chunks=chunks if chunks else None,
             )
         except Exception as e:
-            results.append({
-                "id": s.id, "message": s.user_message,
-                "error": str(e), "pass": False,
-            })
+            results.append(
+                {
+                    "id": s.id,
+                    "message": s.user_message,
+                    "error": str(e),
+                    "pass": False,
+                }
+            )
             continue
 
         # Automated checks
@@ -815,21 +950,19 @@ def eval_live_response(scenarios: list[Scenario], llm, vs, detect_fn) -> list[di
             found_kw = [kw for kw in s.expected_keywords if kw.lower() in resp_lower]
             checks["keyword_match"] = len(found_kw) / len(s.expected_keywords)
 
-        all_pass = all(
-            v if isinstance(v, bool) else v >= 0.4
-            for v in checks.values()
-            if isinstance(v, (bool, float))
-        )
+        all_pass = all(v if isinstance(v, bool) else v >= 0.4 for v in checks.values() if isinstance(v, (bool, float)))
 
-        results.append({
-            "id": s.id,
-            "message": s.user_message,
-            "response_preview": response[:200],
-            "word_count": word_count,
-            "checks": checks,
-            "auto_pass": all_pass,
-            "needs_manual": s.skill in ("response_quality", "synthesis", "context_tracking"),
-        })
+        results.append(
+            {
+                "id": s.id,
+                "message": s.user_message,
+                "response_preview": response[:200],
+                "word_count": word_count,
+                "checks": checks,
+                "auto_pass": all_pass,
+                "needs_manual": s.skill in ("response_quality", "synthesis", "context_tracking"),
+            }
+        )
 
         # Rate limit
         time.sleep(1)
@@ -878,7 +1011,9 @@ def generate_markdown_report(
             icon = "✅" if r["pass"] else "❌"
             top = r.get("top_score", 0)
             missing = ", ".join(r.get("missing", [])[:3])
-            lines.append(f"| {r['id']} | {r['message'][:35]} | {r['keyword_precision']:.0%} | {top:.3f} | {missing} | {icon} |")
+            lines.append(
+                f"| {r['id']} | {r['message'][:35]} | {r['keyword_precision']:.0%} | {top:.3f} | {missing} | {icon} |"
+            )
         lines.append("")
 
     # Live LLM (if ran)
@@ -1043,7 +1178,9 @@ if __name__ == "__main__":
     for r in rag_results:
         icon = "✅" if r["pass"] else "⚠️" if r["keyword_precision"] >= 0.3 else "❌"
         missing = f"  missing: {r['missing']}" if r["missing"] and args.verbose else ""
-        print(f"  {icon} {r['id']:<14} {r['message']:<40} prec={r['keyword_precision']:.0%} top={r.get('top_score', 0):.3f}{missing}")
+        print(
+            f"  {icon} {r['id']:<14} {r['message']:<40} prec={r['keyword_precision']:.0%} top={r.get('top_score', 0):.3f}{missing}"
+        )
     if rag_results:
         avg_prec = sum(r["keyword_precision"] for r in rag_results) / len(rag_results)
         pass_rate = sum(1 for r in rag_results if r["pass"]) / len(rag_results)

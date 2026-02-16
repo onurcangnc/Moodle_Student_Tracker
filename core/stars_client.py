@@ -38,6 +38,7 @@ class StarsSession:
 @dataclass
 class StarsCache:
     """Cached STARS data — persists until next /login."""
+
     user_info: dict = field(default_factory=dict)
     grades: list = field(default_factory=list)
     attendance: list = field(default_factory=list)
@@ -83,11 +84,13 @@ class StarsClient:
         ss.student_id = student_id
         self._sessions[user_id] = ss
         s = ss.session
-        s.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9,tr;q=0.8",
-        })
+        s.headers.update(
+            {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9,tr;q=0.8",
+            }
+        )
 
         try:
             # 1-4: Follow redirects to login page
@@ -124,8 +127,7 @@ class StarsClient:
             logger.info(f"STARS cookies after login: {dict(s.cookies)}")
 
             # Check if we landed on verification page (SMS or Email)
-            is_verify = ("verifySms" in r.url or "verifyEmail" in r.url
-                         or "verifyCode" in r.text.lower())
+            is_verify = "verifySms" in r.url or "verifyEmail" in r.url or "verifyCode" in r.text.lower()
             if is_verify:
                 ss._phase = "awaiting_sms"
 
@@ -214,9 +216,10 @@ class StarsClient:
             # Remove stale verification cookie
             try:
                 from requests.cookies import remove_cookie_by_name
+
                 remove_cookie_by_name(s.cookies, "verification")
-            except Exception:
-                pass
+            except (AttributeError, KeyError, ValueError) as exc:
+                logger.debug("Verification cookie cleanup skipped: %s", exc)
 
             # Follow redirect chain manually with Referer headers
             loc = r.headers.get("Location", "")
@@ -230,13 +233,15 @@ class StarsClient:
             while loc and max_hops > 0:
                 s.headers["Referer"] = prev_url
                 r2 = s.get(loc, allow_redirects=False, timeout=15)
-                logger.info(f"STARS hop: {loc} → {r2.status_code} Location={r2.headers.get('Location', 'none')} Set-Cookie={r2.headers.get('Set-Cookie', 'none')[:100] if r2.headers.get('Set-Cookie') else 'none'}")
+                logger.info(
+                    f"STARS hop: {loc} → {r2.status_code} Location={r2.headers.get('Location', 'none')} Set-Cookie={r2.headers.get('Set-Cookie', 'none')[:100] if r2.headers.get('Set-Cookie') else 'none'}"
+                )
 
                 # Remove stale verification cookies set by intermediate redirects
                 try:
                     remove_cookie_by_name(s.cookies, "verification")
-                except Exception:
-                    pass
+                except (AttributeError, KeyError, ValueError) as exc:
+                    logger.debug("Redirect verification cookie cleanup skipped: %s", exc)
 
                 if r2.status_code in (301, 302, 303, 307):
                     prev_url = loc
@@ -416,9 +421,7 @@ class StarsClient:
 
             course_text = h4.get_text(strip=True)
             # Remove "Attendance Records for " prefix
-            course_name = re.sub(
-                r"^Attendance Records?\s+for\s+", "", course_text, flags=re.IGNORECASE
-            ).strip()
+            course_name = re.sub(r"^Attendance Records?\s+for\s+", "", course_text, flags=re.IGNORECASE).strip()
 
             records = []
             table = div.find("table")
@@ -430,12 +433,14 @@ class StarsClient:
                         attended_text = cells[2].get_text(strip=True)
                         # Parse "1 / 1" or "0 / 1"
                         present = "1" in attended_text.split("/")[0] if "/" in attended_text else True
-                        records.append({
-                            "title": cells[0].get_text(strip=True),
-                            "date": cells[1].get_text(strip=True),
-                            "attended": present,
-                            "raw": attended_text,
-                        })
+                        records.append(
+                            {
+                                "title": cells[0].get_text(strip=True),
+                                "date": cells[1].get_text(strip=True),
+                                "attended": present,
+                                "raw": attended_text,
+                            }
+                        )
 
             # Look for ratio
             ratio_text = ""
@@ -446,11 +451,13 @@ class StarsClient:
                 if m:
                     ratio_text = m.group(1) + "%"
 
-            courses.append({
-                "course": course_name,
-                "records": records,
-                "ratio": ratio_text,
-            })
+            courses.append(
+                {
+                    "course": course_name,
+                    "records": records,
+                    "ratio": ratio_text,
+                }
+            )
 
         return courses
 
@@ -541,10 +548,20 @@ class StarsClient:
             ths = rows[0].find_all(["th", "td"])
             headers = [th.get_text(strip=True) for th in ths]
 
-        day_names = {"Monday": "Pazartesi", "Tuesday": "Salı", "Wednesday": "Çarşamba",
-                     "Thursday": "Perşembe", "Friday": "Cuma", "Saturday": "Cumartesi",
-                     "Pazartesi": "Pazartesi", "Salı": "Salı", "Çarşamba": "Çarşamba",
-                     "Perşembe": "Perşembe", "Cuma": "Cuma", "Cumartesi": "Cumartesi"}
+        day_names = {
+            "Monday": "Pazartesi",
+            "Tuesday": "Salı",
+            "Wednesday": "Çarşamba",
+            "Thursday": "Perşembe",
+            "Friday": "Cuma",
+            "Saturday": "Cumartesi",
+            "Pazartesi": "Pazartesi",
+            "Salı": "Salı",
+            "Çarşamba": "Çarşamba",
+            "Perşembe": "Perşembe",
+            "Cuma": "Cuma",
+            "Cumartesi": "Cumartesi",
+        }
 
         for row in rows[1:]:
             cells = row.find_all("td")
@@ -567,13 +584,15 @@ class StarsClient:
                 course_code = " ".join(parts[:2]) if len(parts) >= 2 else text
                 room = parts[-1] if len(parts) >= 3 else ""
 
-                schedule.append({
-                    "day": day_tr,
-                    "time": time_slot,
-                    "course": course_code,
-                    "room": room,
-                    "raw": text,
-                })
+                schedule.append(
+                    {
+                        "day": day_tr,
+                        "time": time_slot,
+                        "course": course_code,
+                        "room": room,
+                        "raw": text,
+                    }
+                )
 
         logger.info(f"STARS schedule: {len(schedule)} entries parsed")
         return schedule
@@ -638,11 +657,13 @@ class StarsClient:
                 num = cells[1].get_text(strip=True)
                 name = cells[2].get_text(strip=True)
                 grade = cells[3].get_text(strip=True) if len(cells) >= 4 else ""
-                current_semester["courses"].append({
-                    "code": f"{dept} {num}",
-                    "name": name,
-                    "grade": grade,
-                })
+                current_semester["courses"].append(
+                    {
+                        "code": f"{dept} {num}",
+                        "name": name,
+                        "grade": grade,
+                    }
+                )
 
         if current_semester:
             semesters.append(current_semester)

@@ -1,0 +1,26 @@
+[Unit]
+Description=Telegram RAG Bot
+After=network.target
+
+[Service]
+Type=simple
+User=botuser
+Group=botuser
+WorkingDirectory=/opt/moodle-student-tracker
+EnvironmentFile=/opt/moodle-student-tracker/.env
+ExecStart=/usr/bin/python3 -m bot.main
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-bot
+
+# Guvenlik hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/moodle-student-tracker/data /opt/moodle-student-tracker/logs
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

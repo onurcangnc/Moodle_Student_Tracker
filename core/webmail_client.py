@@ -10,6 +10,7 @@ import imaplib
 import logging
 import re
 from contextlib import contextmanager
+from datetime import UTC
 from email.header import decode_header
 
 logger = logging.getLogger("core.webmail_client")
@@ -35,7 +36,7 @@ class WebmailClient:
         self._email = email_addr
         self._password = password
         try:
-            with self._connect() as imap:
+            with self._connect():
                 pass  # connection succeeded = credentials valid
             self._authenticated = True
             # Seed: mark existing AIRS/DAIS as seen so we don't spam on first check
@@ -60,8 +61,8 @@ class WebmailClient:
         finally:
             try:
                 imap.logout()
-            except Exception:
-                pass
+            except (imaplib.IMAP4.error, OSError) as exc:
+                logger.debug(f"IMAP logout failed: {exc}")
 
     def _get_airs_dais_uids(self) -> set[bytes]:
         """Get UIDs of all AIRS/DAIS emails (read + unread)."""
@@ -73,8 +74,8 @@ class WebmailClient:
                         status, data = imap.search(None, f"({criteria})")
                         if status == "OK" and data[0]:
                             all_uids.update(data[0].split())
-                    except Exception:
-                        pass
+                    except (imaplib.IMAP4.error, OSError) as exc:
+                        logger.debug(f"IMAP seed search failed for {criteria}: {exc}")
         except Exception as e:
             logger.error(f"IMAP seed UIDs error: {e}")
         return all_uids
@@ -284,16 +285,17 @@ class WebmailClient:
                 msg = email.message_from_bytes(raw)
 
                 # Check age — skip if too old
+                from datetime import datetime
                 from email.utils import parsedate_to_datetime
-                from datetime import datetime, timezone
+
                 try:
                     mail_date = parsedate_to_datetime(msg.get("Date", ""))
-                    age = (datetime.now(timezone.utc) - mail_date).total_seconds()
+                    age = (datetime.now(UTC) - mail_date).total_seconds()
                     if age > max_age_seconds:
                         logger.info(f"STARS verification email too old: {age:.0f}s > {max_age_seconds}s")
                         return None
-                except Exception:
-                    pass  # Can't parse date — try anyway
+                except (TypeError, ValueError, OverflowError) as exc:
+                    logger.debug(f"IMAP could not parse mail date; proceeding anyway: {exc}")
 
                 # Extract body text
                 body = self._extract_body(msg)
@@ -301,7 +303,7 @@ class WebmailClient:
                     return None
 
                 # Extract verification code: "Verification Code: 50296"
-                match = re.search(r'Verification Code:\s*(\d{4,6})', body)
+                match = re.search(r"Verification Code:\s*(\d{4,6})", body)
                 if match:
                     code = match.group(1)
                     logger.info(f"STARS verification code extracted: {code}")

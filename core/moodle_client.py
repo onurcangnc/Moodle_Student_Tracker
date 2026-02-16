@@ -5,13 +5,12 @@ Handles all communication with the Moodle Web Services API.
 Fetches courses, sections, content modules, and downloads files (PDF, DOCX, etc.)
 """
 
-import os
-import re
 import logging
 import mimetypes
-from pathlib import Path
-from typing import Optional
+import os
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import requests
 
@@ -22,15 +21,17 @@ logger = logging.getLogger(__name__)
 
 # ─── Data Models ─────────────────────────────────────────────────────────────
 
+
 @dataclass
 class MoodleFile:
     """Represents a downloadable file from Moodle."""
+
     filename: str
     fileurl: str
     filesize: int
     mimetype: str
-    module_name: str       # e.g., "Week 3 - Slides"
-    section_name: str      # e.g., "Week 3: Buffer Overflow"
+    module_name: str  # e.g., "Week 3 - Slides"
+    section_name: str  # e.g., "Week 3: Buffer Overflow"
     course_name: str
     course_id: int
 
@@ -43,6 +44,7 @@ class MoodleFile:
 @dataclass
 class CourseSection:
     """Represents a week/topic section in a course."""
+
     id: int
     name: str
     summary: str
@@ -53,6 +55,7 @@ class CourseSection:
 @dataclass
 class Course:
     """Represents an enrolled course."""
+
     id: int
     shortname: str
     fullname: str
@@ -62,28 +65,38 @@ class Course:
 @dataclass
 class Assignment:
     """Represents a Moodle assignment."""
+
     id: int
     course_id: int
     course_name: str
     name: str
     description: str
-    due_date: int           # Unix timestamp (0 = no deadline)
-    cutoff_date: int        # Hard deadline
+    due_date: int  # Unix timestamp (0 = no deadline)
+    cutoff_date: int  # Hard deadline
     submitted: bool
     graded: bool
-    grade: str              # "Henüz notlanmadı" or actual grade
+    grade: str  # "Henüz notlanmadı" or actual grade
     max_grade: str
-    time_remaining: str     # Human-readable
+    time_remaining: str  # Human-readable
 
 
 # ─── API Client ──────────────────────────────────────────────────────────────
+
 
 class MoodleClient:
     """Moodle Web Services API client."""
 
     SUPPORTED_EXTENSIONS = {
-        ".pdf", ".docx", ".doc", ".pptx", ".ppt",
-        ".txt", ".md", ".html", ".htm", ".rtf",
+        ".pdf",
+        ".docx",
+        ".doc",
+        ".pptx",
+        ".ppt",
+        ".txt",
+        ".md",
+        ".html",
+        ".htm",
+        ".rtf",
     }
 
     TOKEN_FILE = config.data_dir / ".moodle_token"
@@ -93,7 +106,7 @@ class MoodleClient:
         self.token = self._resolve_token()
         self.api_url = f"{self.base_url}/webservice/rest/server.php"
         self.session = requests.Session()
-        self.user_id: Optional[int] = None
+        self.user_id: int | None = None
         self.site_info: dict = {}
 
     def _resolve_token(self) -> str:
@@ -123,10 +136,7 @@ class MoodleClient:
             if token:
                 return token
 
-        logger.error(
-            "No Moodle token available. Set MOODLE_TOKEN or "
-            "MOODLE_USERNAME + MOODLE_PASSWORD in .env"
-        )
+        logger.error("No Moodle token available. Set MOODLE_TOKEN or " "MOODLE_USERNAME + MOODLE_PASSWORD in .env")
         return ""
 
     def _fetch_token(self, username: str, password: str) -> str:
@@ -216,9 +226,7 @@ class MoodleClient:
             data = resp.json()
 
             if isinstance(data, dict) and "exception" in data:
-                logger.error(
-                    f"Moodle API [{wsfunction}]: {data.get('errorcode')} - {data.get('message')}"
-                )
+                logger.error(f"Moodle API [{wsfunction}]: {data.get('errorcode')} - {data.get('message')}")
                 return {}
             return data
 
@@ -259,10 +267,7 @@ class MoodleClient:
 
         self.user_id = info["userid"]
         self.site_info = info  # Store full site info for profile auto-population
-        logger.info(
-            f"Connected to '{info.get('sitename')}' as '{info.get('username')}' "
-            f"(uid: {self.user_id})"
-        )
+        logger.info(f"Connected to '{info.get('sitename')}' as '{info.get('username')}' " f"(uid: {self.user_id})")
         return True
 
     def keepalive(self):
@@ -271,8 +276,8 @@ class MoodleClient:
             info = self._call("core_webservice_get_site_info")
             if info and "userid" in info:
                 return True
-        except Exception:
-            pass
+        except (ConnectionError, OSError, RuntimeError, ValueError) as exc:
+            logger.debug(f"Moodle keepalive probe failed before reconnect: {exc}")
         # Session dead — reconnect
         logger.warning("Moodle keepalive failed, reconnecting...")
         return self.connect()
@@ -290,11 +295,13 @@ class MoodleClient:
 
         courses = []
         for c in raw:
-            courses.append(Course(
-                id=c["id"],
-                shortname=c.get("shortname", ""),
-                fullname=c.get("fullname", ""),
-            ))
+            courses.append(
+                Course(
+                    id=c["id"],
+                    shortname=c.get("shortname", ""),
+                    fullname=c.get("fullname", ""),
+                )
+            )
         logger.info(f"Found {len(courses)} enrolled courses.")
         return courses
 
@@ -335,7 +342,6 @@ class MoodleClient:
         for section in sections:
             for module in section.modules:
                 mod_name = module.get("name", "Unnamed")
-                mod_type = module.get("modname", "")
 
                 # resource, folder, page, url, label — each has different content structure
                 contents = module.get("contents", [])
@@ -364,7 +370,7 @@ class MoodleClient:
         logger.info(f"[{course.shortname}] Discovered {len(files)} document files.")
         return files
 
-    def download_file(self, moodle_file: MoodleFile, dest_dir: Path) -> Optional[Path]:
+    def download_file(self, moodle_file: MoodleFile, dest_dir: Path) -> Path | None:
         """
         Download a file from Moodle.
         Moodle requires token appended to the URL for file downloads.
@@ -489,14 +495,16 @@ class MoodleClient:
                     url = module.get("url", "")
 
                 if url:
-                    url_modules.append({
-                        "name": mod_name,
-                        "url": url,
-                        "description": description,
-                        "section_name": section.name,
-                        "course_name": course.fullname,
-                        "course_id": course.id,
-                    })
+                    url_modules.append(
+                        {
+                            "name": mod_name,
+                            "url": url,
+                            "description": description,
+                            "section_name": section.name,
+                            "course_name": course.fullname,
+                            "course_id": course.id,
+                        }
+                    )
 
         logger.info(f"[{course.shortname}] Discovered {len(url_modules)} URL modules.")
         return url_modules
@@ -583,23 +591,25 @@ class MoodleClient:
                 except Exception as e:
                     logger.debug(f"Could not get submission status for {assign_id}: {e}")
 
-                assignments.append(Assignment(
-                    id=assign_id,
-                    course_id=cid,
-                    course_name=cname,
-                    name=a.get("name", "Untitled"),
-                    description=self._clean_html(a.get("intro", "")),
-                    due_date=due,
-                    cutoff_date=cutoff,
-                    submitted=submitted,
-                    graded=graded,
-                    grade=grade,
-                    max_grade=max_grade,
-                    time_remaining=time_remaining,
-                ))
+                assignments.append(
+                    Assignment(
+                        id=assign_id,
+                        course_id=cid,
+                        course_name=cname,
+                        name=a.get("name", "Untitled"),
+                        description=self._clean_html(a.get("intro", "")),
+                        due_date=due,
+                        cutoff_date=cutoff,
+                        submitted=submitted,
+                        graded=graded,
+                        grade=grade,
+                        max_grade=max_grade,
+                        time_remaining=time_remaining,
+                    )
+                )
 
         # Sort by due date (soonest first, no-deadline last)
-        assignments.sort(key=lambda a: a.due_date if a.due_date > 0 else float('inf'))
+        assignments.sort(key=lambda a: a.due_date if a.due_date > 0 else float("inf"))
 
         logger.info(f"Found {len(assignments)} assignments across {len(courses)} courses.")
         return assignments
@@ -607,15 +617,12 @@ class MoodleClient:
     def get_upcoming_assignments(self, days: int = 14) -> list[Assignment]:
         """Get assignments due in the next N days that haven't been submitted."""
         import time as _time
+
         now = int(_time.time())
         cutoff = now + (days * 86400)
 
         all_assignments = self.get_assignments()
-        upcoming = [
-            a for a in all_assignments
-            if not a.submitted
-            and 0 < a.due_date <= cutoff
-        ]
+        upcoming = [a for a in all_assignments if not a.submitted and 0 < a.due_date <= cutoff]
         return upcoming
 
     def get_upcoming_events(self, days: int = 30) -> list[dict]:
@@ -624,6 +631,7 @@ class MoodleClient:
         Uses: core_calendar_get_action_events_by_timesort
         """
         import time as _time
+
         now = int(_time.time())
         end = now + (days * 86400)
 
@@ -639,14 +647,16 @@ class MoodleClient:
 
         result = []
         for e in events.get("events", []):
-            result.append({
-                "name": e.get("name", ""),
-                "course": e.get("course", {}).get("fullname", ""),
-                "type": e.get("modulename", ""),
-                "due_date": e.get("timesort", 0),
-                "url": e.get("url", ""),
-                "action": e.get("action", {}).get("name", ""),
-            })
+            result.append(
+                {
+                    "name": e.get("name", ""),
+                    "course": e.get("course", {}).get("fullname", ""),
+                    "type": e.get("modulename", ""),
+                    "due_date": e.get("timesort", 0),
+                    "url": e.get("url", ""),
+                    "action": e.get("action", {}).get("name", ""),
+                }
+            )
 
         return result
 
@@ -664,5 +674,5 @@ class MoodleClient:
     @staticmethod
     def _safe_name(name: str) -> str:
         """Create filesystem-safe directory name."""
-        safe = re.sub(r'[<>:"/\\|?*]', '_', name)
+        safe = re.sub(r'[<>:"/\\|?*]', "_", name)
         return safe.strip()[:80]
