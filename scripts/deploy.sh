@@ -7,7 +7,7 @@ set -euo pipefail
 # ============================================
 
 REMOTE_HOST="${REMOTE_HOST:-user@server-ip}"
-REMOTE_SCRIPT="${REMOTE_SCRIPT:-/opt/moodle-student-tracker/scripts/deploy-remote.sh}"
+REMOTE_SCRIPT="${REMOTE_SCRIPT:-/opt/moodle-bot/scripts/deploy-remote.sh}"
 BRANCH="${BRANCH:-main}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"; }

@@ -540,8 +540,8 @@ Bu proje tek sunucu + SSH deploy akisina gore tasarlanmistir. CI/CD pipeline kul
 1. Repo'yu klonla:
 
 ```bash
-git clone <repo-url> /opt/moodle-student-tracker
-cd /opt/moodle-student-tracker
+git clone <repo-url> /opt/moodle-bot
+cd /opt/moodle-bot
 ```
 
 2. Ortam degiskenlerini hazirla:
@@ -554,17 +554,17 @@ cp .env.example .env
 3. Service dosyasini kopyala ve yollari kontrol et:
 
 ```bash
-sudo cp scripts/telegram-bot.service /etc/systemd/system/telegram-bot.service
+sudo cp scripts/moodle-bot.service /etc/systemd/system/moodle-bot.service
 sudo systemctl daemon-reload
-sudo systemctl enable telegram-bot
-sudo systemctl start telegram-bot
+sudo systemctl enable moodle-bot
+sudo systemctl start moodle-bot
 ```
 
 4. Servis durumunu ve loglari kontrol et:
 
 ```bash
-sudo systemctl status telegram-bot --no-pager
-sudo journalctl -u telegram-bot -f --no-pager
+sudo systemctl status moodle-bot --no-pager
+sudo journalctl -u moodle-bot -f --no-pager
 ```
 
 ### Gunluk Deploy (Lokal Makineden)
@@ -580,8 +580,8 @@ make restart       # servisi yeniden baslat
 
 - `scripts/deploy.sh`: Lokal makinede calisir (pre-deploy kontrol + push + ssh).
 - `scripts/deploy-remote.sh`: Sunucuda calisir (git pull + pip install + import check + systemd restart).
-- `scripts/telegram-bot.service`: systemd unit dosyasi.
-- Varsayilan `PROJECT_DIR` degeri `/opt/moodle-student-tracker` olarak ayarlidir.
+- `scripts/moodle-bot.service`: systemd unit dosyasi.
+- Varsayilan `PROJECT_DIR` degeri `/opt/moodle-bot` olarak ayarlidir.
 
 ### Docker (Opsiyonel)
 
@@ -593,8 +593,8 @@ docker compose up -d
 ### Re-index from scratch
 
 ```bash
-ssh user@server "cd /opt/moodle-student-tracker && rm -f data/faiss.index data/metadata.json data/sync_state.json"
-ssh user@server "sudo systemctl restart telegram-bot"
+ssh user@server "cd /opt/moodle-bot && rm -f data/faiss.index data/metadata.json data/sync_state.json"
+ssh user@server "sudo systemctl restart moodle-bot"
 ```
 
 ### Lokal Build Verification
@@ -727,7 +727,7 @@ make test-cov
 ├── scripts/
 │   ├── deploy.sh              # Local deploy command (lint/test/push/ssh)
 │   ├── deploy-remote.sh       # Remote server deploy workflow
-│   └── telegram-bot.service   # Systemd service template
+│   └── moodle-bot.service     # Systemd service template
 ├── data/
 │   ├── downloads/             # Downloaded course files
 │   ├── file_summaries.json    # Per-file LLM-generated overviews

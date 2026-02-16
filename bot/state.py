@@ -1,8 +1,4 @@
-"""Shared bot runtime state.
-
-Contains mutable process-level state previously kept as scattered globals.
-Compatibility sync helpers allow gradual migration from legacy globals.
-"""
+"""Shared bot runtime state container for modular application services."""
 
 from __future__ import annotations
 
@@ -41,40 +37,11 @@ class BotState:
     last_stars_notification: float = 0.0
     prev_stars_snapshot: dict = field(default_factory=dict)
 
-    conversation_history: dict[int, dict] = field(default_factory=dict)
-    user_state: dict[int, dict] = field(default_factory=dict)
+    active_courses: dict[int, str] = field(default_factory=dict)
+    pending_upload_users: set[int] = field(default_factory=set)
+    rate_limit_windows: dict[int, list[float]] = field(default_factory=dict)
+    conversation_history: dict[int, list[dict[str, str]]] = field(default_factory=dict)
     file_summaries: dict[str, dict] = field(default_factory=dict)
 
 
 STATE = BotState()
-
-
-def sync_from_legacy(legacy_module: object) -> BotState:
-    """Mirror legacy module globals into the shared `STATE` object."""
-    STATE.moodle = getattr(legacy_module, "moodle", None)
-    STATE.processor = getattr(legacy_module, "processor", None)
-    STATE.vector_store = getattr(legacy_module, "vector_store", None)
-    STATE.llm = getattr(legacy_module, "llm", None)
-    STATE.sync_engine = getattr(legacy_module, "sync_engine", None)
-    STATE.memory = getattr(legacy_module, "memory", None)
-    STATE.stars_client = getattr(legacy_module, "stars_client", None)
-    STATE.webmail_client = getattr(legacy_module, "webmail_client", None)
-
-    STATE.last_sync_time = getattr(legacy_module, "last_sync_time", STATE.last_sync_time)
-    STATE.last_sync_new_files = getattr(legacy_module, "last_sync_new_files", STATE.last_sync_new_files)
-    STATE.known_assignment_ids = getattr(legacy_module, "known_assignment_ids", STATE.known_assignment_ids)
-    STATE.sync_lock = getattr(legacy_module, "sync_lock", STATE.sync_lock)
-    STATE.last_stars_notification = getattr(
-        legacy_module,
-        "last_stars_notification",
-        STATE.last_stars_notification,
-    )
-    STATE.prev_stars_snapshot = getattr(
-        legacy_module,
-        "_prev_stars_snapshot",
-        STATE.prev_stars_snapshot,
-    )
-    STATE.conversation_history = getattr(legacy_module, "conversation_history", STATE.conversation_history)
-    STATE.user_state = getattr(legacy_module, "_user_state", STATE.user_state)
-    STATE.file_summaries = getattr(legacy_module, "file_summaries", STATE.file_summaries)
-    return STATE

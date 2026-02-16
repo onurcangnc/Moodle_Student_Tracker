@@ -1,0 +1,26 @@
+[Unit]
+Description=Moodle RAG Bot
+After=network.target
+
+[Service]
+Type=simple
+User=botuser
+Group=botuser
+WorkingDirectory=/opt/moodle-bot
+EnvironmentFile=/opt/moodle-bot/.env
+ExecStart=/usr/bin/python3 -m bot.main
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moodle-bot
+
+# Guvenlik hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/moodle-bot/data /opt/moodle-bot/logs
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

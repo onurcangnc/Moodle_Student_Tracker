@@ -1,24 +1,13 @@
-"""Input and intent validation helpers."""
+"""Validation helpers for user text and course selection inputs."""
 
 from __future__ import annotations
 
 
-def _legacy():
-    from bot import legacy
-
-    return legacy
-
-
-def is_continue_command(message: str) -> bool:
-    """Return whether a message requests continuing the current explanation."""
-    return _legacy()._is_continue_command(message)
+def is_non_empty_text(value: str | None) -> bool:
+    """Return whether message text contains a non-whitespace payload."""
+    return bool(value and value.strip())
 
 
-def is_test_command(message: str) -> bool:
-    """Return whether a message requests quiz/test mode."""
-    return _legacy()._is_test_command(message)
-
-
-def needs_topic_menu(message: str) -> bool:
-    """Return whether a message should trigger topic-file selection menu."""
-    return _legacy()._needs_topic_menu(message)
+def normalize_course_query(value: str) -> str:
+    """Normalize course query by collapsing whitespace and stripping ends."""
+    return " ".join(value.split()).strip()

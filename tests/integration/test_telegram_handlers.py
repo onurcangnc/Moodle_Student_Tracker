@@ -6,8 +6,6 @@ import pytest
 
 pytest.importorskip("telegram")
 
-from bot.handlers.admin import register_admin_handlers
-from bot.handlers.callbacks import register_callback_handlers
 from bot.handlers.commands import register_command_handlers
 from bot.handlers.messages import register_message_handlers
 
@@ -27,11 +25,9 @@ def test_register_handlers_adds_expected_groups():
     """All modular registration functions should append handlers to the app."""
     app = DummyApp()
     register_command_handlers(app)
-    register_admin_handlers(app)
-    register_callback_handlers(app)
     register_message_handlers(app)
 
-    assert len(app.handlers) >= 20
+    assert len(app.handlers) == 7
     command_handlers = [h for h in app.handlers if hasattr(h, "commands")]
     assert any("start" in h.commands for h in command_handlers)
-    assert any("sync" in h.commands for h in command_handlers)
+    assert any("courses" in h.commands for h in command_handlers)

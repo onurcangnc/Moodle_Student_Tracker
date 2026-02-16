@@ -34,13 +34,13 @@ deploy:
 
 # === Sunucu yonetimi (SSH uzerinden) ===
 logs:
-	ssh $(REMOTE_HOST) "sudo journalctl -u telegram-bot -f --no-pager -n 50"
+	ssh $(REMOTE_HOST) "sudo journalctl -u moodle-bot -f --no-pager -n 50"
 
 status:
-	ssh $(REMOTE_HOST) "sudo systemctl status telegram-bot"
+	ssh $(REMOTE_HOST) "sudo systemctl status moodle-bot"
 
 restart:
-	ssh $(REMOTE_HOST) "sudo systemctl restart telegram-bot"
+	ssh $(REMOTE_HOST) "sudo systemctl restart moodle-bot"
 
 # === Temizlik ===
 clean:

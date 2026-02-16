@@ -4,22 +4,22 @@ Moodle AI Assistant - Main Entry Point
 CLI interface for syncing, chatting, generating summaries, and launching web UI.
 """
 
-import sys
-import logging
 import argparse
+import logging
+import sys
 
 from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
 from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.table import Table
 
 from core import config
-from core.moodle_client import MoodleClient
 from core.document_processor import DocumentProcessor
-from core.vector_store import VectorStore
 from core.llm_engine import LLMEngine
+from core.moodle_client import MoodleClient
 from core.sync_engine import SyncEngine
+from core.vector_store import VectorStore
 
 # ─── Setup ───────────────────────────────────────────────────────────────────
 
@@ -56,10 +56,11 @@ def build_components():
 
 # ─── Commands ────────────────────────────────────────────────────────────────
 
+
 def cmd_sync(args):
     """Sync Moodle content to local vector store."""
     from core.memory import StaticProfile
-    
+
     moodle, processor, vector_store, llm, sync = build_components()
 
     console.print(Panel("🔄 Moodle Sync", style="bold blue"))
@@ -110,10 +111,14 @@ def cmd_courses(args):
                     continue
                 console.print(f"  📂 {section.name}")
                 for mod in section.modules:
-                    icon = {"resource": "📄", "assign": "📝", "quiz": "❓",
-                            "forum": "💬", "url": "🔗", "page": "📃"}.get(
-                        mod.get("modname", ""), "•"
-                    )
+                    icon = {
+                        "resource": "📄",
+                        "assign": "📝",
+                        "quiz": "❓",
+                        "forum": "💬",
+                        "url": "🔗",
+                        "page": "📃",
+                    }.get(mod.get("modname", ""), "•")
                     console.print(f"     {icon} {mod.get('name', '')}")
 
 
@@ -126,28 +131,30 @@ def cmd_chat(args):
         console.print("[yellow]⚠ Vector store is empty. Run 'python main.py sync' first.[/yellow]")
         console.print("[dim]Continuing without RAG context...[/dim]\n")
 
-    console.print(Panel.fit(
-        "[bold green]🎓 Moodle AI Assistant[/bold green]\n"
-        f"[dim]Chat: {llm.engine.router.chat} | Extract: {llm.engine.router.extraction} | "
-        f"Chunks: {stats.get('total_chunks', 0)} | "
-        f"Kurslar: {stats.get('unique_courses', 0)}[/dim]\n\n"
-        "Komutlar:\n"
-        "  /kurs <isim>  — Belirli bir kursa odaklan\n"
-        "  /kurslar      — Kayıtlı kursları listele\n"
-        "  /özet <kurs>  — Haftalık özet oluştur\n"
-        "  /sorular <konu> — Pratik sorular oluştur\n"
-        "  /hafıza       — Kayıtlı anıları göster\n"
-        "  /ilerleme     — Konu bazlı öğrenme ilerlemesi\n"
-        "  /hatırla <bilgi> — Manuel hafıza ekle\n"
-        "  /unut <id>    — Belirli bir hafızayı sil\n"
-        "  /profil       — Profil dosyasını düzenle\n"
-        "  /maliyet     — Tahmini aylık maliyet\n"
-        "  /modeller    — Model routing tablosu\n"
-        "  /stats        — İndeks & hafıza istatistikleri\n"
-        "  /temizle      — Sohbet geçmişini sil\n"
-        "  /çıkış        — Çıkış",
-        border_style="green",
-    ))
+    console.print(
+        Panel.fit(
+            "[bold green]🎓 Moodle AI Assistant[/bold green]\n"
+            f"[dim]Chat: {llm.engine.router.chat} | Extract: {llm.engine.router.extraction} | "
+            f"Chunks: {stats.get('total_chunks', 0)} | "
+            f"Kurslar: {stats.get('unique_courses', 0)}[/dim]\n\n"
+            "Komutlar:\n"
+            "  /kurs <isim>  — Belirli bir kursa odaklan\n"
+            "  /kurslar      — Kayıtlı kursları listele\n"
+            "  /özet <kurs>  — Haftalık özet oluştur\n"
+            "  /sorular <konu> — Pratik sorular oluştur\n"
+            "  /hafıza       — Kayıtlı anıları göster\n"
+            "  /ilerleme     — Konu bazlı öğrenme ilerlemesi\n"
+            "  /hatırla <bilgi> — Manuel hafıza ekle\n"
+            "  /unut <id>    — Belirli bir hafızayı sil\n"
+            "  /profil       — Profil dosyasını düzenle\n"
+            "  /maliyet     — Tahmini aylık maliyet\n"
+            "  /modeller    — Model routing tablosu\n"
+            "  /stats        — İndeks & hafıza istatistikleri\n"
+            "  /temizle      — Sohbet geçmişini sil\n"
+            "  /çıkış        — Çıkış",
+            border_style="green",
+        )
+    )
 
     available_courses = stats.get("courses", [])
     chat_history: list[dict] = []
@@ -173,7 +180,7 @@ def cmd_chat(args):
             response = llm.chat_with_history(messages=chat_history[-10:])
         chat_history.append({"role": "assistant", "content": response})
 
-        console.print(f"\n[bold green]Asistan[/bold green]")
+        console.print("\n[bold green]Asistan[/bold green]")
         console.print(Markdown(response))
 
 
@@ -279,7 +286,7 @@ def _handle_command(cmd: str, llm: LLMEngine, vs: VectorStore, courses: list):
             table.add_row(m["key"], m["provider"], status, m["cost"])
         console.print(table)
 
-        console.print(f"\n[dim]Routing:[/dim]")
+        console.print("\n[dim]Routing:[/dim]")
         router = llm.engine.router
         for task in ["chat", "extraction", "topic_detect", "summary", "questions"]:
             console.print(f"  {task:20s} → {getattr(router, task)}")
@@ -352,9 +359,10 @@ def _handle_command(cmd: str, llm: LLMEngine, vs: VectorStore, courses: list):
         console.print(f"[cyan]Profil dosyası: {profile_path}[/cyan]")
         console.print("[dim]Bu dosyayı herhangi bir editörle düzenleyebilirsin.[/dim]")
         console.print("[dim]İçindeki bilgiler her chat turunda system prompt'a eklenir.[/dim]")
-        console.print(f"\n[dim]Hızlı görüntüleme:[/dim]")
+        console.print("\n[dim]Hızlı görüntüleme:[/dim]")
         try:
             from pathlib import Path
+
             content = Path(profile_path).read_text()
             console.print(Markdown(content))
         except Exception:
@@ -401,7 +409,6 @@ def cmd_summary(args):
     for course in courses:
         console.print(Panel(f"📝 {course.fullname}", style="bold blue"))
 
-        sections = moodle.get_course_content(course.id)
         topics_text = moodle.get_course_topics_text(course)
 
         with console.status("[bold green]Özet oluşturuluyor...[/bold green]"):
@@ -436,7 +443,7 @@ def cmd_web(args):
             llm.clear_course_filter()
 
         messages = []
-        for user_msg, bot_msg in (history or []):
+        for user_msg, bot_msg in history or []:
             messages.append({"role": "user", "content": user_msg})
             messages.append({"role": "assistant", "content": bot_msg})
         messages.append({"role": "user", "content": message})
@@ -464,7 +471,7 @@ def cmd_web(args):
                 value="Tümü",
                 label="Kurs Filtresi",
             )
-            chatbot = gr.ChatInterface(
+            gr.ChatInterface(
                 fn=respond,
                 additional_inputs=[course_dd],
                 title="",
@@ -491,6 +498,7 @@ def cmd_web(args):
 
 
 # ─── CLI Parser ──────────────────────────────────────────────────────────────
+
 
 def main():
     parser = argparse.ArgumentParser(

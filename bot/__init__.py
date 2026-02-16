@@ -1,8 +1,4 @@
-"""Modular Telegram bot package.
-
-This package provides a production-oriented module layout while preserving
-legacy runtime behavior for compatibility.
-"""
+"""Modular Telegram bot package."""
 
 __all__ = [
     "config",

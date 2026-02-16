@@ -1,36 +1,33 @@
-"""Unit tests for user service wrappers."""
+"""Unit tests for user state helpers in simplified chat flow."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from bot.services import user_service
+from bot.state import STATE
 
 
-def test_get_user_state_delegates(monkeypatch):
-    """User state getter should forward to legacy user-state factory."""
-    fake_legacy = SimpleNamespace(_get_user_state=lambda uid: {"uid": uid, "socratic_mode": True})
-    monkeypatch.setattr(user_service, "_legacy", lambda: fake_legacy)
-    assert user_service.get_user_state(99)["uid"] == 99
+def test_set_and_get_active_course(monkeypatch):
+    """Active course should round-trip through user service."""
+    monkeypatch.setattr(user_service, "list_courses", lambda: [])
+    user_service.set_active_course(5, "CTIS 363")
+    course = user_service.get_active_course(5)
+    assert course is not None
+    assert course.course_id == "CTIS 363"
 
 
-def test_check_rate_limit_delegates(monkeypatch):
-    """Rate limit check should forward to legacy limiter."""
-    fake_legacy = SimpleNamespace(_check_rate_limit=lambda uid: uid == 1)
-    monkeypatch.setattr(user_service, "_legacy", lambda: fake_legacy)
-    assert user_service.check_rate_limit(1) is True
-    assert user_service.check_rate_limit(2) is False
+def test_upload_session_flags():
+    """Upload session flags should be toggleable."""
+    user_id = 99
+    user_service.begin_upload_session(user_id)
+    assert user_service.is_upload_session_active(user_id)
+    user_service.clear_upload_session(user_id)
+    assert not user_service.is_upload_session_active(user_id)
 
 
-def test_save_to_history_delegates(monkeypatch):
-    """History writes should call legacy save with named arguments."""
-    calls: list[dict] = []
-
-    def fake_save(**kwargs):
-        calls.append(kwargs)
-
-    fake_legacy = SimpleNamespace(save_to_history=fake_save)
-    monkeypatch.setattr(user_service, "_legacy", lambda: fake_legacy)
-    user_service.save_to_history(user_id=5, role="user", content="hello", active_course="CTIS 363")
-    assert calls[0]["user_id"] == 5
-    assert calls[0]["content"] == "hello"
+def test_rate_limit(monkeypatch):
+    """Rate limiter should block requests beyond configured window size."""
+    user_id = 77
+    STATE.rate_limit_windows[user_id] = []
+    monkeypatch.setattr(user_service, "time", type("T", (), {"time": staticmethod(lambda: 1000.0)}))
+    allowed = [user_service.check_rate_limit(user_id) for _ in range(31)]
+    assert allowed.count(False) >= 1

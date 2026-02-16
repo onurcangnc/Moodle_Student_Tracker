@@ -1,61 +1,109 @@
-"""RAG service wrappers.
-
-Encapsulates retrieval-related operations and keeps handler modules free from
-direct retrieval pipeline details.
-"""
+"""Hybrid retrieval service used by the chat-first learning flow."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any
+
+from bot.config import CONFIG
+from bot.state import STATE
 
 logger = logging.getLogger(__name__)
 
 
-def _legacy():
-    from bot import legacy
+@dataclass(frozen=True, slots=True)
+class Chunk:
+    """Retrieved chunk payload used for downstream LLM prompting."""
 
-    return legacy
-
-
-def detect_active_course(user_message: str, user_id: int) -> str | None:
-    """Detect active course from user message and chat history context."""
-    return _legacy().detect_active_course(user_message, user_id)
-
-
-def build_smart_query(user_message: str, history: list[dict[str, Any]]) -> str:
-    """Build retrieval query using current message plus recent context."""
-    return _legacy().build_smart_query(user_message, history)
+    chunk_id: str
+    text: str
+    similarity: float
+    metadata: dict[str, Any]
 
 
-def build_file_summaries_context(
-    selected_files: list[str] | None = None,
-    course: str | None = None,
-) -> str:
-    """Build context from pre-generated file summaries."""
-    return _legacy()._build_file_summaries_context(selected_files=selected_files, course=course)
+@dataclass(frozen=True, slots=True)
+class RetrievalResult:
+    """Result of retrieval stage with confidence and sufficiency signal."""
+
+    chunks: list[Chunk]
+    confidence: float
+    has_sufficient_context: bool
 
 
-def get_relevant_files(query: str, course: str | None = None, top_k: int = 5) -> list[str]:
-    """Return likely relevant filenames for a user query."""
-    return _legacy()._get_relevant_files(query=query, course=course, top_k=top_k)
+def _similarity_from_distance(distance: float) -> float:
+    """Convert distance metric to similarity score in [0, 1]."""
+    value = 1.0 - distance
+    if value < 0:
+        return 0.0
+    if value > 1:
+        return 1.0
+    return value
 
 
-def hybrid_search(query: str, n_results: int = 15, course_filter: str | None = None) -> list[dict[str, Any]]:
-    """Run hybrid retrieval and emit lightweight performance logs."""
-    legacy = _legacy()
-    if legacy.vector_store is None:
-        return []
-    start = time.perf_counter()
-    results = legacy.vector_store.hybrid_search(query=query, n_results=n_results, course_filter=course_filter)
-    elapsed_ms = (time.perf_counter() - start) * 1000.0
+async def retrieve_context(
+    query: str,
+    course_id: str,
+    top_k: int = CONFIG.rag_top_k,
+    threshold: float = CONFIG.rag_similarity_threshold,
+) -> RetrievalResult:
+    """
+    Retrieve relevant chunks for the query and evaluate sufficiency.
+
+    Sufficiency rule:
+    - at least CONFIG.rag_min_chunks chunks
+    - each included chunk similarity >= threshold
+    """
+    store = STATE.vector_store
+    if store is None:
+        return RetrievalResult(chunks=[], confidence=0.0, has_sufficient_context=False)
+
+    started = time.perf_counter()
+    try:
+        raw_results = await asyncio.to_thread(
+            store.hybrid_search,
+            query,
+            top_k,
+            course_id,
+        )
+    except (AttributeError, RuntimeError, ValueError, OSError) as exc:
+        logger.error("Retrieval failed", exc_info=True, extra={"course_id": course_id, "error": str(exc)})
+        return RetrievalResult(chunks=[], confidence=0.0, has_sufficient_context=False)
+
+    selected: list[Chunk] = []
+    for item in raw_results:
+        if not isinstance(item, dict):
+            continue
+        similarity = _similarity_from_distance(float(item.get("distance", 1.0)))
+        if similarity < threshold:
+            continue
+        selected.append(
+            Chunk(
+                chunk_id=str(item.get("id", "")),
+                text=str(item.get("text", "")),
+                similarity=similarity,
+                metadata=dict(item.get("metadata", {})),
+            )
+        )
+
+    confidence = (sum(chunk.similarity for chunk in selected) / len(selected)) if selected else 0.0
+    has_sufficient = len(selected) >= CONFIG.rag_min_chunks
+
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
     logger.info(
-        "Hybrid search completed",
+        "Retrieval completed",
         extra={
+            "course_id": course_id,
+            "query_len": len(query),
+            "top_k": top_k,
+            "threshold": threshold,
+            "returned": len(raw_results),
+            "selected": len(selected),
+            "confidence": round(confidence, 3),
+            "has_sufficient_context": has_sufficient,
             "elapsed_ms": round(elapsed_ms, 2),
-            "result_count": len(results),
-            "course_filter": course_filter,
         },
     )
-    return results
+    return RetrievalResult(chunks=selected, confidence=confidence, has_sufficient_context=has_sufficient)

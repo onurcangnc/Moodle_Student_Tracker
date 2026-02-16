@@ -1,36 +1,47 @@
-"""Unit tests for RAG service wrappers."""
+"""Unit tests for hybrid retrieval sufficiency decisions."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import pytest
 
 from bot.services import rag_service
+from bot.state import STATE
 
 
-def test_detect_active_course_delegates_to_legacy(monkeypatch):
-    """Service should delegate course detection to legacy implementation."""
-    fake_legacy = SimpleNamespace(detect_active_course=lambda message, user_id: f"{message}:{user_id}")
-    monkeypatch.setattr(rag_service, "_legacy", lambda: fake_legacy)
-    assert rag_service.detect_active_course("ctis", 7) == "ctis:7"
+class FakeStore:
+    """Simple hybrid-search stub returning prepared retrieval rows."""
+
+    def __init__(self, rows: list[dict]):
+        self.rows = rows
+
+    def hybrid_search(self, query: str, n_results: int, course_filter: str):
+        _ = (query, n_results, course_filter)
+        return self.rows
 
 
-def test_hybrid_search_returns_empty_when_vector_store_missing(monkeypatch):
-    """Service should return empty list when vector store is not initialized."""
-    fake_legacy = SimpleNamespace(vector_store=None)
-    monkeypatch.setattr(rag_service, "_legacy", lambda: fake_legacy)
-    assert rag_service.hybrid_search("privacy") == []
+@pytest.mark.asyncio
+async def test_retrieve_sufficient_context(monkeypatch):
+    """Retrieval should report sufficient context with >=2 high-similarity chunks."""
+    rows = [
+        {"id": "1", "text": "A", "distance": 0.20, "metadata": {"filename": "a.pdf"}},
+        {"id": "2", "text": "B", "distance": 0.30, "metadata": {"filename": "b.pdf"}},
+        {"id": "3", "text": "C", "distance": 0.55, "metadata": {"filename": "c.pdf"}},
+    ]
+    monkeypatch.setattr(STATE, "vector_store", FakeStore(rows))
+    result = await rag_service.retrieve_context(query="polimorfizm", course_id="CTIS 363")
+    assert result.has_sufficient_context is True
+    assert len(result.chunks) == 2
+    assert result.confidence > 0.70
 
 
-def test_hybrid_search_delegates_with_filters(monkeypatch):
-    """Service should call legacy vector store hybrid search with parameters."""
-
-    class FakeStore:
-        def hybrid_search(self, query, n_results, course_filter):
-            return [{"id": "1", "text": query, "metadata": {"course": course_filter}, "distance": 0.2}]
-
-    fake_legacy = SimpleNamespace(vector_store=FakeStore())
-    monkeypatch.setattr(rag_service, "_legacy", lambda: fake_legacy)
-    results = rag_service.hybrid_search("docker", n_results=3, course_filter="CTIS 465")
-    assert len(results) == 1
-    assert results[0]["text"] == "docker"
-    assert results[0]["metadata"]["course"] == "CTIS 465"
+@pytest.mark.asyncio
+async def test_retrieve_insufficient_context(monkeypatch):
+    """Retrieval should report insufficient context when high-similarity chunks are too few."""
+    rows = [
+        {"id": "1", "text": "A", "distance": 0.20, "metadata": {"filename": "a.pdf"}},
+        {"id": "2", "text": "B", "distance": 0.60, "metadata": {"filename": "b.pdf"}},
+    ]
+    monkeypatch.setattr(STATE, "vector_store", FakeStore(rows))
+    result = await rag_service.retrieve_context(query="kuantum", course_id="CTIS 363")
+    assert result.has_sufficient_context is False
+    assert len(result.chunks) == 1

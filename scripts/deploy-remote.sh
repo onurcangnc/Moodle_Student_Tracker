@@ -6,8 +6,8 @@ set -euo pipefail
 # Kullanim: Bu script sunucuda calisir
 # ============================================
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/moodle-student-tracker}"
-SERVICE_NAME="${SERVICE_NAME:-telegram-bot}"
+PROJECT_DIR="${PROJECT_DIR:-/opt/moodle-bot}"
+SERVICE_NAME="${SERVICE_NAME:-moodle-bot}"
 PYTHON="${PYTHON:-python3}"
 PIP="${PIP:-pip3}"
 BRANCH="${BRANCH:-main}"

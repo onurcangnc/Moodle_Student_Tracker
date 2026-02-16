@@ -12,15 +12,18 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application
 
-from bot import legacy
 from bot.config import CONFIG
-from bot.handlers.admin import register_admin_handlers
-from bot.handlers.callbacks import register_callback_handlers
 from bot.handlers.commands import post_init, register_command_handlers
 from bot.handlers.messages import register_message_handlers
 from bot.logging_config import setup_logging
 from bot.middleware.error_handler import global_error_handler
-from bot.state import sync_from_legacy
+from bot.state import STATE
+from core import config as core_config
+from core.document_processor import DocumentProcessor
+from core.llm_engine import LLMEngine
+from core.moodle_client import MoodleClient
+from core.sync_engine import SyncEngine
+from core.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +77,38 @@ def _validate_startup_config() -> None:
         raise RuntimeError("TELEGRAM_OWNER_ID not set in environment. Owner check is required for secure startup.")
 
 
+def _initialize_components() -> None:
+    """Initialize core RAG components and cache Moodle course metadata."""
+    errors = core_config.validate()
+    if errors:
+        joined = "\n".join(f"- {msg}" for msg in errors)
+        raise RuntimeError(f"Core configuration errors:\n{joined}")
+
+    moodle = MoodleClient()
+    processor = DocumentProcessor()
+    vector_store = VectorStore()
+    vector_store.initialize()
+    llm = LLMEngine(vector_store)
+    sync_engine = SyncEngine(moodle, processor, vector_store)
+
+    STATE.moodle = moodle
+    STATE.processor = processor
+    STATE.vector_store = vector_store
+    STATE.llm = llm
+    STATE.sync_engine = sync_engine
+
+    if moodle.connect():
+        courses = moodle.get_courses()
+        llm.moodle_courses = [{"shortname": c.shortname, "fullname": c.fullname} for c in courses]
+        logger.info("Moodle connection established (courses=%s)", len(courses))
+    else:
+        logger.warning("Moodle connection failed, running with cached materials only.")
+
+
 def create_application() -> Application:
     """Build and configure Telegram application with modular handlers."""
     app = Application.builder().token(CONFIG.telegram_bot_token).post_init(post_init).build()
     register_command_handlers(app)
-    register_admin_handlers(app)
-    register_callback_handlers(app)
     register_message_handlers(app)
     app.add_error_handler(global_error_handler)
     return app
@@ -95,8 +124,12 @@ def main() -> None:
         sys.exit(1)
 
     logger.info("Initializing bot components...")
-    legacy.init_components()
-    sync_from_legacy(legacy)
+    try:
+        _initialize_components()
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        sys.exit(1)
+
     _start_health_server()
 
     app = create_application()
