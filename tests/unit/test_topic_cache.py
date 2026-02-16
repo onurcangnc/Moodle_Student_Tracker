@@ -33,3 +33,30 @@ async def test_topic_cache(monkeypatch):
     assert "Kalitim" in topics
     assert "Polimorfizm" in topics
     assert all("Docker" not in t for t in topics)
+
+
+@pytest.mark.asyncio
+async def test_cache_refresh(monkeypatch):
+    """Refresh should rebuild topic list from updated metadata."""
+    cache = TopicCache()
+    store = FakeVectorStore()
+    monkeypatch.setattr(STATE, "vector_store", store)
+
+    await cache.refresh("CTIS 363")
+    topics = await cache.get_topics("CTIS 363")
+    assert "Kalitim" in topics
+
+    store._metadatas.append({"course": "CTIS 363", "chapter": "Design Patterns"})
+    store._texts.append("Design patterns maintainability saglar.")
+    await cache.refresh("CTIS 363")
+    updated = await cache.get_topics("CTIS 363")
+    assert "Design Patterns" in updated
+
+
+@pytest.mark.asyncio
+async def test_cache_empty_course(monkeypatch):
+    """Courses without matching chunks should produce an empty list."""
+    cache = TopicCache()
+    monkeypatch.setattr(STATE, "vector_store", FakeVectorStore())
+    topics = await cache.get_topics("NON_EXISTENT")
+    assert topics == []
