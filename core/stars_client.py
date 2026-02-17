@@ -636,12 +636,14 @@ class StarsClient:
         """
         Fetch full degree-audit transcript from the STARS curriculum page.
 
+        STARS is a single-page application — content is loaded via AJAX POST
+        into a #center div. Direct GET requests return only the shell HTML.
+        We first try AJAX POST endpoints (same pattern as grade/exam/attendance),
+        then fall back to direct GETs for the srs-v2 sub-app which serves
+        content fragments directly.
+
         Returns a flat list of graded courses (skips 'Not graded'):
           {code, name, grade, credits, semester, status}
-
-        Credits are integers; semester is the value in the 'Semester' column
-        (e.g. '2022-2023 Fall').  S/U/T/W grades are included so the
-        caller can exclude them from GPA calculations as appropriate.
         """
         ss = self._sessions.get(user_id)
         if not ss or not ss.authenticated:
@@ -650,31 +652,49 @@ class StarsClient:
             ss.authenticated = False
             return None
 
-        # Try the srs-v2 curriculum endpoint (same host-path pattern as schedule)
-        urls_to_try = [
-            f"{BASE}/srs-v2/curriculum/index",
-            f"{BASE}/srs/curriculum/index",
-            f"{BASE}/srs-v2/curriculum",
-        ]
         soup = None
-        for url in urls_to_try:
-            try:
-                r = ss.session.get(url, timeout=15)
-                if r.status_code == 200 and len(r.text) > 500:
-                    soup = BeautifulSoup(r.text, "html.parser")
-                    logger.debug("STARS transcript: fetched from %s (%d bytes)", url, len(r.text))
+
+        # Strategy 1: AJAX POST endpoints (same mechanism as grade/exam/attendance)
+        ajax_endpoints = [
+            "curriculum/index.php",
+            "curriculum/curriculum.php",
+            "registrations/curriculum.php",
+        ]
+        for endpoint in ajax_endpoints:
+            soup = self._ajax_post(user_id, endpoint)
+            if soup:
+                text = soup.get_text()
+                # Verify we got actual course data, not an error page
+                if re.search(r"[A-Z]{2,}\s*\d{3}", text):
+                    logger.debug("STARS transcript: AJAX POST %s succeeded", endpoint)
                     break
-                logger.debug("STARS transcript: %s → HTTP %s", url, r.status_code)
-            except requests.RequestException as exc:
-                logger.warning("STARS transcript: %s error: %s", url, exc)
+                logger.debug("STARS transcript: AJAX POST %s returned no course data", endpoint)
+                soup = None
+
+        # Strategy 2: Direct GET to srs-v2 sub-app (serves fragments, not SPA shell)
+        if soup is None:
+            urls_to_try = [
+                f"{BASE}/srs-v2/curriculum/index",
+                f"{BASE}/srs-v2/curriculum",
+            ]
+            for url in urls_to_try:
+                try:
+                    r = ss.session.get(url, timeout=15)
+                    if r.status_code == 200 and re.search(r"[A-Z]{2,}\s*\d{3}", r.text):
+                        soup = BeautifulSoup(r.text, "html.parser")
+                        logger.debug("STARS transcript: direct GET %s succeeded", url)
+                        break
+                    logger.debug("STARS transcript: %s → HTTP %s (no course pattern)", url, r.status_code)
+                except requests.RequestException as exc:
+                    logger.warning("STARS transcript: %s error: %s", url, exc)
 
         if soup is None:
-            logger.error("STARS transcript: all URL attempts failed")
+            logger.error("STARS transcript: all fetch strategies failed")
             return None
 
         courses = []
         # The curriculum page has tables inside year/semester sections.
-        # Each data row has: Course Code | Course Name | Status | Grade | Credits | Semester | [elective col]
+        # Typical columns: Course Code | Course Name | Status | Grade | Credits | Semester | [elective]
         for table in soup.find_all("table"):
             rows = table.find_all("tr")
             for row in rows:
@@ -682,16 +702,14 @@ class StarsClient:
                 if len(cells) < 5:
                     continue  # header or empty row
 
-                # Detect the column layout: some tables have 6-7 cols, some 5
-                # Typical: [code, name, status, grade, credits, semester, ...]
-                code_text  = cells[0].get_text(strip=True)
-                name_text  = cells[1].get_text(strip=True) if len(cells) > 1 else ""
+                code_text   = cells[0].get_text(strip=True)
+                name_text   = cells[1].get_text(strip=True) if len(cells) > 1 else ""
                 status_text = cells[2].get_text(strip=True) if len(cells) > 2 else ""
-                grade_text = cells[3].get_text(strip=True) if len(cells) > 3 else ""
-                cred_text  = cells[4].get_text(strip=True) if len(cells) > 4 else ""
-                sem_text   = cells[5].get_text(strip=True) if len(cells) > 5 else ""
+                grade_text  = cells[3].get_text(strip=True) if len(cells) > 3 else ""
+                cred_text   = cells[4].get_text(strip=True) if len(cells) > 4 else ""
+                sem_text    = cells[5].get_text(strip=True) if len(cells) > 5 else ""
 
-                # Skip header rows and rows without a course code
+                # Skip header rows and rows without a course code (e.g. "CTIS 256")
                 if not code_text or not re.match(r"[A-Z]{2,}", code_text):
                     continue
 
