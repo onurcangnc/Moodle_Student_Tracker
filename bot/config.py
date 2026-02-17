@@ -95,5 +95,5 @@ CONFIG = AppConfig(
     memory_ttl_minutes=_as_int("MEMORY_TTL_MINUTES", 30),
     healthcheck_enabled=_as_bool("HEALTHCHECK_ENABLED", True),
     healthcheck_host=os.getenv("HEALTHCHECK_HOST", "0.0.0.0"),
-    healthcheck_port=_as_int("HEALTHCHECK_PORT", 8080),
+    healthcheck_port=_as_int("HEALTHCHECK_PORT", 9090),
 )

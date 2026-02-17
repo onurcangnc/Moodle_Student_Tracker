@@ -43,7 +43,7 @@ restart:
 	ssh $(REMOTE_HOST) "sudo systemctl restart moodle-bot"
 
 health:
-	ssh $(REMOTE_HOST) "curl -s http://localhost:8080/health | python3 -m json.tool"
+	ssh $(REMOTE_HOST) "curl -s http://localhost:9090/health | python3 -m json.tool"
 
 # === Temizlik ===
 clean:
