@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -140,7 +141,19 @@ def _initialize_components() -> None:
     STATE.sync_engine = sync_engine
     STATE.stars_client = StarsClient()
     STATE.webmail_client = WebmailClient()
-    logger.info("STARS and Webmail clients initialized (auth required per-user)")
+
+    # Auto-login webmail if credentials provided in .env
+    webmail_email = os.getenv("WEBMAIL_EMAIL", "")
+    webmail_password = os.getenv("WEBMAIL_PASSWORD", "")
+    if webmail_email and webmail_password:
+        if STATE.webmail_client.login(webmail_email, webmail_password):
+            logger.info("Webmail IMAP login OK: %s", webmail_email)
+        else:
+            logger.warning("Webmail IMAP login failed for %s", webmail_email)
+    else:
+        logger.info("Webmail credentials not set, skipping auto-login")
+
+    logger.info("STARS client initialized (requires SMS login per-user)")
 
     if moodle.connect():
         courses = moodle.get_courses()

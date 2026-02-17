@@ -1152,13 +1152,10 @@ async def _execute_tool_call(tool_call: Any, user_id: int) -> dict[str, str]:
             result = "Bu bilgiye şu anda ulaşılamıyor."
 
     logger.info(
-        "Tool executed",
-        extra={
-            "tool": fn_name,
-            "args": fn_args,
-            "result_len": len(result),
-            "user_id": user_id,
-        },
+        "Tool executed: %s (result_len=%d)",
+        fn_name,
+        len(result),
+        extra={"tool": fn_name, "user_id": user_id},
     )
 
     return {
