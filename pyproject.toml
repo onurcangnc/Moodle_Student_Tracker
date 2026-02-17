@@ -13,6 +13,8 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: integration tests",
     "e2e: end-to-end tests",
+    "safety: verified defense tests — always run, must pass",
+    "redteam: gap-discovery red-team tests — run with -m redteam; xfail means gap exists",
 ]
 
 [tool.ruff]
