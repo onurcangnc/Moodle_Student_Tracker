@@ -38,7 +38,7 @@ def main() -> None:
 
     logger.info("Loading vector store...")
     store = VectorStore()
-    store.load()
+    store.initialize()
 
     stats = store.get_stats()
     courses = stats.get("courses", [])

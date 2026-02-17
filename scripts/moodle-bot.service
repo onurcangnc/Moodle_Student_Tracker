@@ -1,26 +1,19 @@
 [Unit]
-Description=Moodle RAG Bot
+Description=Moodle Student Tracker Telegram Bot
 After=network.target
 
 [Service]
 Type=simple
-User=botuser
-Group=botuser
+User=root
 WorkingDirectory=/opt/moodle-bot
 EnvironmentFile=/opt/moodle-bot/.env
-ExecStart=/usr/bin/python3 -m bot.main
-Restart=on-failure
+ExecStart=/opt/moodle-bot/venv/bin/python -m bot.main
+Restart=always
 RestartSec=10
+Environment=PYTHONUNBUFFERED=1
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=moodle-bot
-
-# Guvenlik hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/moodle-bot/data /opt/moodle-bot/logs
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
