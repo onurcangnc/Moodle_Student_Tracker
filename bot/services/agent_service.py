@@ -1386,7 +1386,11 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
 
     # Planner step: generate a short execution plan and inject into system prompt
     tool_names = [t["function"]["name"] for t in available_tools]
-    plan_hint = await _plan_agent(user_text, history, tool_names)
+    try:
+        plan_hint = await _plan_agent(user_text, history, tool_names)
+    except Exception as e:
+        logger.warning("Planner step failed, continuing without plan: %s", e)
+        plan_hint = ""
     if plan_hint:
         system_prompt = system_prompt + f"\n\n{plan_hint}"
         logger.debug("Planner hint injected (%d chars)", len(plan_hint))
