@@ -5,10 +5,12 @@ Periodic checks for:
 - New Moodle assignments (every 10 min)
 - New AIRS/DAIS emails (every 5 min, if webmail authenticated)
 - Upcoming deadline reminders (every 30 min)
+- Missing source summaries (every 60 min, KATMAN 2)
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 
@@ -136,6 +138,22 @@ async def _check_deadline_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Failed to send deadline reminder: %s", exc)
 
 
+async def _generate_missing_summaries(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Background job: generate KATMAN 2 summaries for files that don't have one."""
+    store = STATE.vector_store
+    if store is None or STATE.llm is None:
+        return
+
+    try:
+        from bot.services.summary_service import generate_missing_summaries
+
+        count = await asyncio.to_thread(generate_missing_summaries)
+        if count > 0:
+            logger.info("Background summary generation: %d new summaries", count)
+    except Exception as exc:
+        logger.error("Background summary generation failed: %s", exc, exc_info=True)
+
+
 def register_notification_jobs(app: Application) -> None:
     """Register periodic background jobs on the PTB job queue."""
     jq = app.job_queue
@@ -167,7 +185,16 @@ def register_notification_jobs(app: Application) -> None:
         name="deadline_reminder",
     )
 
+    # KATMAN 2: Generate missing source summaries — every 60 min
+    jq.run_repeating(
+        _generate_missing_summaries,
+        interval=timedelta(minutes=60),
+        first=timedelta(minutes=5),  # Wait 5 min after startup
+        name="summary_generation",
+    )
+
     logger.info(
-        "Notification jobs registered: assignment_check=%ds, email_check=300s, deadline_reminder=1800s",
+        "Notification jobs registered: assignment_check=%ds, email_check=300s, "
+        "deadline_reminder=1800s, summary_generation=3600s",
         CONFIG.assignment_check_interval,
     )

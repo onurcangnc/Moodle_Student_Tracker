@@ -26,17 +26,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send welcome message for agentic workflow."""
     await update.effective_message.reply_text(
         "Merhaba! 👋\n\n"
-        "Ben Bilkent akademik asistanınım. Bana her şeyi doğal dilde sorabilirsin:\n\n"
-        "📚 \"Derslerimi göster\"\n"
-        "📖 \"CTIS 256 hakkında konuşalım\"\n"
-        "❓ \"Etik nedir?\" — materyallerden cevap\n"
-        "📅 \"Ödevlerim ne zaman?\"\n"
-        "📊 \"Notlarım ne?\" — STARS\n"
-        "📧 \"Son mailleri göster\" — AIRS/DAIS\n"
-        "🕐 \"Bugün hangi dersim var?\"\n"
-        "📝 \"Devamsızlığım ne?\"\n"
-        "📄 \"Nelere çalışabilirim?\" — konu haritası\n\n"
-        "Sadece yaz, ben anlayacağım! 🚀"
+        "Ben akademik asistanınım — komut ezberleme, benimle konuş!\n\n"
+        '📚 "Bu dersi çalışmak istiyorum" → Konu haritası + adım adım öğretim\n'
+        '📖 "Privacy konusunu anlat" → Materyali OKUYUP öğretir\n'
+        '📂 "Hangi materyaller var?" → Kaynak listesi + çalışma sırası\n'
+        '❓ "Polimorfizm nedir?" → Materyallerden cevap\n'
+        '📅 "Bugün derslerim ne?" → Ders programı\n'
+        '📝 "Yaklaşan ödevlerim?" → Deadline\'lar\n'
+        '📊 "Notlarım nasıl?" → Akademik durum\n'
+        '📋 "Devamsızlıklarım?" → Devamsızlık + limit uyarısı\n'
+        '📧 "Son maillerimi göster" → DAIS & AIRS mailleri\n'
+        '🔍 "Erkan hoca mail attı mı?" → Hoca bazlı mail arama\n\n'
+        'Başlamak için "kurslarımı göster" yaz!'
     )
 
 
