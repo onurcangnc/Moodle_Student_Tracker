@@ -1195,28 +1195,28 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
     return "\n".join(lines)
 
 
-async def _tool_get_assignments(args: dict, user_id: int) -> str:
-    """Get Moodle assignments with optional filtering."""
-    moodle = STATE.moodle
-    if moodle is None:
-        return "Moodle bağlantısı hazır değil."
+def _serialize_assignments(assignments: list) -> list[dict]:
+    """Convert assignment objects to JSON-serializable dicts for SQLite cache."""
+    return [
+        {
+            "name":           getattr(a, "name", ""),
+            "course_name":    getattr(a, "course_name", ""),
+            "submitted":      getattr(a, "submitted", False),
+            "due_date":       getattr(a, "due_date", None),
+            "time_remaining": getattr(a, "time_remaining", ""),
+        }
+        for a in (assignments or [])
+    ]
 
-    filter_mode = args.get("filter", "upcoming")
+
+def _format_assignments(assignments: list[dict], filter_mode: str) -> str:
+    """Format a list of assignment dicts into a user-facing string."""
     now_ts = time.time()
-
-    try:
-        if filter_mode == "all":
-            assignments = await asyncio.to_thread(moodle.get_assignments)
-        else:
-            assignments = await asyncio.to_thread(moodle.get_upcoming_assignments, 14)
-    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-        logger.error("Assignment fetch failed: %s", exc, exc_info=True)
-        return f"Ödev bilgileri alınamadı: {exc}"
 
     if filter_mode == "overdue":
         assignments = [
-            a for a in (assignments or [])
-            if not a.submitted and a.due_date and a.due_date < now_ts
+            a for a in assignments
+            if not a.get("submitted") and a.get("due_date") and a["due_date"] < now_ts
         ]
 
     if not assignments:
@@ -1225,23 +1225,54 @@ async def _tool_get_assignments(args: dict, user_id: int) -> str:
 
     lines = []
     for a in assignments:
-        status = "✅ Teslim edildi" if a.submitted else "⏳ Teslim edilmedi"
-        raw_due = a.due_date if hasattr(a, "due_date") else None
+        submitted = a.get("submitted", False)
+        status = "✅ Teslim edildi" if submitted else "⏳ Teslim edilmedi"
+        raw_due = a.get("due_date")
         if isinstance(raw_due, (int, float)) and raw_due > 1_000_000:
             due = datetime.fromtimestamp(raw_due).strftime("%d/%m/%Y %H:%M")
         elif raw_due:
             due = str(raw_due)
         else:
             due = "Belirtilmemiş"
-        remaining = a.time_remaining if hasattr(a, "time_remaining") else ""
-        line = f"• {a.course_name} — {a.name}\n  Tarih: {due} | {status}"
-        if remaining and not a.submitted:
+        remaining = a.get("time_remaining", "")
+        line = f"• {a.get('course_name', '')} — {a.get('name', '')}\n  Tarih: {due} | {status}"
+        if remaining and not submitted:
             line += f" | Kalan: {remaining}"
         if filter_mode == "overdue":
             line += " | ⚠️ Süresi geçmiş!"
         lines.append(line)
 
     return "\n".join(lines)
+
+
+async def _tool_get_assignments(args: dict, user_id: int) -> str:
+    """Get Moodle assignments — reads from SQLite cache, falls back to live Moodle API."""
+    moodle = STATE.moodle
+    if moodle is None:
+        return "Moodle bağlantısı hazır değil."
+
+    filter_mode = args.get("filter", "upcoming")
+
+    # Try cache first (populated by assignment_check background job every 10 min)
+    cached = cache_db.get_json("assignments", user_id)
+    if cached is not None:
+        logger.debug("Assignments cache hit (%d entries)", len(cached))
+        return _format_assignments(cached, filter_mode)
+
+    # Cache miss — live fetch
+    logger.debug("Assignments cache miss — fetching from Moodle API")
+    try:
+        if filter_mode == "all":
+            raw = await asyncio.to_thread(moodle.get_assignments)
+        else:
+            raw = await asyncio.to_thread(moodle.get_upcoming_assignments, 14)
+    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+        logger.error("Assignment fetch failed: %s", exc, exc_info=True)
+        return f"Ödev bilgileri alınamadı: {exc}"
+
+    serialized = _serialize_assignments(raw)
+    cache_db.set_json("assignments", user_id, serialized)
+    return _format_assignments(serialized, filter_mode)
 
 
 async def _tool_get_emails(args: dict, user_id: int) -> str:

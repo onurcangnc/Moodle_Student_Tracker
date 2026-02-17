@@ -25,10 +25,11 @@ logger = logging.getLogger(__name__)
 _DB_PATH = Path("data/cache.db")
 
 _TTL: dict[str, int] = {
-    "emails":     5 * 60,
-    "grades":     2 * 3600,
-    "attendance": 2 * 3600,
-    "schedule":   24 * 3600,
+    "emails":      5 * 60,       # refreshed every 5 min by email_check job
+    "assignments": 15 * 60,      # refreshed every 10 min by assignment_check job
+    "grades":      2 * 3600,     # refreshed every 30 min by grades_sync job
+    "attendance":  2 * 3600,     # refreshed every 60 min by attendance_sync job
+    "schedule":    24 * 3600,    # refreshed every 6 h by schedule_sync job
 }
 
 _initialized = False
