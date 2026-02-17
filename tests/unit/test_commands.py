@@ -1,4 +1,4 @@
-"""Unit tests for Telegram command handlers."""
+"""Unit tests for Telegram command handlers (agentic: /start + /upload only)."""
 
 from __future__ import annotations
 
@@ -23,6 +23,9 @@ async def test_post_init_sets_bot_commands():
     app = SimpleNamespace(bot=SimpleNamespace(set_my_commands=AsyncMock()))
     await commands.post_init(app)
     app.bot.set_my_commands.assert_awaited_once()
+    # Should only register 2 commands (start, upload)
+    registered = app.bot.set_my_commands.await_args.args[0]
+    assert len(registered) == 2
 
 
 @pytest.mark.asyncio
@@ -31,82 +34,8 @@ async def test_cmd_start_replies_welcome():
     update = _build_update()
     await commands.cmd_start(update, SimpleNamespace())
     update.effective_message.reply_text.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_cmd_help_replies_usage():
-    """help command should send short usage text."""
-    update = _build_update()
-    await commands.cmd_help(update, SimpleNamespace())
-    update.effective_message.reply_text.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_cmd_courses_returns_when_user_missing(monkeypatch):
-    """courses command should no-op when effective user is missing."""
-    update = _build_update(user_id=None)
-    monkeypatch.setattr(commands.user_service, "list_courses", lambda: [])
-    await commands.cmd_courses(update, SimpleNamespace(args=[]))
-    update.effective_message.reply_text.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_cmd_courses_no_courses(monkeypatch):
-    """courses command should report empty course set."""
-    update = _build_update()
-    monkeypatch.setattr(commands.user_service, "list_courses", lambda: [])
-    await commands.cmd_courses(update, SimpleNamespace(args=[]))
     payload = update.effective_message.reply_text.await_args_list[0].args[0]
-    assert "kurs bulunamad" in payload
-
-
-@pytest.mark.asyncio
-async def test_cmd_courses_set_active_not_found(monkeypatch):
-    """courses command should report non-matching selection queries."""
-    update = _build_update()
-    monkeypatch.setattr(commands.user_service, "list_courses", lambda: [SimpleNamespace(course_id="x")])
-    monkeypatch.setattr(commands.user_service, "find_course", lambda query: None)
-    await commands.cmd_courses(update, SimpleNamespace(args=["CTIS", "999"]))
-    update.effective_message.reply_text.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_cmd_courses_set_active_success(monkeypatch):
-    """courses command should set active course and confirm selection."""
-    update = _build_update(user_id=77)
-    match = SimpleNamespace(course_id="CTIS 363", display_name="CTIS 363 Ethics")
-    monkeypatch.setattr(commands.user_service, "list_courses", lambda: [match])
-    monkeypatch.setattr(commands.user_service, "find_course", lambda query: match)
-
-    called: dict[str, object] = {}
-
-    def _set_active(user_id: int, course_id: str) -> None:
-        called["user_id"] = user_id
-        called["course_id"] = course_id
-
-    monkeypatch.setattr(commands.user_service, "set_active_course", _set_active)
-    await commands.cmd_courses(update, SimpleNamespace(args=["CTIS", "363"]))
-
-    assert called == {"user_id": 77, "course_id": "CTIS 363"}
-    payload = update.effective_message.reply_text.await_args_list[0].args[0]
-    assert "CTIS 363 Ethics" in payload
-    assert "kurs se" in payload.lower()
-
-
-@pytest.mark.asyncio
-async def test_cmd_courses_lists_with_active_marker(monkeypatch):
-    """courses command should mark active course in list output."""
-    update = _build_update(user_id=5)
-    courses = [
-        SimpleNamespace(course_id="CTIS 363", short_name="CTIS", display_name="CTIS 363 Ethics"),
-        SimpleNamespace(course_id="CTIS 465", short_name="CTIS", display_name="CTIS 465 Cloud"),
-    ]
-    monkeypatch.setattr(commands.user_service, "list_courses", lambda: courses)
-    monkeypatch.setattr(commands.user_service, "get_active_course", lambda user_id: courses[0])
-    await commands.cmd_courses(update, SimpleNamespace(args=[]))
-    payload = update.effective_message.reply_text.await_args_list[0].args[0]
-    assert "CTIS 363 Ethics" in payload
-    assert "CTIS 465 Cloud" in payload
+    assert "Merhaba" in payload
 
 
 @pytest.mark.asyncio
@@ -132,39 +61,9 @@ async def test_cmd_upload_enables_session(monkeypatch):
     update.effective_message.reply_text.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_cmd_stats_without_store(monkeypatch):
-    """stats command should report unavailable vector store."""
-    update = _build_update()
-    monkeypatch.setattr(commands, "admin_only", AsyncMock(return_value=True))
-    monkeypatch.setattr(commands.STATE, "vector_store", None)
-    await commands.cmd_stats(update, SimpleNamespace())
-    payload = update.effective_message.reply_text.await_args_list[0].args[0]
-    assert "vector store" in payload.lower()
-
-
-@pytest.mark.asyncio
-async def test_cmd_stats_with_store(monkeypatch):
-    """stats command should include basic operational counters."""
-    update = _build_update()
-    monkeypatch.setattr(commands, "admin_only", AsyncMock(return_value=True))
-    monkeypatch.setattr(
-        commands.STATE,
-        "vector_store",
-        SimpleNamespace(get_stats=lambda: {"total_chunks": 20, "unique_courses": 2, "unique_files": 8}),
-    )
-    monkeypatch.setattr(commands.STATE, "active_courses", {1: "a", 2: "b"})
-    monkeypatch.setattr(commands.STATE, "pending_upload_users", {1})
-    await commands.cmd_stats(update, SimpleNamespace())
-    payload = update.effective_message.reply_text.await_args_list[0].args[0]
-    assert "20" in payload
-    assert "2" in payload
-    assert "8" in payload
-
-
 def test_register_command_handlers():
-    """Command registration should add expected five handlers."""
+    """Command registration should add expected two handlers (start + upload)."""
     added = []
     app = SimpleNamespace(add_handler=lambda handler: added.append(handler))
     commands.register_command_handlers(app)
-    assert len(added) == 5
+    assert len(added) == 2

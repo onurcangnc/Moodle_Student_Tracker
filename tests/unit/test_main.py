@@ -154,6 +154,7 @@ def test_create_application_registers_handlers(monkeypatch):
     class FakeApp:
         def __init__(self):
             self.error_handler = None
+            self.job_queue = None
 
         def add_error_handler(self, handler):
             self.error_handler = handler
@@ -183,12 +184,13 @@ def test_create_application_registers_handlers(monkeypatch):
     marks: dict[str, int] = {}
     monkeypatch.setattr(main, "register_command_handlers", lambda app: marks.setdefault("commands", 1))
     monkeypatch.setattr(main, "register_message_handlers", lambda app: marks.setdefault("messages", 1))
+    monkeypatch.setattr(main, "register_notification_jobs", lambda app: marks.setdefault("notifications", 1))
 
     app = main.create_application()
     assert app is fake_app
     assert builder.token_value == "bot-token"
     assert builder.post_init_cb is main.post_init
-    assert marks == {"commands": 1, "messages": 1}
+    assert marks == {"commands": 1, "messages": 1, "notifications": 1}
     assert fake_app.error_handler is main.global_error_handler
 
 

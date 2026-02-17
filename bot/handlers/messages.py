@@ -1,4 +1,4 @@
-"""Unified message handlers for chat-first learning and admin uploads."""
+"""Unified message handlers for agentic chat and admin uploads."""
 
 from __future__ import annotations
 
@@ -12,7 +12,8 @@ from telegram.error import TelegramError
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from bot.middleware.auth import admin_only
-from bot.services import document_service, llm_service, rag_service, user_service
+from bot.services import document_service, user_service
+from bot.services.agent_service import handle_agent_message
 from bot.services.topic_cache import TOPIC_CACHE
 from core import config as core_config
 
@@ -29,12 +30,12 @@ async def _reply_message(message: Message, text: str) -> None:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handle all text messages via one flow.
+    Handle all text messages via agentic LLM with function calling.
 
     Flow:
-    1) active course check
-    2) retrieve context
-    3) teaching mode (sufficient) or guidance mode (insufficient)
+    1) rate limit check
+    2) route to agent_service.handle_agent_message()
+    3) agent decides which tools to call (RAG, assignments, grades, etc.)
     4) send response
     """
     message = update.effective_message
@@ -44,36 +45,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     user_service.record_user_activity(user.id)
     if not user_service.check_rate_limit(user.id):
-        await message.reply_text("Cok hizli mesaj gonderdiniz. Lutfen bir dakika sonra tekrar deneyin.")
+        await message.reply_text("Çok hızlı mesaj gönderdiniz. Lütfen bir dakika sonra tekrar deneyin.")
         return
 
     query = message.text.strip()
     if not query:
         return
 
-    active_course = user_service.get_active_course(user.id)
-    if active_course is None:
-        await message.reply_text("Henuz bir kurs secmediniz. /courses ile kurslari gorebilirsiniz.")
-        return
-
-    history = user_service.get_conversation_history(user.id)
-    retrieval = await rag_service.retrieve_context(query=query, course_id=active_course.course_id)
-    if retrieval.has_sufficient_context:
-        response = await llm_service.generate_teaching_response(
-            query=query,
-            chunks=retrieval.chunks,
-            conversation_history=history,
-        )
-    else:
-        topics = await TOPIC_CACHE.get_topics(active_course.course_id)
-        response = await llm_service.generate_guidance_response(
-            query=query,
-            available_topics=topics,
-            conversation_history=history,
-        )
-
-    user_service.add_conversation_turn(user.id, role="user", content=query)
-    user_service.add_conversation_turn(user.id, role="assistant", content=response)
+    response = await handle_agent_message(user_id=user.id, user_text=query)
     await _reply_message(message, response)
 
 

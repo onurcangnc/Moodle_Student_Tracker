@@ -20,13 +20,16 @@ from bot.handlers.commands import post_init, register_command_handlers
 from bot.handlers.messages import register_message_handlers
 from bot.logging_config import setup_logging
 from bot.middleware.error_handler import global_error_handler
+from bot.services.notification_service import register_notification_jobs
 from bot.state import STATE
 from core import config as core_config
 from core.document_processor import DocumentProcessor
 from core.llm_engine import LLMEngine
 from core.moodle_client import MoodleClient
+from core.stars_client import StarsClient
 from core.sync_engine import SyncEngine
 from core.vector_store import VectorStore
+from core.webmail_client import WebmailClient
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -135,6 +138,9 @@ def _initialize_components() -> None:
     STATE.vector_store = vector_store
     STATE.llm = llm
     STATE.sync_engine = sync_engine
+    STATE.stars_client = StarsClient()
+    STATE.webmail_client = WebmailClient()
+    logger.info("STARS and Webmail clients initialized (auth required per-user)")
 
     if moodle.connect():
         courses = moodle.get_courses()
@@ -149,6 +155,7 @@ def create_application() -> Application:
     app = Application.builder().token(CONFIG.telegram_bot_token).post_init(post_init).build()
     register_command_handlers(app)
     register_message_handlers(app)
+    register_notification_jobs(app)
     app.add_error_handler(global_error_handler)
     return app
 
