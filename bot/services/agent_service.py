@@ -444,6 +444,32 @@ TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_cgpa",
+            "description": (
+                "STARS'tan tüm dönemlerin harf notlarını + kredilerini otomatik çeker ve "
+                "Bilkent kurallarına göre CGPA + AGPA hesaplar. "
+                "Tekrar edilen dersler, ENG 101 istisnası, geçer/başarısız durumu, onur listesi ve "
+                "mezuniyet şeref derecesi (cum laude) dahil tam analiz verir. "
+                "'CGPA'mı hesapla', 'kümülatif notum ne', 'mezuniyet şerefim var mı', "
+                "'notlarımı analiz et' gibi isteklerde kullan. "
+                "calculate_grade(mode=cgpa)'dan farkı: notları kendin vermek zorunda değilsin, "
+                "STARS'tan otomatik çeker."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "graduating": {
+                        "type": "boolean",
+                        "description": "True ise mezuniyet şeref derecesi (cum laude) hesaplanır",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
     # ═══ F. Bot Management (3 tools) ═══
     {
         "type": "function",
@@ -1726,6 +1752,89 @@ async def _tool_get_stats(args: dict, user_id: int) -> str:
 
 # ─── New Tool Handlers ───────────────────────────────────────────────────────
 
+async def _tool_get_cgpa(args: dict, user_id: int) -> str:
+    """Fetch full transcript from STARS and compute CGPA/AGPA automatically."""
+    stars = STATE.stars_client
+    if stars is None or not stars.is_authenticated(user_id):
+        return "STARS girişi yapılmamış. CGPA hesabı için önce /start ile STARS'a giriş yap."
+
+    graduating = bool(args.get("graduating", False))
+
+    try:
+        raw = await asyncio.to_thread(stars.get_transcript, user_id)
+    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+        logger.error("Transcript fetch failed: %s", exc, exc_info=True)
+        return f"Transcript alınamadı: {exc}"
+
+    if raw is None:
+        return (
+            "STARS transcript sayfasına erişilemedi. "
+            "STARS oturumu aktif olduğundan emin olun veya daha sonra tekrar deneyin."
+        )
+    if not raw:
+        return "Transcript boş — henüz tamamlanmış ders bulunamadı."
+
+    # Build course list for _bilkent_cgpa
+    courses = [
+        {
+            "name": f"{c['code']} {c['name']}".strip(),
+            "grade": c["grade"],
+            "credits": c["credits"],
+            "semester": c.get("semester", ""),
+        }
+        for c in raw
+        if c.get("grade") and c["grade"].strip()
+    ]
+
+    if not courses:
+        return "Not bilgisi olan tamamlanmış ders bulunamadı."
+
+    cgpa, cgpa_cred, agpa, agpa_cred, repeated, warns = _bilkent_cgpa(courses)
+    standing = _academic_standing(cgpa)
+    honor = _honor_status(cgpa, cgpa, len([c for c in courses if c["grade"].upper() not in _NO_GPA_GRADES]))
+
+    lines = [f"*Bilkent CGPA Analizi — {len(courses)} ders*\n"]
+
+    # Per-course table
+    lines.append("*Ders bazlı geçer/başarısız:*")
+    for c in courses:
+        g = c["grade"].upper()
+        pf = _pass_fail(g, cgpa, c["name"])
+        pts = _GRADE_POINTS.get(g, "—")
+        sem = f" [{c['semester']}]" if c.get("semester") else ""
+        lines.append(f"  {c['name']} {g} ({pts}×{c['credits']}kr){sem} → {pf}")
+
+    lines.append("")
+    lines.append(f"*CGPA: {cgpa:.2f}* ({cgpa_cred:.0f} kredi, tekrar edilen derslerde son not)")
+    lines.append(f"*AGPA: {agpa:.2f}* ({agpa_cred:.0f} kredi, tüm notlar — sıralama ve cum laude için)")
+    lines.append(f"Akademik Durum: {standing}")
+    lines.append(f"Onur: {honor}")
+
+    if graduating:
+        lines.append(f"Mezuniyet Şeref Derecesi: {_cum_laude(agpa)}")
+
+    if repeated:
+        lines.append("\n*Tekrar edilen dersler:*")
+        lines.extend(f"  ⟳ {r}" for r in repeated)
+
+    if warns:
+        lines.append("\n⚠️ Uyarılar:")
+        lines.extend(f"  • {w}" for w in warns)
+
+    if cgpa < 2.00:
+        lines.append(
+            "\n*Akademik kısıtlamalar:*\n"
+            "  • Probation (1.80–1.99): Kredi yükü nominal yükün %60'ı\n"
+            "  • Unsatisfactory (<1.80): Kredi yükü nominal yükün %70'i"
+        )
+
+    lines.append(
+        f"\n_Kaynak: STARS curriculum sayfası — {len(raw)} ders satırı okundu, "
+        f"{len(raw) - len(courses)} 'Not graded' atlandı._"
+    )
+    return "\n".join(lines)
+
+
 async def _tool_get_exam_schedule(args: dict, user_id: int) -> str:
     """Get exam schedule (midterm/final dates) from STARS."""
     stars = STATE.stars_client
@@ -2273,6 +2382,7 @@ TOOL_HANDLERS = {
     "get_grades": _tool_get_grades,
     "get_attendance": _tool_get_attendance,
     "get_assignments": _tool_get_assignments,
+    "get_cgpa": _tool_get_cgpa,
     "get_exam_schedule": _tool_get_exam_schedule,
     "get_assignment_detail": _tool_get_assignment_detail,
     "get_upcoming_events": _tool_get_upcoming_events,

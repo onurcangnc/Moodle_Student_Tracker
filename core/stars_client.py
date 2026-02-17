@@ -632,6 +632,93 @@ class StarsClient:
 
     # ── Letter Grades ─────────────────────────────────────────────────────
 
+    def get_transcript(self, user_id: int) -> list[dict] | None:
+        """
+        Fetch full degree-audit transcript from the STARS curriculum page.
+
+        Returns a flat list of graded courses (skips 'Not graded'):
+          {code, name, grade, credits, semester, status}
+
+        Credits are integers; semester is the value in the 'Semester' column
+        (e.g. '2022-2023 Fall').  S/U/T/W grades are included so the
+        caller can exclude them from GPA calculations as appropriate.
+        """
+        ss = self._sessions.get(user_id)
+        if not ss or not ss.authenticated:
+            return None
+        if ss.expired:
+            ss.authenticated = False
+            return None
+
+        # Try the srs-v2 curriculum endpoint (same host-path pattern as schedule)
+        urls_to_try = [
+            f"{BASE}/srs-v2/curriculum/index",
+            f"{BASE}/srs/curriculum/index",
+            f"{BASE}/srs-v2/curriculum",
+        ]
+        soup = None
+        for url in urls_to_try:
+            try:
+                r = ss.session.get(url, timeout=15)
+                if r.status_code == 200 and len(r.text) > 500:
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    logger.debug("STARS transcript: fetched from %s (%d bytes)", url, len(r.text))
+                    break
+                logger.debug("STARS transcript: %s → HTTP %s", url, r.status_code)
+            except requests.RequestException as exc:
+                logger.warning("STARS transcript: %s error: %s", url, exc)
+
+        if soup is None:
+            logger.error("STARS transcript: all URL attempts failed")
+            return None
+
+        courses = []
+        # The curriculum page has tables inside year/semester sections.
+        # Each data row has: Course Code | Course Name | Status | Grade | Credits | Semester | [elective col]
+        for table in soup.find_all("table"):
+            rows = table.find_all("tr")
+            for row in rows:
+                cells = row.find_all("td")
+                if len(cells) < 5:
+                    continue  # header or empty row
+
+                # Detect the column layout: some tables have 6-7 cols, some 5
+                # Typical: [code, name, status, grade, credits, semester, ...]
+                code_text  = cells[0].get_text(strip=True)
+                name_text  = cells[1].get_text(strip=True) if len(cells) > 1 else ""
+                status_text = cells[2].get_text(strip=True) if len(cells) > 2 else ""
+                grade_text = cells[3].get_text(strip=True) if len(cells) > 3 else ""
+                cred_text  = cells[4].get_text(strip=True) if len(cells) > 4 else ""
+                sem_text   = cells[5].get_text(strip=True) if len(cells) > 5 else ""
+
+                # Skip header rows and rows without a course code
+                if not code_text or not re.match(r"[A-Z]{2,}", code_text):
+                    continue
+
+                # Skip "Not graded" rows
+                if not grade_text or grade_text.lower() in ("", "-", "not graded", "—"):
+                    continue
+
+                try:
+                    credits = int(cred_text)
+                except ValueError:
+                    try:
+                        credits = int(float(cred_text))
+                    except ValueError:
+                        credits = 0
+
+                courses.append({
+                    "code": code_text,
+                    "name": name_text,
+                    "status": status_text,
+                    "grade": grade_text.strip(),
+                    "credits": credits,
+                    "semester": sem_text,
+                })
+
+        logger.info("STARS transcript: %d graded courses parsed", len(courses))
+        return courses
+
     def get_letter_grades(self, user_id: int) -> list[dict] | None:
         soup = self._ajax_post(user_id, "stats/letter-grade.php")
         if not soup:
