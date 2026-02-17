@@ -217,6 +217,7 @@ class TaskRouter:
     summary: str = "gemini-2.5-flash"  # Weekly summaries
     questions: str = "gemini-2.5-flash"  # Practice questions
     overview: str = "gemini-2.5-flash"  # Course overview
+    complexity: str = "gpt-4.1-mini"  # Escalation target for complex multi-step queries
 
     @classmethod
     def from_env(cls) -> "TaskRouter":
@@ -230,6 +231,7 @@ class TaskRouter:
             summary=os.getenv("MODEL_SUMMARY", "gemini-2.5-flash"),
             questions=os.getenv("MODEL_QUESTIONS", "gemini-2.5-flash"),
             overview=os.getenv("MODEL_OVERVIEW", "gemini-2.5-flash"),
+            complexity=os.getenv("MODEL_COMPLEXITY", "gpt-4.1-mini"),
         )
 
     def estimate_monthly_cost(self, turns_per_day: int = 20) -> dict:

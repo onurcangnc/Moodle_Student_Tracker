@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime, timedelta
 from typing import Any
@@ -491,6 +492,97 @@ def _get_available_tools(user_id: int) -> list[dict[str, Any]]:
 # ─── LLM Call with Tools ─────────────────────────────────────────────────────
 
 
+# ─── Security: Tool Output Sanitization ──────────────────────────────────────
+
+_INJECTION_RE = re.compile(
+    r"(ignore\s+(all\s+)?(previous|above|prior)\s+instructions?|"
+    r"new\s+(role|task|system|instruction)|"
+    r"you\s+are\s+now|disregard\s+(all|previous)|"
+    r"forget\s+(everything|all|previous)|"
+    r"act\s+as\s+(?!a\s+student|an?\s+assistant)|"
+    r"pretend\s+(you\s+are|to\s+be))",
+    re.IGNORECASE,
+)
+_HTML_TAG_RE = re.compile(r"<[^>]{1,100}>")
+
+
+def _sanitize_tool_output(tool_name: str, output: str) -> str:
+    """Strip prompt injection patterns and HTML from tool results before feeding to LLM."""
+    sanitized = _INJECTION_RE.sub("[FILTERED]", output)
+    if tool_name in ("get_emails", "get_email_detail"):
+        sanitized = _HTML_TAG_RE.sub("", sanitized)
+    return sanitized
+
+
+# ─── Complexity Scoring ───────────────────────────────────────────────────────
+
+_MULTI_STEP_KW = frozenset(
+    ["hem", "hem de", "ayrıca", "bunun yanı sıra", "önce", "sonra", "buna ek",
+     "and also", "additionally", "first", "then", "compare", "karşılaştır",
+     "farkı nedir", "farkları", "hem...hem"]
+)
+_TECHNICAL_KW = frozenset(
+    ["türev", "integral", "kompleks", "algoritma", "kanıtla", "ispat",
+     "proof", "derive", "algorithm", "complexity", "o(n)", "theorem", "teorem",
+     "matematiksel", "formül", "denklem"]
+)
+
+
+def _score_complexity(query: str) -> float:
+    """Return 0.0–1.0 heuristic complexity score for a query (no LLM required)."""
+    q = query.lower()
+    score = 0.0
+    score += min(len(query) / 600, 0.3)
+    if any(kw in q for kw in _MULTI_STEP_KW):
+        score += 0.25
+    if any(kw in q for kw in _TECHNICAL_KW):
+        score += 0.25
+    if q.count("?") >= 2 or ("neden" in q and "nasıl" in q):
+        score += 0.15
+    return min(score, 1.0)
+
+
+# ─── Planner Step ─────────────────────────────────────────────────────────────
+
+_PLANNER_SYSTEM = (
+    "You are a planning assistant for an academic Telegram bot. "
+    "Given a student's question and the available tool names, output a short execution plan "
+    "as JSON: {\"plan\": [\"step 1\", \"step 2\", ...]} (max 4 steps, be specific about tool names). "
+    "Return ONLY the JSON object, no explanation."
+)
+
+
+async def _plan_agent(user_text: str, history: list[dict], tool_names: list[str]) -> str:
+    """
+    Generate a short execution plan before the tool loop.
+    Uses the cheapest model (extraction → gpt-4.1-nano). Returns empty string on any failure.
+    """
+    llm = STATE.llm
+    if llm is None:
+        return ""
+    context = ""
+    if history:
+        last = history[-1].get("content", "")[:200]
+        context = f"Recent context: {last}\n\n"
+    user_prompt = f"{context}Available tools: {', '.join(tool_names)}\n\nStudent question: {user_text}"
+    try:
+        raw = await asyncio.to_thread(
+            llm.engine.complete,
+            "extraction",
+            _PLANNER_SYSTEM,
+            [{"role": "user", "content": user_prompt}],
+            300,
+        )
+        data = json.loads(raw)
+        steps = data.get("plan", [])
+        if isinstance(steps, list) and steps:
+            plan_lines = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps[:4]))
+            return f"Execution plan:\n{plan_lines}"
+    except Exception as exc:
+        logger.debug("Planner step skipped: %s", exc)
+    return ""
+
+
 async def _call_llm_with_tools(
     messages: list[dict[str, Any]],
     system_prompt: str,
@@ -501,7 +593,16 @@ async def _call_llm_with_tools(
     if llm is None:
         return None
 
-    model_key = llm.engine.router.chat
+    # Adaptive model escalation: complex queries get a more capable model
+    last_user_content = next(
+        (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""
+    )
+    complexity = _score_complexity(last_user_content)
+    if complexity > 0.65:
+        model_key = getattr(llm.engine.router, "complexity", llm.engine.router.chat)
+        logger.debug("Complexity %.2f → escalating to %s", complexity, model_key)
+    else:
+        model_key = llm.engine.router.chat
     adapter = llm.engine.get_adapter(model_key)
 
     full_messages = [{"role": "system", "content": system_prompt}] + messages
@@ -1241,6 +1342,8 @@ async def _execute_tool_call(tool_call: Any, user_id: int) -> dict[str, str]:
             logger.error("Tool %s failed: %s", fn_name, exc, exc_info=True)
             result = "Bu bilgiye şu anda ulaşılamıyor."
 
+    result = _sanitize_tool_output(fn_name, result)
+
     logger.info(
         "Tool executed: %s (result_len=%d)",
         fn_name,
@@ -1280,6 +1383,13 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
     for turn in history:
         messages.append({"role": turn["role"], "content": turn["content"]})
     messages.append({"role": "user", "content": user_text})
+
+    # Planner step: generate a short execution plan and inject into system prompt
+    tool_names = [t["function"]["name"] for t in available_tools]
+    plan_hint = await _plan_agent(user_text, history, tool_names)
+    if plan_hint:
+        system_prompt = system_prompt + f"\n\n{plan_hint}"
+        logger.debug("Planner hint injected (%d chars)", len(plan_hint))
 
     for iteration in range(MAX_TOOL_ITERATIONS):
         try:
