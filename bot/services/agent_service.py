@@ -23,11 +23,13 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from bot.services import user_service
 from bot.state import STATE
+from core import cache_db
 
 logger = logging.getLogger(__name__)
 
@@ -454,9 +456,10 @@ Konu bazlı çalışma (dosya adı belirtilmemişse):
 - Ödev sorusunda mail de kontrol et (çapraz sorgu)
 
 ⚠️ "SON MAİL" KURALI — SADECE BU YÖNTEMI KULLAN:
-Kullanıcı "son maili göster", "en son mail", "son maili aç" dediğinde:
+Kullanıcı şunlardan birini dediğinde: "son maili göster", "en son mail", "son maili aç",
+"en son gelen mail", "en son gelen maili aç/göster/oku", "en yeni mail", "gelen son mail", "son maili detaylı":
   ADIM 1: get_emails(count=1) çağır → sadece TEK mail döner (en yeni)
-  ADIM 2: O tek mailin subject/id ile get_email_detail çağır
+  ADIM 2: O tek mailin subject ile get_email_detail çağır
   ASLA önceki listeden tahmin yapma. Kendi hafızandan mail seçme. count=1 zorunlu.
 
 Mail sonuçlarını AŞAĞIDAKİ FORMATTA göster (her mail için):
@@ -1048,11 +1051,18 @@ async def _tool_get_schedule(args: dict, user_id: int) -> str:
     if stars is None or not stars.is_authenticated(user_id):
         return "STARS girişi yapılmamış. Ders programını görmek için önce /start ile STARS'a giriş yap."
 
-    try:
-        schedule = await asyncio.to_thread(stars.get_schedule, user_id)
-    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-        logger.error("Schedule fetch failed: %s", exc, exc_info=True)
-        return f"Ders programı alınamadı: {exc}"
+    schedule = cache_db.get_json("schedule", user_id)
+    if schedule is None:
+        try:
+            schedule = await asyncio.to_thread(stars.get_schedule, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.error("Schedule fetch failed: %s", exc, exc_info=True)
+            return f"Ders programı alınamadı: {exc}"
+        if schedule:
+            cache_db.set_json("schedule", user_id, schedule)
+            logger.debug("Schedule cached for user %s", user_id)
+    else:
+        logger.debug("Schedule cache hit for user %s", user_id)
 
     if not schedule:
         return "Ders programı bilgisi bulunamadı."
@@ -1089,11 +1099,18 @@ async def _tool_get_grades(args: dict, user_id: int) -> str:
     if stars is None or not stars.is_authenticated(user_id):
         return "STARS girişi yapılmamış. Not bilgileri için önce /start ile STARS'a giriş yap."
 
-    try:
-        grades = await asyncio.to_thread(stars.get_grades, user_id)
-    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-        logger.error("Grades fetch failed: %s", exc, exc_info=True)
-        return f"Not bilgileri alınamadı: {exc}"
+    grades = cache_db.get_json("grades", user_id)
+    if grades is None:
+        try:
+            grades = await asyncio.to_thread(stars.get_grades, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.error("Grades fetch failed: %s", exc, exc_info=True)
+            return f"Not bilgileri alınamadı: {exc}"
+        if grades:
+            cache_db.set_json("grades", user_id, grades)
+            logger.debug("Grades cached for user %s", user_id)
+    else:
+        logger.debug("Grades cache hit for user %s", user_id)
 
     if not grades:
         return "Not bilgisi bulunamadı."
@@ -1129,11 +1146,18 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
     if stars is None or not stars.is_authenticated(user_id):
         return "STARS girişi yapılmamış. Devamsızlık bilgisi için önce /start ile STARS'a giriş yap."
 
-    try:
-        attendance = await asyncio.to_thread(stars.get_attendance, user_id)
-    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-        logger.error("Attendance fetch failed: %s", exc, exc_info=True)
-        return f"Devamsızlık bilgisi alınamadı: {exc}"
+    attendance = cache_db.get_json("attendance", user_id)
+    if attendance is None:
+        try:
+            attendance = await asyncio.to_thread(stars.get_attendance, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.error("Attendance fetch failed: %s", exc, exc_info=True)
+            return f"Devamsızlık bilgisi alınamadı: {exc}"
+        if attendance:
+            cache_db.set_json("attendance", user_id, attendance)
+            logger.debug("Attendance cached for user %s", user_id)
+    else:
+        logger.debug("Attendance cache hit for user %s", user_id)
 
     if not attendance:
         return "Devamsızlık bilgisi bulunamadı."
@@ -1231,17 +1255,43 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
     sender_filter = args.get("sender_filter", "")
     subject_filter = args.get("subject_filter", "")
 
-    # Fetch more when filtering so we have enough candidates
-    fetch_count = max(count, 20) if (sender_filter or subject_filter) else count
+    # Fetch more when filtering so we have enough candidates after filtering
+    fetch_count = max(count, 20) if (sender_filter or subject_filter) else max(count, 20)
 
-    try:
-        if scope == "unread":
+    if scope == "unread":
+        # Unread must always be live — no cache
+        try:
             mails = await asyncio.to_thread(webmail.check_all_unread)
+        except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
+            logger.error("Email fetch failed: %s", exc, exc_info=True)
+            return f"E-postalar alınamadı: {exc}"
+    else:
+        # Try cache first
+        mails = cache_db.get_emails(fetch_count)
+        if mails is not None:
+            logger.debug("Email cache hit (%d mails)", len(mails))
         else:
-            mails = await asyncio.to_thread(webmail.get_recent_airs_dais, fetch_count)
-    except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
-        logger.error("Email fetch failed: %s", exc, exc_info=True)
-        return f"E-postalar alınamadı: {exc}"
+            logger.debug("Email cache miss — fetching live from IMAP")
+            try:
+                mails = await asyncio.to_thread(webmail.get_recent_airs_dais, fetch_count)
+            except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
+                logger.error("Email fetch failed: %s", exc, exc_info=True)
+                return f"E-postalar alınamadı: {exc}"
+            # Store to cache asynchronously (don't block response)
+            asyncio.create_task(asyncio.to_thread(cache_db.store_emails, mails))
+
+    # Drop mails older than 7 days — irrelevant for recent academic queries
+    _cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    def _is_recent(mail: dict) -> bool:
+        try:
+            dt = parsedate_to_datetime(mail.get("date", ""))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt >= _cutoff
+        except Exception:
+            return True  # unparseable → keep
+
+    mails = [m for m in mails if _is_recent(m)]
 
     if sender_filter:
         # Split into individual words → "Erkan Uçar", "Erkan", "UÇAR" all work.
@@ -1257,7 +1307,27 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
 
     if subject_filter:
         sf = subject_filter.lower()
-        mails = [m for m in mails if sf in m.get("subject", "").lower()]
+        # Expand Turkish keywords to English equivalents for cross-language matching
+        _TR_EN = {
+            "iptal": ["iptal", "cancel", "cancelled"],
+            "erteleme": ["erteleme", "postpone", "postponed"],
+            "ertelendi": ["ertelendi", "postpone", "postponed"],
+            "duyuru": ["duyuru", "announcement", "announce"],
+            "hatırlatma": ["hatırlatma", "reminder", "remind"],
+            "acil": ["acil", "urgent"],
+            "ödev": ["ödev", "assignment", "homework", "hw"],
+            "sınav": ["sınav", "exam", "quiz", "test"],
+            "vize": ["vize", "midterm"],
+            "final": ["final"],
+        }
+        variants = _TR_EN.get(sf, [sf])
+        mails = [
+            m for m in mails
+            if any(
+                v in m.get("subject", "").lower() or v in m.get("body_preview", "").lower()
+                for v in variants
+            )
+        ]
 
     if scope != "unread":
         mails = mails[:count]

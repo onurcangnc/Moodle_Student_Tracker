@@ -18,6 +18,7 @@ from telegram.ext import Application, ContextTypes
 
 from bot.config import CONFIG
 from bot.state import STATE
+from core import cache_db
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,14 @@ async def _check_new_emails(context: ContextTypes.DEFAULT_TYPE) -> None:
     except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
         logger.error("Notification: email check failed: %s", exc)
         return
+
+    # Refresh email cache on every check (regardless of new mails)
+    try:
+        recent = webmail.get_recent_airs_dais(20)
+        stored = cache_db.store_emails(recent)
+        logger.debug("Email cache refreshed: %d mails stored", stored)
+    except Exception as exc:
+        logger.warning("Email cache refresh failed: %s", exc)
 
     if not new_mails:
         return

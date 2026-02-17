@@ -241,6 +241,7 @@ class WebmailClient:
                     mail_data = self._fetch_mail(imap, uid, body=True)
                     if mail_data:
                         mail_data["source"] = all_uid_label[uid]
+                        mail_data["uid"] = uid.decode("utf-8", errors="replace")
                         mails.append(mail_data)
 
         except IMAP_OPERATION_EXCEPTIONS as exc:
