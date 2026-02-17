@@ -399,26 +399,6 @@ python -m pytest tests/unit/ -x -v
 python -m pytest -k "critic" -v
 ```
 
-### Test Map
-
-| File | Classes | Tests | Focus |
-|------|---------|-------|-------|
-| `test_agent_service.py` | 8 | 76 | Agentic loop, safety, email tools |
-| `test_new_tools.py` | 8 | 60 | 4 new tools: exam schedule, assignment detail, upcoming events, GPA calculator |
-| `test_main.py` | — | 28 | Bot initialization, command routing |
-| `test_conversation_memory.py` | — | 10 | TTL, per-user history |
-| `test_user_service.py` | — | 10 | Course selection, fuzzy matching |
-| `test_config.py` | — | 8 | Config loading, env overrides |
-| `test_vector_store.py` | — | 6 | Hybrid search, RRF fusion |
-| `test_auth.py` | — | 4 | Admin gate, authorization |
-| `test_validators.py` | — | 4 | Input validation |
-| `test_document_service.py` | — | 4 | Document upload & indexing |
-| `test_formatters.py` | — | 4 | Markdown formatting |
-| `test_exceptions.py` | — | 4 | Exception hierarchy |
-| `test_commands.py` | — | 2 | Command handler wiring |
-| `test_state.py` | — | 2 | Singleton state container |
-| `test_logging_config.py` | — | 2 | Logging bootstrap |
-
 ### Safety, Ethics & AI Red-Teaming Tests
 
 All safety tests live in `tests/unit/test_agent_service.py`. They verify the bot's defenses against adversarial inputs, prompt injection, and AI reliability failures.
