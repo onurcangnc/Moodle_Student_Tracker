@@ -290,6 +290,13 @@ async def _check_deadline_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Deadline reminder sent: %d urgent", len(urgent))
 
 
+async def _cleanup_old_cache(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Weekly job: delete emails older than 90 days from SQLite."""
+    deleted = cache_db.clean_old_emails()
+    if deleted:
+        logger.info("Weekly cache cleanup: removed %d old emails", deleted)
+
+
 async def _refresh_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Hourly re-login for webmail IMAP and STARS to keep sessions fresh."""
     from bot.main import refresh_external_sessions
@@ -373,8 +380,15 @@ def register_notification_jobs(app: Application) -> None:
         first=timedelta(minutes=5),
         name="summary_generation",
     )
+    jq.run_repeating(
+        _cleanup_old_cache,
+        interval=timedelta(weeks=1),
+        first=timedelta(hours=1),  # First run 1h after startup (non-urgent)
+        name="cache_cleanup",
+    )
 
     logger.info(
         "Notification jobs registered: assignments=10m, emails=5m, grades=30m, "
-        "attendance=60m, schedule=6h, deadlines=30m, session=60m, summaries=60m"
+        "attendance=60m, schedule=6h, deadlines=30m, session=60m, summaries=60m, "
+        "cache_cleanup=weekly"
     )

@@ -1,14 +1,20 @@
 """
-SQLite cache for agent tool results.
-=====================================
-Provides TTL-based caching for IMAP emails, STARS grades/attendance/schedule.
-Background sync jobs write here; tool handlers read from here first.
+SQLite persistent store for agent tool results.
+================================================
+Design principle: background jobs are the ONLY writers. Tool handlers are
+read-only. Cache miss happens ONLY when the table is completely empty
+(fresh install, before the first background job run).
 
-TTLs:
-  emails     → 5 min  (matches email_check notification job)
-  grades     → 2 h
-  attendance → 2 h
-  schedule   → 24 h
+Background job refresh intervals (for reference):
+  emails      → 5 min   (email_check)
+  assignments → 10 min  (assignment_check)
+  grades      → 30 min  (grades_sync)
+  attendance  → 60 min  (attendance_sync)
+  schedule    → 6 h     (schedule_sync)
+
+Cleanup: emails older than CLEANUP_DAYS are removed by a weekly job.
+data_cache rows are single key-value entries that get overwritten on each
+write — no accumulation, no cleanup needed there.
 """
 
 from __future__ import annotations
@@ -23,14 +29,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _DB_PATH = Path("data/cache.db")
-
-_TTL: dict[str, int] = {
-    "emails":      5 * 60,       # refreshed every 5 min by email_check job
-    "assignments": 15 * 60,      # refreshed every 10 min by assignment_check job
-    "grades":      2 * 3600,     # refreshed every 30 min by grades_sync job
-    "attendance":  2 * 3600,     # refreshed every 60 min by attendance_sync job
-    "schedule":    24 * 3600,    # refreshed every 6 h by schedule_sync job
-}
+CLEANUP_DAYS = 90  # delete emails older than this
 
 _initialized = False
 
@@ -81,14 +80,13 @@ def _ensure_init() -> None:
 # ─── Email Cache ──────────────────────────────────────────────────────────────
 
 def store_emails(mails: list[dict]) -> int:
-    """Upsert emails into cache. Returns number of rows stored."""
+    """Upsert emails into persistent store. Returns number of rows written."""
     if not mails:
         return 0
     _ensure_init()
     now = time.time()
     rows = []
-    for i, m in enumerate(mails):
-        # Prefer explicit uid; fall back to stable hash of (subject, from, date)
+    for m in mails:
         uid = m.get("uid") or f"{m.get('subject','')}:{m.get('from','')}:{m.get('date','')}"
         rows.append((
             str(uid),
@@ -116,19 +114,17 @@ def store_emails(mails: list[dict]) -> int:
 
 
 def get_emails(limit: int = 20) -> list[dict] | None:
-    """Return cached emails if fresh (within TTL), else None (cache miss).
+    """Return emails from persistent store ordered by recency.
 
-    Returns emails ordered by date descending (newest first).
+    Returns None ONLY if the table is empty (fresh install).
+    Freshness is guaranteed by the background email_check job — no TTL check here.
     """
     _ensure_init()
-    ttl = _TTL["emails"]
-    cutoff = time.time() - ttl
     try:
         with _conn() as conn:
-            # If no emails at all, or last insert is stale → cache miss
-            row = conn.execute("SELECT MAX(inserted_at) FROM emails").fetchone()
-            if not row or row[0] is None or row[0] < cutoff:
-                return None
+            count = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+            if count == 0:
+                return None  # Empty DB — background job hasn't run yet
 
             rows = conn.execute(
                 "SELECT uid, subject, from_addr, date, body_preview, body_full, source "
@@ -153,21 +149,38 @@ def get_emails(limit: int = 20) -> list[dict] | None:
         return None
 
 
-# ─── Generic JSON Cache (grades, attendance, schedule) ───────────────────────
+def clean_old_emails(days: int = CLEANUP_DAYS) -> int:
+    """Delete emails older than `days` days. Returns number of rows deleted."""
+    _ensure_init()
+    cutoff = time.time() - days * 86400
+    try:
+        with _conn() as conn:
+            cur = conn.execute("DELETE FROM emails WHERE inserted_at < ?", (cutoff,))
+            deleted = cur.rowcount
+        if deleted:
+            logger.info("Email cleanup: deleted %d emails older than %d days", deleted, days)
+        return deleted
+    except sqlite3.Error as exc:
+        logger.error("Email cleanup failed: %s", exc)
+        return 0
+
+
+# ─── Generic JSON Store (grades, attendance, schedule, assignments) ───────────
 
 def get_json(cache_key: str, user_id: int) -> Any | None:
-    """Return cached data if within TTL, else None."""
+    """Return stored data for this key/user.
+
+    Returns None ONLY if the key has never been written (fresh install).
+    Freshness is guaranteed by background sync jobs — no TTL check here.
+    """
     _ensure_init()
-    ttl = _TTL.get(cache_key, 300)
-    cutoff = time.time() - ttl
     try:
         with _conn() as conn:
             row = conn.execute(
-                "SELECT json_data, updated_at FROM data_cache "
-                "WHERE cache_key=? AND user_id=?",
+                "SELECT json_data FROM data_cache WHERE cache_key=? AND user_id=?",
                 (cache_key, user_id),
             ).fetchone()
-        if row is None or row[1] < cutoff:
+        if row is None:
             return None
         return json.loads(row[0])
     except (sqlite3.Error, json.JSONDecodeError) as exc:
@@ -176,7 +189,7 @@ def get_json(cache_key: str, user_id: int) -> Any | None:
 
 
 def set_json(cache_key: str, user_id: int, data: Any) -> None:
-    """Store data in cache. Overwrites existing entry."""
+    """Overwrite stored data for this key/user."""
     _ensure_init()
     try:
         with _conn() as conn:
