@@ -195,15 +195,21 @@ class WebmailClient:
         return mails
 
     def get_recent_airs_dais(self, limit: int = 3) -> list[dict]:
-        """Fetch most recent AIRS/DAIS mails (read or unread)."""
+        """Fetch most recent AIRS/DAIS mails, properly interleaved by recency.
+
+        Previous implementation filled the limit with AIRS first, causing DAIS
+        mails to be skipped entirely when there were enough AIRS mails. Now we
+        collect all matching UIDs from every search, deduplicate, sort by UID
+        descending (IMAP UIDs are monotonically increasing → highest = newest),
+        then fetch the top N regardless of AIRS/DAIS label.
+        """
         if not self._authenticated:
             return []
 
-        mails = []
-        seen_uids: set[bytes] = set()
-
         try:
             with self._connect() as imap:
+                # Phase 1: collect all matching UIDs without fetching bodies
+                all_uid_label: dict[bytes, str] = {}  # uid → label
                 for label, searches in [
                     ("AIRS", ['FROM "airs"', 'SUBJECT "AIRS"']),
                     ("DAIS", ['FROM "dais"', 'SUBJECT "DAIS"']),
@@ -213,18 +219,10 @@ class WebmailClient:
                             status, data = imap.search(None, f"({criteria})")
                             if status != "OK" or not data[0]:
                                 continue
-                            # Take last N UIDs (most recent)
-                            uids = data[0].split()
-                            for uid in reversed(uids):
-                                if uid in seen_uids:
-                                    continue
-                                if len(mails) >= limit:
-                                    break
-                                mail_data = self._fetch_mail(imap, uid, body=True)
-                                if mail_data:
-                                    mail_data["source"] = label
-                                    mails.append(mail_data)
-                                    seen_uids.add(uid)
+                            for uid in data[0].split():
+                                # First label wins for a given UID
+                                if uid not in all_uid_label:
+                                    all_uid_label[uid] = label
                         except IMAP_OPERATION_EXCEPTIONS as exc:
                             logger.error(
                                 "IMAP search failed for criteria=%s: %s",
@@ -233,8 +231,18 @@ class WebmailClient:
                                 exc_info=True,
                                 extra={"email": self._email, "mode": "get_recent", "label": label},
                             )
+
+                # Phase 2: sort by UID descending (most recent first), fetch top N
+                sorted_uids = sorted(all_uid_label, key=lambda u: int(u), reverse=True)
+                mails = []
+                for uid in sorted_uids:
                     if len(mails) >= limit:
                         break
+                    mail_data = self._fetch_mail(imap, uid, body=True)
+                    if mail_data:
+                        mail_data["source"] = all_uid_label[uid]
+                        mails.append(mail_data)
+
         except IMAP_OPERATION_EXCEPTIONS as exc:
             logger.error(
                 "IMAP connection failed during get_recent: %s",
@@ -242,8 +250,9 @@ class WebmailClient:
                 exc_info=True,
                 extra={"email": self._email, "mode": "get_recent", "limit": limit},
             )
+            return []
 
-        return mails[:limit]
+        return mails
 
     @staticmethod
     def _fetch_mail(imap, uid: bytes, body: bool = True) -> dict | None:
