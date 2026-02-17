@@ -537,16 +537,25 @@ def _get_available_tools(user_id: int) -> list[dict[str, Any]]:
 
 # ─── Turkish Character Normalization ────────────────────────────────────────
 # Used in sender/subject matching to handle ç≠c, ş≠s, ğ≠g, ü≠u, ö≠o, ı≠i
+#
+# ORDER MATTERS: translate() before lower(). Reason: Python's str.lower()
+# decomposes İ (U+0130) into 'i' + U+0307 (combining dot), a 2-char sequence.
+# Translating first avoids this Unicode edge case.
 
-_TR_NORMALIZE = str.maketrans(
-    "çşğüöıİÇŞĞÜÖ",
-    "csguo iCSGUO",
-)
+_TR_NORMALIZE = str.maketrans({
+    "ç": "c", "Ç": "c",
+    "ş": "s", "Ş": "s",
+    "ğ": "g", "Ğ": "g",
+    "ü": "u", "Ü": "u",
+    "ö": "o", "Ö": "o",
+    "ı": "i",   # dotless lowercase i (U+0131)
+    "İ": "i",   # uppercase dotted I (U+0130) — avoids i+U+0307 decomposition
+})
 
 
 def _normalize_tr(text: str) -> str:
-    """Lowercase + map Turkish chars to ASCII equivalents for fuzzy matching."""
-    return text.lower().translate(_TR_NORMALIZE)
+    """Map Turkish chars to ASCII equivalents, then lowercase for comparison."""
+    return text.translate(_TR_NORMALIZE).lower()
 
 
 # ─── Security: Tool Output Sanitization ──────────────────────────────────────
