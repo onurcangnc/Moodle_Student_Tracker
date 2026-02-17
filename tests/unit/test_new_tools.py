@@ -216,8 +216,9 @@ class TestToolCalculateGradeGpaMode:
 
     @pytest.mark.asyncio
     async def test_probation_detected(self):
+        # C (2.00×3) + C- (1.70×3) = 6.00+5.10 = 11.10/6 = 1.85 → Probation (1.80–1.99)
         courses = [
-            {"name": "X", "grade": "D+", "credits": 3},
+            {"name": "X", "grade": "C",  "credits": 3},
             {"name": "Y", "grade": "C-", "credits": 3},
         ]
         result = await _tool_calculate_grade({"mode": "gpa", "courses": courses}, user_id=1)
