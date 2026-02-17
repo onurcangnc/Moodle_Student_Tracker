@@ -18,9 +18,10 @@ Students pick a course, ask a question in natural language, and the bot retrieve
 6. [Bot Commands](#bot-commands)
 7. [Configuration](#configuration)
 8. [Testing](#testing)
-9. [Deployment](#deployment)
-10. [Tech Stack](#tech-stack)
-11. [License](#license)
+9. [AI Safety](#ai-safety)
+10. [Deployment](#deployment)
+11. [Tech Stack](#tech-stack)
+12. [License](#license)
 
 ---
 
@@ -542,6 +543,135 @@ Tests that filtered email queries fall back to live IMAP when the cache returns 
 | Count limiting | `limit=3` returns max 3 emails |
 | Date cutoff | Emails older than 7 days excluded |
 | Turkish translation | `"iptal"` matches `"CANCELLED"` in subject |
+
+---
+
+## AI Safety
+
+The bot implements multiple layers of defense against adversarial inputs, prompt injection, and AI reliability failures. All defenses are covered by an automated test suite organized by OWASP LLM Top 10 attack taxonomy.
+
+### Defense Architecture
+
+```
+User message
+    │
+    ▼
+[_sanitize_user_input()]          ← LLM01: blocks system-block overrides, direct injection
+    │
+    ▼
+[Planner step]                    ← Pre-loop: guides tool selection, reduces hallucination surface
+    │
+    ▼
+[Tool loop — max 5 iterations]
+    │   └─ [_sanitize_tool_output()] per result   ← LLM02: strips indirect injection + HTML
+    ▼
+[Critic step]                     ← LLM09: post-loop grounding check (hallucination detection)
+    │
+    ▼
+[Final response]
+```
+
+### Implemented Defenses
+
+| Layer | Defense | Covers |
+|-------|---------|--------|
+| User input | `_sanitize_user_input()` | System-block overrides (`---SYSTEM---`, `[SYSTEM]`, `<system>`, `<<SYS>>`), instruction override phrases, output extraction |
+| Tool output | `_sanitize_tool_output()` | Indirect injection in emails, PDFs, Moodle content (`ignore instructions`, `you are now`, `act as`, `forget everything`, `pretend`) |
+| Email content | HTML stripping | `<script>`, `<iframe>`, `<img onerror>`, `<style>`, `<svg>`, `<form>`, data URIs, meta refresh |
+| Matching | `_normalize_tr()` | Turkish character normalization (ç→c, İ→i etc.) — prevents Unicode bypass of sender/subject filters |
+| Grounding | Critic agent | Post-loop fact-checking: invented dates, filenames, and factual contradictions trigger a ⚠️ disclaimer |
+| Escalation | `_score_complexity()` | Score bounded 0–1; keyword stuffing and padding alone cannot trigger expensive model escalation |
+
+### Security Test Report
+
+Tests run on Python 3.11 · `pytest` 9.0.2
+
+```
+platform linux -- Python 3.11, pytest-9.0.2
+======================================================
+tests/unit/test_agent_service.py    76 tests
+tests/unit/test_safety_redteam.py  158 tests
+tests/unit/test_conversation_memory.py  10 tests
+tests/unit/test_user_service.py     10 tests
+tests/unit/test_config.py            8 tests
+tests/unit/test_exceptions.py        4 tests
+tests/unit/test_state.py             2 tests
+tests/unit/test_logging_config.py    2 tests
++ telegram/numpy-dependent suites   ~30 tests (remote only)
+------------------------------------------------------
+TOTAL                              ~300 tests
+```
+
+**Core safety suite result:**
+```
+221 passed · 24 xfailed (known gaps) · 1 xpassed · 1 warning
+```
+
+#### Result breakdown
+
+| Marker | Count | Meaning |
+|--------|-------|---------|
+| `passed` | 221 | Defense verified — attack blocked or safe input preserved |
+| `xfailed` | 24 | Known gap — defense not yet implemented (see below) |
+| `xpassed` | 1 | Bonus: `new instruction via indirect route` already caught |
+
+#### Safety test classes (`@safety` — must always pass)
+
+| Class | Tests | What it covers |
+|-------|-------|----------------|
+| `TestSystemOverrideBlocking` | 22 | 11 system-block payloads × 2 assertions per payload |
+| `TestIndirectInjectionInToolOutput` | 20 | 10 tool-result injection payloads (email, PDF, grades, schedule) |
+| `TestHTMLInjectionBlocking` | 16 | script, iframe, img onerror, data URI, style, SVG, form, meta |
+| `TestFalsePositivePrevention` | 38 | 15 safe user inputs + 9 safe tool outputs (over-blocking prevention) |
+| `TestWhitelistIntegrity` | 6 | "act as a student/assistant" passes; "act as a hacker" blocked |
+| `TestCriticGroundingScenarios` | 9 | Invented dates/filenames → False; correct data → True; fail-safes |
+| `TestComplexityScoreManipulation` | 5 | Score bounds, keyword stuffing, padding exploitation |
+| `TestTurkishNormalizationRegression` | 11 | Unicode regression incl. U+0130 (İ) decomposition edge case |
+
+#### Red-team gap discovery (`@redteam` — xfail expected)
+
+| Class | Payloads | Status | Gap |
+|-------|---------|--------|-----|
+| `TestJailbreakGapDiscovery` | DAN mode, developer mode, hypothetical framing, story frame, base64, roleplay, translation | **XFAIL** | Not in `_USER_INJECTION_RE` |
+| `TestSensitiveDisclosureAttempts` | API key extraction, system prompt, MOODLE_PASSWORD, token | **XFAIL** | No keyword regex for credential extraction phrases |
+| `TestUnicodeEdgeCaseGaps` | Zero-width space (U+200B), Cyrillic homoglyph (С vs S), RLO (U+202E) | **XFAIL** | No `unicodedata.normalize('NFKC')` pre-processing |
+
+#### Attack Payload Library
+
+All payloads are available as module-level constants in `tests/unit/test_safety_redteam.py`:
+
+```
+SYSTEM_BLOCK_PAYLOADS          11 verified-blocked system-override attacks
+JAILBREAK_PAYLOADS             16 advanced jailbreak patterns (DAN, roleplay, encoding)
+INDIRECT_INJECTION_IN_TOOL_OUTPUT  10 adversarial payloads via tool results
+SENSITIVE_DISCLOSURE_PAYLOADS   6 credential/prompt extraction attempts
+HTML_INJECTION_PAYLOADS         8 HTML injection patterns
+SAFE_USER_INPUTS               15 legitimate inputs (false-positive regression)
+TOOL_OUTPUT_SAFE_INPUTS         9 legitimate tool results (false-positive regression)
+```
+
+#### Running safety tests
+
+```bash
+# Verified defenses only (CI — must always pass)
+pytest -m safety tests/unit/test_safety_redteam.py -v
+
+# Gap-discovery only (some XFAIL expected)
+pytest -m redteam tests/unit/test_safety_redteam.py -v
+
+# Full safety + red-team suite
+pytest tests/unit/test_safety_redteam.py -v
+
+# Agent service safety tests
+pytest tests/unit/test_agent_service.py -v
+```
+
+#### Fixing a Gap (XFAIL → PASS)
+
+1. Add the pattern to `_USER_INJECTION_RE` in `bot/services/agent_service.py`
+2. Change the test marker from `@pytest.mark.redteam` + `xfail` to `@pytest.mark.safety`
+3. Add a companion false-positive test for a legitimate phrase that contains the same keyword
+4. Run `pytest -m safety` — all must pass before merging
 
 ---
 
