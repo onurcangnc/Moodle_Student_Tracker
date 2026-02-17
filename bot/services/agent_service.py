@@ -1244,8 +1244,16 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
         return f"E-postalar alınamadı: {exc}"
 
     if sender_filter:
-        sf = sender_filter.lower()
-        mails = [m for m in mails if sf in m.get("from", "").lower() or sf in m.get("source", "").lower()]
+        # Split into individual words → "Erkan Uçar", "Erkan", "UÇAR" all work.
+        # All parts must appear in the from/source field (AND, case-insensitive).
+        parts = [p for p in sender_filter.lower().split() if p]
+        mails = [
+            m for m in mails
+            if all(
+                p in m.get("from", "").lower() or p in m.get("source", "").lower()
+                for p in parts
+            )
+        ]
 
     if subject_filter:
         sf = subject_filter.lower()
