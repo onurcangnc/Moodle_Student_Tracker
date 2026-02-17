@@ -78,6 +78,10 @@ TOOLS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "Belirli bölüm/konu adı (opsiyonel — verilmezse tüm dosya özeti)",
                     },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Başlangıç parça indeksi, sayfalama için (varsayılan 0)",
+                    },
                 },
                 "required": ["source"],
             },
@@ -247,7 +251,7 @@ TOOLS: list[dict[str, Any]] = [
             "name": "get_emails",
             "description": (
                 "Bilkent DAIS & AIRS mailleri. KRİTİK KURALLAR: "
-                "(1) 'Son maillerimi göster' derse TOOL ÇAĞIRMA — önce 'Kaç mail görmek istersin?' sor. "
+                "(1) Mail sorulursa varsayılan count=5 ile çağır. Kullanıcı farklı sayı isterse o sayıyı kullan. "
                 "(2) Hoca adıyla sorulursa sender_filter kullan. "
                 "(3) Sonuç boşsa 'Yakın zamanda yok, istersen son maillerini gösterebilirim' de."
             ),
@@ -384,7 +388,7 @@ Tarih: {date_str} ({today_tr})
 
 ## KİŞİLİĞİN
 - Samimi, yardımsever, motive edici
-- Emoji kullan ama abartma
+- Mesaj başına MAX 1 emoji. Emoji'yi sadece başlıklarda kullan (📚📧📋), cümle sonuna koyma. 😊🚀 gibi yüz/eğlence emojileri KULLANMA.
 - Kısa ve öz ol — Telegram'da max 3-4 paragraf
 - Slash komut sorulursa "Benimle doğal dilde konuşabilirsin!" de
 
@@ -433,10 +437,11 @@ Konu bazlı çalışma (dosya adı belirtilmemişse):
 - Devamsızlık limitine yaklaşıyorsa → ⚠️ UYAR
 
 ## MAİL — DAIS & AIRS
-- "Son maillerimi göster" → TOOL ÇAĞIRMA, "Kaç mail görmek istersin?" sor
-- Sayı gelince → get_emails çağır
-- Hoca adıyla: sender_filter, sonuç yoksa "Yakın zamanda yok"
+- Mail sorulursa → get_emails(count=5) direkt çağır
+- Daha fazla istenirse → belirtilen sayıyla çağır
+- Hoca adıyla: sender_filter kullan, sonuç yoksa "Yakın zamanda yok" de
 - Mail detayı: get_email_detail
+- Ödev sorusunda mail de kontrol et (çapraz sorgu)
 
 Mail sonuçlarını AŞAĞIDAKİ FORMATTA göster (her mail için):
 📧 *Konu başlığı*
@@ -445,6 +450,23 @@ Mail sonuçlarını AŞAĞIDAKİ FORMATTA göster (her mail için):
   💬 Kısa özet (1-2 cümle)
 
 Mailler arasında boş satır bırak. Özetleme YAPMA, her maili ayrı ayrı göster.
+
+## AKILLI ÇAPRAZ SORGU
+- "Ödev var mı?" sorulursa → get_assignments + get_emails paralel çağır
+- Moodle'da resmi ödev yoksa maillerde ödev duyurusu olabilir — MUTLAKA kontrol et
+- Bilgi farklı kaynaklardan geliyorsa hepsini birleştirip sun
+- Ödev bilgisi mailde varsa "Moodle'da resmi ödev yok ama mailinizde şu ödev duyurusu var" de
+
+## HATA DÜZELTME PROTOKOLÜ
+Kullanıcı bir tarih, isim veya bilgiyi düzelttiğinde:
+1. İlgili tool'u tekrar çağırarak kaynağa dön
+2. Doğru bilgiyi KAYNAKTAN al
+3. "Kontrol ettim, haklısın" de ve doğru bilgiyi kaynak referansıyla sun
+Kullanıcının düzeltmesini doğrulamadan KABUL ETME — her zaman kaynaktan teyit et.
+
+## TARİH KURALI
+- Tarih bilgisini SADECE tool sonuçlarından al, asla kendin hesaplama/tahmin yapma
+- Tool sonucunda tarih varsa BİREBİR aktar, format değiştirme
 
 ## FORMAT KURALLARI
 1. Telegram Markdown: *bold*, _italic_, `code`
@@ -578,6 +600,29 @@ async def _tool_get_source_map(args: dict, user_id: int) -> str:
     return result
 
 
+async def _fuzzy_find_source(source: str, course_name: str | None) -> str | None:
+    """Fuzzy filename match: case-insensitive substring search across course files."""
+    store = STATE.vector_store
+    if store is None or not course_name:
+        return None
+    try:
+        files = await asyncio.to_thread(store.get_files_for_course, course_name)
+    except (AttributeError, RuntimeError, ValueError):
+        return None
+    if not files:
+        return None
+    src_lower = source.lower()
+    matches = [
+        f.get("filename", "")
+        for f in files
+        if src_lower in f.get("filename", "").lower()
+    ]
+    if not matches:
+        return None
+    # Prefer shortest filename (most specific match)
+    return min(matches, key=len)
+
+
 async def _tool_read_source(args: dict, user_id: int) -> str:
     """KATMAN 2 + KATMAN 3 birleşik okuma — en kritik tool."""
     source = args.get("source", "")
@@ -594,7 +639,14 @@ async def _tool_read_source(args: dict, user_id: int) -> str:
     # KATMAN 2: Load pre-generated summary
     from bot.services.summary_service import load_source_summary
 
+    # Try fuzzy filename match if exact summary/chunks not found directly
     summary = load_source_summary(source, course_name or "")
+    if not summary:
+        fuzzy_match = await _fuzzy_find_source(source, course_name)
+        if fuzzy_match and fuzzy_match != source:
+            logger.info("Fuzzy filename match: '%s' → '%s'", source, fuzzy_match)
+            source = fuzzy_match
+            summary = load_source_summary(source, course_name or "")
 
     if summary and not section:
         # Return full summary — file introduction
@@ -635,6 +687,11 @@ async def _tool_read_source(args: dict, user_id: int) -> str:
         # Section-specific: search within the file
         chunks = await asyncio.to_thread(store.get_file_chunks, source, 0)
         if not chunks:
+            fuzzy_match = await _fuzzy_find_source(source, course_name)
+            if fuzzy_match:
+                source = fuzzy_match
+                chunks = await asyncio.to_thread(store.get_file_chunks, source, 0)
+        if not chunks:
             return f"'{source}' dosyası bulunamadı."
 
         # Filter by section keyword
@@ -660,19 +717,33 @@ async def _tool_read_source(args: dict, user_id: int) -> str:
     # No summary, no section: return all chunks (fallback)
     chunks = await asyncio.to_thread(store.get_file_chunks, source, 0)
     if not chunks:
+        fuzzy_match = await _fuzzy_find_source(source, course_name)
+        if fuzzy_match:
+            source = fuzzy_match
+            chunks = await asyncio.to_thread(store.get_file_chunks, source, 0)
+    if not chunks:
         return f"'{source}' dosyası bulunamadı. get_source_map ile doğru dosya adını kontrol et."
 
-    if len(chunks) > 80:
-        return f"Dosya çok büyük ({len(chunks)} parça). Lütfen bir bölüm belirt veya get_source_map ile bölümlere bak."
+    offset = args.get("offset", 0)
+    page_size = 30
+    chunks_page = chunks[offset:offset + page_size]
+    total = len(chunks)
 
-    parts = [f"📄 *{source}* — {len(chunks)} parça\n"]
-    for c in chunks[:40]:
+    parts = [f"📄 *{source}* — {total} parça\n"]
+    for c in chunks_page:
         text = c.get("text", "")
         idx = c.get("chunk_index", 0)
         if text.strip():
             parts.append(f"[Parça {idx + 1}]\n{text}")
 
-    return "\n\n---\n\n".join(parts)
+    result = "\n\n---\n\n".join(parts)
+    shown_end = min(offset + page_size, total)
+    result += f"\n\n[Toplam {total} parça. Gösterilen: {offset + 1}–{shown_end}."
+    if shown_end < total:
+        result += f" Devam için offset={shown_end} kullan.]"
+    else:
+        result += " Tüm parçalar gösterildi.]"
+    return result
 
 
 async def _tool_study_topic(args: dict, user_id: int) -> str:
@@ -967,7 +1038,13 @@ async def _tool_get_assignments(args: dict, user_id: int) -> str:
     lines = []
     for a in assignments:
         status = "✅ Teslim edildi" if a.submitted else "⏳ Teslim edilmedi"
-        due = a.due_date if hasattr(a, "due_date") else "Bilinmiyor"
+        raw_due = a.due_date if hasattr(a, "due_date") else None
+        if isinstance(raw_due, (int, float)) and raw_due > 1_000_000:
+            due = datetime.fromtimestamp(raw_due).strftime("%d/%m/%Y %H:%M")
+        elif raw_due:
+            due = str(raw_due)
+        else:
+            due = "Belirtilmemiş"
         remaining = a.time_remaining if hasattr(a, "time_remaining") else ""
         line = f"• {a.course_name} — {a.name}\n  Tarih: {due} | {status}"
         if remaining and not a.submitted:
@@ -1036,7 +1113,7 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
         return "Mail konusu belirtilmedi."
 
     try:
-        mails = await asyncio.to_thread(webmail.get_recent_airs_dais, 10)
+        mails = await asyncio.to_thread(webmail.get_recent_airs_dais, 20)
     except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
         logger.error("Email detail fetch failed: %s", exc, exc_info=True)
         return f"Mail detayı alınamadı: {exc}"
@@ -1047,6 +1124,12 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
         if sq in m.get("subject", "").lower():
             match = m
             break
+
+    if not match:
+        for m in mails:
+            if sq in m.get("body_preview", "").lower():
+                match = m
+                break
 
     if not match:
         return f"'{subject_query}' konusuyla eşleşen mail bulunamadı."
