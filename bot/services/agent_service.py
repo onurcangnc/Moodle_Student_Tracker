@@ -253,9 +253,10 @@ TOOLS: list[dict[str, Any]] = [
             "description": (
                 "Bilkent DAIS & AIRS mailleri. KRİTİK KURALLAR: "
                 "(1) Mail sorulursa varsayılan count=5 ile çağır. Kullanıcı farklı sayı isterse o sayıyı kullan. "
-                "(2) Hoca/gönderici adıyla sorulursa sender_filter kullan. "
-                "(3) Etkinlik/konu/duyuru adıyla sorulursa (örn: 'CTISTalk', 'final', 'iptal') subject_filter kullan — sender_filter DEĞİL. "
-                "(4) Sonuç boşsa count'u artırarak tekrar dene veya 'Yakın zamanda yok' de."
+                "(2) Gönderici/hoca adıyla filtrele → sender_filter. "
+                "(3) Konu/etkinlik/duyuru adıyla filtrele → subject_filter (örn: 'CTISTalk', 'iptal', 'final'). "
+                "(4) sender_filter ve subject_filter birlikte kullanılabilir — AND mantığıyla çalışır (ikisi de uygulanır). "
+                "(5) Sonuç boşsa count=20 ile tekrar dene, hâlâ yoksa 'Yakın zamanda yok' de."
             ),
             "parameters": {
                 "type": "object",
@@ -266,11 +267,11 @@ TOOLS: list[dict[str, Any]] = [
                     },
                     "sender_filter": {
                         "type": "string",
-                        "description": "Gönderici/hoca adı filtresi. SADECE gönderici adı bilindiğinde kullan.",
+                        "description": "Gönderici/hoca adı filtresi (kısmi eşleşme). Tek başına veya subject_filter ile birlikte kullanılabilir.",
                     },
                     "subject_filter": {
                         "type": "string",
-                        "description": "Konu/başlık filtresi. Etkinlik adı, duyuru konusu veya anahtar kelimeyle arama için kullan (örn: 'CTISTalk', 'iptal', 'erteleme').",
+                        "description": "Konu/başlık filtresi (kısmi eşleşme). Etkinlik adı, anahtar kelime. Tek başına veya sender_filter ile birlikte kullanılabilir.",
                     },
                     "scope": {
                         "type": "string",
@@ -445,8 +446,9 @@ Konu bazlı çalışma (dosya adı belirtilmemişse):
 ## MAİL — DAIS & AIRS
 - Mail sorulursa → get_emails(count=5) direkt çağır
 - Daha fazla istenirse → belirtilen sayıyla çağır
-- Hoca/gönderici adıyla → sender_filter kullan (örn: sender_filter="Serhat")
-- Etkinlik/konu/duyuru kelimesiyle → subject_filter kullan — sender_filter DEĞİL (örn: subject_filter="CTISTalk", subject_filter="iptal")
+- Hoca/gönderici adıyla → sender_filter (örn: sender_filter="Erkan Uçar")
+- Konu/etkinlik/duyuru kelimesiyle → subject_filter (örn: subject_filter="CTISTalk", subject_filter="iptal")
+- İkisi bir arada kullanılabilir: hem Erkan Uçar'dan hem "final" konulu → sender_filter="Erkan Uçar" + subject_filter="final"
 - Sonuç boşsa count=20 ile tekrar dene, hâlâ yoksa "Yakın zamanda yok" de
 - Mail detayı: get_email_detail
 - Ödev sorusunda mail de kontrol et (çapraz sorgu)
