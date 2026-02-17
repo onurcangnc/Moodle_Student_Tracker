@@ -304,7 +304,139 @@ TOOLS: list[dict[str, Any]] = [
             },
         },
     },
-    # ═══ E. Bot Management (3 tools) ═══
+    # ═══ E. Exams, Events & Grade Calculator (3 tools) ═══
+    {
+        "type": "function",
+        "function": {
+            "name": "get_exam_schedule",
+            "description": (
+                "STARS'tan sınav takvimini getirir (midterm ve final sınav tarihleri, saatleri, blokları). "
+                "'Midterm'im ne zaman', 'final sınavları', 'sınav takvimim' gibi isteklerde kullan. "
+                "get_schedule'dan farkı: haftalık ders programı değil, sınav tarihleri."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "course_filter": {
+                        "type": "string",
+                        "description": "Ders adı filtresi (opsiyonel, tüm sınavlar için boş bırak)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_assignment_detail",
+            "description": (
+                "Belirli bir ödevin tam içeriğini getirir: açıklama, gereksinimler, teslim tarihi, "
+                "mevcut not ve teslim durumu. 'Bu ödevi anlat', 'ödev gereksinimleri ne', "
+                "'şu ödevi göster' gibi isteklerde kullan."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "assignment_name": {
+                        "type": "string",
+                        "description": "Ödev adı (kısmi eşleşme yeterli, örn: 'Project 1', 'HW2')",
+                    },
+                },
+                "required": ["assignment_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_upcoming_events",
+            "description": (
+                "Moodle takviminden yaklaşan etkinlikleri getirir: quiz, ödev, forum, etkinlik. "
+                "'Quiz'lerim ne zaman', 'yaklaşan etkinlikler', 'takvimde ne var' gibi isteklerde kullan. "
+                "get_assignments'tan farkı: quiz, forum, tüm etkinlik tiplerini kapsar."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {
+                        "type": "integer",
+                        "description": "Kaç günlük aralık (varsayılan 14, max 30)",
+                    },
+                    "event_type": {
+                        "type": "string",
+                        "enum": ["all", "quiz", "assign", "forum"],
+                        "description": "Etkinlik tipi filtresi (varsayılan: all)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate_grade",
+            "description": (
+                "Bilkent Üniversitesi not hesaplayıcısı. İki mod: "
+                "(1) 'gpa' — harf notları + kredi ile GPA/CGPA ve akademik durum hesaplar. "
+                "(2) 'course' — ağırlıklı notlar + varsayımsal senaryo ile dönem sonu notu hesaplar. "
+                "'Notum ne olur', 'GPA hesapla', 'Finalde X alırsam ne olur', 'onur öğrencisi olabilir miyim' "
+                "gibi isteklerde kullan."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["gpa", "course"],
+                        "description": (
+                            "gpa: harf notu + kredi listesiyle GPA hesapla. "
+                            "course: ağırlıklı değerlendirmelerle ders notu hesapla."
+                        ),
+                    },
+                    "courses": {
+                        "type": "array",
+                        "description": "mode=gpa için kurs listesi",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "grade": {"type": "string", "description": "Harf notu (A+, A, A-, B+, ...)"},
+                                "credits": {"type": "number", "description": "Kredi sayısı"},
+                            },
+                            "required": ["name", "grade", "credits"],
+                        },
+                    },
+                    "assessments": {
+                        "type": "array",
+                        "description": "mode=course için değerlendirme listesi",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "grade": {"type": "number", "description": "Alınan puan (0-100 veya mevcut not)"},
+                                "weight": {"type": "number", "description": "Ağırlık yüzdesi (örn: 40 = %40)"},
+                                "max_grade": {"type": "number", "description": "Maksimum puan (varsayılan 100)"},
+                            },
+                            "required": ["name", "weight"],
+                        },
+                    },
+                    "what_if": {
+                        "type": "object",
+                        "description": "mode=course için varsayımsal senaryo",
+                        "properties": {
+                            "name": {"type": "string", "description": "Varsayımsal değerlendirme adı (örn: Final)"},
+                            "grade": {"type": "number", "description": "Varsayımsal not"},
+                            "weight": {"type": "number", "description": "Varsayımsal ağırlık"},
+                        },
+                    },
+                },
+                "required": ["mode"],
+            },
+        },
+    },
+    # ═══ F. Bot Management (3 tools) ═══
     {
         "type": "function",
         "function": {
@@ -1584,6 +1716,389 @@ async def _tool_get_stats(args: dict, user_id: int) -> str:
     )
 
 
+# ─── New Tool Handlers ───────────────────────────────────────────────────────
+
+async def _tool_get_exam_schedule(args: dict, user_id: int) -> str:
+    """Get exam schedule (midterm/final dates) from STARS."""
+    stars = STATE.stars_client
+    if stars is None or not stars.is_authenticated(user_id):
+        return "STARS girişi yapılmamış. Sınav takvimi için önce /start ile STARS'a giriş yap."
+
+    exams = cache_db.get_json("exams", user_id)
+    if exams is None:
+        try:
+            exams = await asyncio.to_thread(stars.get_exams, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.error("Exam schedule fetch failed: %s", exc, exc_info=True)
+            return f"Sınav takvimi alınamadı: {exc}"
+        if exams:
+            cache_db.set_json("exams", user_id, exams)
+            logger.debug("Exam schedule cached for user %s", user_id)
+    else:
+        logger.debug("Exam schedule cache hit for user %s", user_id)
+
+    if not exams:
+        return "Sınav takvimi bilgisi bulunamadı. STARS'ta henüz sınav tarihleri açıklanmamış olabilir."
+
+    course_filter = args.get("course_filter", "")
+    if course_filter:
+        cf_lower = course_filter.lower()
+        exams = [e for e in exams if cf_lower in e.get("course", "").lower()]
+        if not exams:
+            return f"'{course_filter}' ile eşleşen sınav bulunamadı."
+
+    lines = []
+    for exam in exams:
+        course = exam.get("course", "Bilinmeyen Ders")
+        exam_name = exam.get("exam_name", "")
+        date = exam.get("date", "Tarih belirtilmemiş")
+        start_time = exam.get("start_time", "")
+        time_block = exam.get("time_block", "")
+        time_remaining = exam.get("time_remaining", "")
+
+        header = f"📅 *{course}*"
+        if exam_name:
+            header += f" — {exam_name}"
+        lines.append(header)
+        lines.append(f"  Tarih: {date}")
+        if start_time:
+            lines.append(f"  Saat: {start_time}")
+        if time_block:
+            lines.append(f"  Blok: {time_block}")
+        if time_remaining:
+            lines.append(f"  Kalan: {time_remaining}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+async def _tool_get_assignment_detail(args: dict, user_id: int) -> str:
+    """Get full description, requirements, grade, and status of a specific assignment."""
+    moodle = STATE.moodle
+    if moodle is None:
+        return "Moodle bağlantısı hazır değil."
+
+    assignment_name = args.get("assignment_name", "").strip()
+    if not assignment_name:
+        return "Ödev adı belirtilmedi."
+
+    # Try cache first
+    cached = cache_db.get_json("assignments", user_id)
+    if cached:
+        name_lower = assignment_name.lower()
+        match = next(
+            (a for a in cached if name_lower in a.get("name", "").lower()),
+            None,
+        )
+        if match:
+            name = match.get("name", "")
+            course = match.get("course_name", "")
+            due = match.get("due_date")
+            submitted = match.get("submitted", False)
+            time_remaining = match.get("time_remaining", "")
+
+            if isinstance(due, (int, float)) and due > 1_000_000:
+                due_str = datetime.fromtimestamp(due).strftime("%d/%m/%Y %H:%M")
+            else:
+                due_str = str(due) if due else "Belirtilmemiş"
+
+            status = "✅ Teslim edildi" if submitted else "⏳ Teslim edilmedi"
+            lines = [
+                f"📋 *{name}*",
+                f"Ders: {course}",
+                f"Teslim tarihi: {due_str}",
+                f"Durum: {status}",
+            ]
+            if time_remaining and not submitted:
+                lines.append(f"Kalan süre: {time_remaining}")
+            # Cache only has summary — description needs live fetch
+            lines.append("\n_Tam açıklama için Moodle'dan getiriliyor..._")
+            cached_text = "\n".join(lines)
+        else:
+            cached_text = None
+    else:
+        cached_text = None
+
+    # Live fetch for full description
+    try:
+        raw_assignments = await asyncio.to_thread(moodle.get_assignments)
+    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+        logger.error("Assignment detail fetch failed: %s", exc, exc_info=True)
+        if cached_text:
+            return cached_text + f"\n(Açıklama alınamadı: {exc})"
+        return f"Ödev detayı alınamadı: {exc}"
+
+    name_lower = assignment_name.lower()
+    match = next(
+        (a for a in raw_assignments if name_lower in a.name.lower()),
+        None,
+    )
+    if not match:
+        return f"'{assignment_name}' adlı ödev bulunamadı. Listedeki ödev adlarını kontrol edin."
+
+    due_str = (
+        datetime.fromtimestamp(match.due_date).strftime("%d/%m/%Y %H:%M")
+        if match.due_date and match.due_date > 1_000_000
+        else "Belirtilmemiş"
+    )
+    status = "✅ Teslim edildi" if match.submitted else "⏳ Teslim edilmedi"
+    grade_str = f" | Not: {match.grade}" if match.graded else ""
+
+    lines = [
+        f"📋 *{match.name}*",
+        f"Ders: {match.course_name}",
+        f"Teslim tarihi: {due_str} | {status}{grade_str}",
+        f"Kalan süre: {match.time_remaining}",
+    ]
+    if match.description:
+        lines.append(f"\n*Açıklama:*\n{match.description}")
+    else:
+        lines.append("\n_Açıklama mevcut değil._")
+
+    return "\n".join(lines)
+
+
+async def _tool_get_upcoming_events(args: dict, user_id: int) -> str:
+    """Get upcoming Moodle calendar events (quizzes, assignments, forum deadlines)."""
+    moodle = STATE.moodle
+    if moodle is None:
+        return "Moodle bağlantısı hazır değil."
+
+    days = min(int(args.get("days", 14)), 30)
+    event_type_filter = args.get("event_type", "all")
+
+    try:
+        events = await asyncio.to_thread(moodle.get_upcoming_events, days)
+    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+        logger.error("Upcoming events fetch failed: %s", exc, exc_info=True)
+        return f"Etkinlikler alınamadı: {exc}"
+
+    if not events:
+        return f"Önümüzdeki {days} günde takvimde etkinlik bulunamadı."
+
+    # Apply type filter
+    _TYPE_ICONS = {"assign": "📝", "quiz": "❓", "forum": "💬", "choice": "🗳️"}
+    if event_type_filter != "all":
+        events = [e for e in events if e.get("type", "") == event_type_filter]
+        if not events:
+            labels = {"quiz": "Quiz", "assign": "Ödev", "forum": "Forum"}
+            return f"Önümüzdeki {days} günde {labels.get(event_type_filter, event_type_filter)} etkinliği bulunamadı."
+
+    lines = [f"📅 Önümüzdeki {days} günün etkinlikleri:\n"]
+    for e in events:
+        icon = _TYPE_ICONS.get(e.get("type", ""), "📌")
+        name = e.get("name", "")
+        course = e.get("course", "")
+        due_ts = e.get("due_date", 0)
+        action = e.get("action", "")
+        due_str = (
+            datetime.fromtimestamp(due_ts).strftime("%d/%m/%Y %H:%M")
+            if due_ts and due_ts > 1_000_000
+            else "Tarih belirtilmemiş"
+        )
+        course_str = f" [{course}]" if course else ""
+        action_str = f" — {action}" if action else ""
+        lines.append(f"{icon} {name}{course_str}")
+        lines.append(f"   {due_str}{action_str}")
+
+    return "\n".join(lines)
+
+
+# ─── Bilkent grading constants ────────────────────────────────────────────────
+
+_GRADE_POINTS: dict[str, float] = {
+    "A+": 4.00, "A": 4.00, "A-": 3.70,
+    "B+": 3.30, "B": 3.00, "B-": 2.70,
+    "C+": 2.30, "C": 2.00, "C-": 1.70,
+    "D+": 1.30, "D": 1.00,
+    "F": 0.00, "FX": 0.00, "FZ": 0.00,
+}
+# These grades have no grade point equivalent — excluded from GPA
+_NO_GPA_GRADES = {"S", "U", "I", "P", "T", "W"}
+
+
+def _bilkent_gpa(courses: list[dict]) -> tuple[float, float, list[str]]:
+    """
+    Compute GPA from a list of {name, grade, credits}.
+    Returns (gpa, total_credits, warnings).
+    """
+    total_points = 0.0
+    total_credits = 0.0
+    warnings: list[str] = []
+
+    for c in courses:
+        grade = str(c.get("grade", "")).strip().upper()
+        credits = float(c.get("credits", 0))
+        name = c.get("name", "Ders")
+
+        if grade in _NO_GPA_GRADES:
+            warnings.append(f"{name}: {grade} notu GPA hesabına dahil edilmedi.")
+            continue
+        if grade not in _GRADE_POINTS:
+            warnings.append(f"{name}: '{grade}' tanımsız not — atlandı.")
+            continue
+        if credits <= 0:
+            warnings.append(f"{name}: Geçersiz kredi ({credits}) — atlandı.")
+            continue
+
+        total_points += _GRADE_POINTS[grade] * credits
+        total_credits += credits
+
+    gpa = round(total_points / total_credits, 2) if total_credits > 0 else 0.0
+    return gpa, total_credits, warnings
+
+
+def _academic_standing(cgpa: float) -> str:
+    if cgpa >= 2.00:
+        return "✅ Satisfactory (CGPA ≥ 2.00)"
+    if cgpa >= 1.80:
+        return "⚠️ Academic Probation (CGPA 1.80–1.99) — kredi yükü sınırlı, F/FX/FZ dersleri tekrar zorunlu"
+    return "🚨 Unsatisfactory (CGPA < 1.80) — yeni ders alınamaz, F/FX/FZ dersleri tekrar zorunlu"
+
+
+def _honor_status(gpa: float, cgpa: float, course_count: int) -> str:
+    """Requires full course load (≥ lower limit of normal load − 1)."""
+    if cgpa < 2.00:
+        return "Onur listesi için CGPA ≥ 2.00 gerekli."
+    if gpa >= 3.50:
+        return "🏆 High Honor (GPA ≥ 3.50)"
+    if gpa >= 3.00:
+        return "🎖️ Honor (GPA 3.00–3.49)"
+    return f"Onur listesi için GPA ≥ 3.00 gerekli (mevcut: {gpa:.2f})."
+
+
+async def _tool_calculate_grade(args: dict, user_id: int) -> str:
+    """Bilkent University grade calculator — GPA or weighted course grade."""
+    mode = args.get("mode", "gpa")
+
+    if mode == "gpa":
+        courses = args.get("courses", [])
+        if not courses:
+            return (
+                "Hesaplamak için ders listesi gerekli.\n"
+                "Örnek: courses=[{name:'CTIS 256', grade:'A-', credits:3}, ...]"
+            )
+
+        gpa, total_credits, warns = _bilkent_gpa(courses)
+        standing = _academic_standing(gpa)
+        honor = _honor_status(gpa, gpa, len(courses))
+
+        lines = [f"*Bilkent GPA Hesabı*\n"]
+        for c in courses:
+            grade = str(c.get("grade", "")).upper()
+            pts = _GRADE_POINTS.get(grade, "—")
+            lines.append(f"  {c.get('name','')}: {grade} ({pts} × {c.get('credits',0)} kredi)")
+        lines.append(f"\n*GPA: {gpa:.2f}* (toplam {total_credits:.0f} kredi)")
+        lines.append(f"Akademik Durum: {standing}")
+        lines.append(f"Onur: {honor}")
+
+        # Satisfactory boundary warnings
+        if 0 < gpa < 2.00:
+            needed = round((2.00 * total_credits - sum(
+                _GRADE_POINTS.get(str(c.get("grade","")).upper(), 0) * float(c.get("credits", 0))
+                for c in courses
+            )) / max(total_credits, 1), 2)
+            lines.append(f"\n_İpucu: Satisfactory için GPA 2.00 gerekli._")
+
+        if warns:
+            lines.append("\n⚠️ Uyarılar:")
+            lines.extend(f"  • {w}" for w in warns)
+
+        # Passing grade guide
+        lines.append(
+            "\n*Not Tablosu (Bilkent):*\n"
+            "A+/A: 4.00 | A-: 3.70 | B+: 3.30 | B: 3.00 | B-: 2.70\n"
+            "C+: 2.30 | C: 2.00 | C-: 1.70 | D+: 1.30 | D: 1.00 | F/FX/FZ: 0.00\n"
+            "Geçer not: C ve üzeri (CGPA ≥ 2.00 ise C-, D+, D koşullu geçer)"
+        )
+        return "\n".join(lines)
+
+    elif mode == "course":
+        assessments = args.get("assessments", [])
+        what_if = args.get("what_if")
+
+        if not assessments and not what_if:
+            return (
+                "Değerlendirme listesi gerekli.\n"
+                "Örnek: assessments=[{name:'Midterm', grade:75, weight:40}, "
+                "{name:'Final', grade:80, weight:60}]"
+            )
+
+        lines = ["*Ders Notu Hesabı*\n"]
+        total_weight = 0.0
+        weighted_sum = 0.0
+        missing_weight = 0.0
+
+        all_items = list(assessments)
+        if what_if:
+            all_items.append(what_if)
+
+        for item in all_items:
+            name = item.get("name", "Değerlendirme")
+            weight = float(item.get("weight", 0))
+            max_g = float(item.get("max_grade", 100))
+            grade = item.get("grade")
+
+            total_weight += weight
+
+            if grade is None:
+                missing_weight += weight
+                lines.append(f"  {name}: — (Ağırlık: %{weight:.0f}, henüz girilmemiş)")
+                continue
+
+            grade_val = float(grade)
+            normalized = (grade_val / max_g) * 100 if max_g != 100 else grade_val
+            contribution = (normalized * weight) / 100
+            weighted_sum += contribution
+
+            tag = " ← varsayımsal" if item is what_if else ""
+            lines.append(
+                f"  {name}: {grade_val:.1f}/{max_g:.0f} "
+                f"(Ağırlık: %{weight:.0f} → +{contribution:.2f} puan){tag}"
+            )
+
+        lines.append(f"\nToplam ağırlık: %{total_weight:.0f}")
+        if missing_weight > 0:
+            lines.append(f"Mevcut not (kalanlar hariç): {weighted_sum:.2f}/{ (total_weight - missing_weight):.0f}")
+            # Best/worst case
+            best = weighted_sum + missing_weight
+            worst = weighted_sum
+            lines.append(f"En iyi senaryo (%100 alırsan): {best:.2f}")
+            lines.append(f"En kötü senaryo (%0 alırsan): {worst:.2f}")
+        else:
+            current = weighted_sum
+            lines.append(f"\n*Toplam not: {current:.2f}/100*")
+            # Map to letter grade (Bilkent approximate thresholds)
+            if current >= 90:
+                letter = "A / A+"
+            elif current >= 87:
+                letter = "A-"
+            elif current >= 83:
+                letter = "B+"
+            elif current >= 80:
+                letter = "B"
+            elif current >= 77:
+                letter = "B-"
+            elif current >= 73:
+                letter = "C+"
+            elif current >= 70:
+                letter = "C"
+            elif current >= 67:
+                letter = "C-"
+            elif current >= 63:
+                letter = "D+"
+            elif current >= 60:
+                letter = "D"
+            else:
+                letter = "F"
+            lines.append(f"Tahmini harf notu: *{letter}*")
+            lines.append("_(Harf not sınırları hocaya göre değişebilir)_")
+
+        return "\n".join(lines)
+
+    return f"Bilinmeyen mod: {mode}. 'gpa' veya 'course' kullanın."
+
+
 # ─── Tool Dispatcher ─────────────────────────────────────────────────────────
 
 TOOL_HANDLERS = {
@@ -1596,6 +2111,10 @@ TOOL_HANDLERS = {
     "get_grades": _tool_get_grades,
     "get_attendance": _tool_get_attendance,
     "get_assignments": _tool_get_assignments,
+    "get_exam_schedule": _tool_get_exam_schedule,
+    "get_assignment_detail": _tool_get_assignment_detail,
+    "get_upcoming_events": _tool_get_upcoming_events,
+    "calculate_grade": _tool_calculate_grade,
     "get_emails": _tool_get_emails,
     "get_email_detail": _tool_get_email_detail,
     "list_courses": _tool_list_courses,
