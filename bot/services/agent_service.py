@@ -378,35 +378,43 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "calculate_grade",
             "description": (
-                "Bilkent Üniversitesi not hesaplayıcısı. İki mod: "
-                "(1) 'gpa' — harf notları + kredi ile GPA/CGPA ve akademik durum hesaplar. "
-                "(2) 'course' — ağırlıklı notlar + varsayımsal senaryo ile dönem sonu notu hesaplar. "
-                "'Notum ne olur', 'GPA hesapla', 'Finalde X alırsam ne olur', 'onur öğrencisi olabilir miyim' "
-                "gibi isteklerde kullan."
+                "Bilkent Üniversitesi not hesaplayıcısı. Üç mod: "
+                "(1) 'gpa' — tek dönem GPA hesaplar (harf notu + kredi). "
+                "(2) 'cgpa' — tüm döneme ait kümülatif CGPA + AGPA hesaplar, tekrar edilen dersleri doğru işler, "
+                "her ders için geçer/başarısız durumunu gösterir, mezuniyet şeref derecesini (cum laude) hesaplar. "
+                "(3) 'course' — ağırlıklı notlar + what-if senaryosu ile dönem sonu notu hesaplar. "
+                "'CGPA hesapla', 'kümülatif notum ne', 'mezuniyet şerefim ne olur', 'summa cum laude olabilir miyim', "
+                "'dersleri geçtim mi', 'Finalde X alırsam ne olur' gibi isteklerde kullan."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "mode": {
                         "type": "string",
-                        "enum": ["gpa", "course"],
+                        "enum": ["gpa", "cgpa", "course"],
                         "description": (
-                            "gpa: harf notu + kredi listesiyle GPA hesapla. "
+                            "gpa: tek dönem GPA (harf notu + kredi). "
+                            "cgpa: kümülatif CGPA + AGPA, tekrar edilen dersler otomatik işlenir. "
                             "course: ağırlıklı değerlendirmelerle ders notu hesapla."
                         ),
                     },
                     "courses": {
                         "type": "array",
-                        "description": "mode=gpa için kurs listesi",
+                        "description": "mode=gpa veya mode=cgpa için kurs listesi. cgpa için tüm dönemlerdeki tüm dersleri ver.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "name": {"type": "string"},
                                 "grade": {"type": "string", "description": "Harf notu (A+, A, A-, B+, ...)"},
                                 "credits": {"type": "number", "description": "Kredi sayısı"},
+                                "semester": {"type": "string", "description": "Dönem (opsiyonel, örn: '2023-Güz'). Tekrar edilen derslerde en son dönemi belirlemek için kullanılır."},
                             },
                             "required": ["name", "grade", "credits"],
                         },
+                    },
+                    "graduating": {
+                        "type": "boolean",
+                        "description": "mode=cgpa: True ise mezuniyet şeref derecesi (cum laude) hesaplanır (varsayılan: False)",
                     },
                     "assessments": {
                         "type": "array",
@@ -1948,6 +1956,99 @@ def _bilkent_gpa(courses: list[dict]) -> tuple[float, float, list[str]]:
     return gpa, total_credits, warnings
 
 
+def _bilkent_cgpa(
+    courses: list[dict],
+) -> tuple[float, float, float, float, list[str], list[str]]:
+    """
+    Compute CGPA and AGPA from a full course history.
+
+    CGPA: most recent grade for repeated courses (standard rule).
+    AGPA: all grades included without replacement (used for ranking & cum laude).
+
+    courses: list of {name, grade, credits, semester (optional)}
+    semester field is used only to determine ordering; list order is the fallback.
+
+    Returns:
+        (cgpa, cgpa_credits, agpa, agpa_credits, repeated_info, warnings)
+    """
+    # Group occurrences by normalised course name
+    occurrences: dict[str, list[dict]] = {}
+    for entry in courses:
+        key = entry.get("name", "").strip().upper()
+        if not key:
+            continue
+        occurrences.setdefault(key, []).append(entry)
+
+    repeated_info: list[str] = []
+    cgpa_courses: list[dict] = []
+    agpa_courses: list[dict] = []
+
+    for key, entries in occurrences.items():
+        if len(entries) > 1:
+            # Most recent = last in list (caller should pass in chronological order)
+            most_recent = entries[-1]
+            cgpa_courses.append(most_recent)
+            old = ", ".join(e.get("grade", "?") for e in entries[:-1])
+            repeated_info.append(
+                f"{entries[-1].get('name', key)}: tekrar alındı "
+                f"({old} → {most_recent.get('grade', '?')}) — CGPA'da yalnızca son not geçerli"
+            )
+        else:
+            cgpa_courses.append(entries[0])
+        agpa_courses.extend(entries)
+
+    cgpa, cgpa_credits, warns_c = _bilkent_gpa(cgpa_courses)
+    agpa, agpa_credits, warns_a = _bilkent_gpa(agpa_courses)
+
+    # Deduplicate warnings (same warning can appear twice for both pools)
+    all_warns = list(dict.fromkeys(warns_c + warns_a))
+    return cgpa, cgpa_credits, agpa, agpa_credits, repeated_info, all_warns
+
+
+def _pass_fail(grade: str, cgpa: float, course_name: str = "") -> str:
+    """
+    Evaluate pass/fail for an undergraduate course given current CGPA.
+    Implements Bilkent conditional-passing rules for C-, D+, D.
+    ENG 101 exception: C-, D+, D are always failing.
+    """
+    g = grade.strip().upper()
+
+    if g in ("F", "FX", "FZ", "U"):
+        return "❌ Başarısız"
+    if g == "S":
+        return "✅ Başarılı (noncredit)"
+    if g == "W":
+        return "⚠️ Çekildi (GPA'ya dahil değil)"
+    if g in _NO_GPA_GRADES:
+        return f"— ({g}, GPA'ya dahil değil)"
+
+    pts = _GRADE_POINTS.get(g, -1.0)
+    if pts < 0:
+        return "? (tanımsız not)"
+
+    if pts >= 2.00:  # C or higher — always passing
+        return "✅ Geçer"
+
+    # C-, D+, D — conditional
+    is_eng101 = "ENG 101" in course_name.upper() or "ENG101" in course_name.upper().replace(" ", "")
+    if is_eng101:
+        return f"❌ Başarısız (ENG 101'de {g} her zaman başarısız)"
+    if cgpa >= 2.00:
+        return f"⚠️ Koşullu geçer ({g} — CGPA ≥ 2.00 olduğu sürece)"
+    return f"❌ Başarısız ({g} — CGPA {cgpa:.2f} < 2.00 olduğu için başarısız sayılır)"
+
+
+def _cum_laude(agpa: float) -> str:
+    """Bilkent graduation honours based on AGPA."""
+    if agpa >= 3.75:
+        return "🏅 Summa Cum Laude (AGPA ≥ 3.75)"
+    if agpa >= 3.50:
+        return "🎓 Magna Cum Laude (AGPA 3.50–3.74)"
+    if agpa >= 3.00:
+        return "🎓 Cum Laude (AGPA 3.00–3.49)"
+    return f"Şeref derecesi yok (AGPA {agpa:.2f} < 3.00)"
+
+
 def _academic_standing(cgpa: float) -> str:
     if cgpa >= 2.00:
         return "✅ Satisfactory (CGPA ≥ 2.00)"
@@ -2010,6 +2111,67 @@ async def _tool_calculate_grade(args: dict, user_id: int) -> str:
             "A+/A: 4.00 | A-: 3.70 | B+: 3.30 | B: 3.00 | B-: 2.70\n"
             "C+: 2.30 | C: 2.00 | C-: 1.70 | D+: 1.30 | D: 1.00 | F/FX/FZ: 0.00\n"
             "Geçer not: C ve üzeri (CGPA ≥ 2.00 ise C-, D+, D koşullu geçer)"
+        )
+        return "\n".join(lines)
+
+    elif mode == "cgpa":
+        courses = args.get("courses", [])
+        if not courses:
+            return (
+                "Tüm dönemlerdeki derslerin listesi gerekli.\n"
+                "Örnek: courses=[\n"
+                "  {name:'CTIS 256', grade:'A-', credits:3, semester:'2023-Güz'},\n"
+                "  {name:'MATH 101', grade:'B+', credits:4, semester:'2023-Güz'},\n"
+                "  {name:'CTIS 256', grade:'A',  credits:3, semester:'2024-Bahar'}  ← tekrar\n"
+                "]"
+            )
+
+        graduating = bool(args.get("graduating", False))
+
+        cgpa, cgpa_cred, agpa, agpa_cred, repeated, warns = _bilkent_cgpa(courses)
+        standing = _academic_standing(cgpa)
+        honor = _honor_status(cgpa, cgpa, len([c for c in courses if str(c.get("grade", "")).upper() not in _NO_GPA_GRADES]))
+
+        lines = ["*Bilkent CGPA / AGPA Hesabı*\n"]
+
+        # Per-course pass/fail table
+        lines.append("*Ders bazlı durum:*")
+        for c in courses:
+            g = str(c.get("grade", "")).upper()
+            pf = _pass_fail(g, cgpa, c.get("name", ""))
+            pts = _GRADE_POINTS.get(g, "—")
+            sem = f" [{c.get('semester', '')}]" if c.get("semester") else ""
+            lines.append(f"  {c.get('name', '')} {g} ({pts} × {c.get('credits', 0)} kr){sem} → {pf}")
+
+        lines.append("")
+        lines.append(f"*CGPA: {cgpa:.2f}* ({cgpa_cred:.0f} kredi — tekrar edilen derslerde yalnızca son not)")
+        lines.append(f"*AGPA: {agpa:.2f}* ({agpa_cred:.0f} kredi — tüm notlar, sıralama için)")
+        lines.append(f"Akademik Durum: {standing}")
+        lines.append(f"Onur: {honor}")
+
+        if graduating:
+            lines.append(f"\nMezuniyet Şeref Derecesi: {_cum_laude(agpa)}")
+
+        if repeated:
+            lines.append("\n*Tekrar edilen dersler (CGPA kuralı uygulandı):*")
+            lines.extend(f"  ⟳ {r}" for r in repeated)
+
+        if warns:
+            lines.append("\n⚠️ Uyarılar:")
+            lines.extend(f"  • {w}" for w in warns)
+
+        # Probation/unsatisfactory course load info
+        if cgpa < 2.00:
+            lines.append(
+                "\n*Akademik kısıtlamalar:*\n"
+                "  • Probation (1.80–1.99): Kredi yükü nominal yükün %60'ı (2. dönem %85)\n"
+                "  • Unsatisfactory (<1.80): Kredi yükü nominal yükün %70'i, yeni ders yok\n"
+                "  • F/FX/FZ/U aldığın dersleri tekrar almak zorunlu"
+            )
+
+        lines.append(
+            "\n_Not: CGPA hesabı doğruluğu verilen listedeki bilgilere bağlıdır. "
+            "Resmi CGPA için STARS'ı kontrol edin._"
         )
         return "\n".join(lines)
 
