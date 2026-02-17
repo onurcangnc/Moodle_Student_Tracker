@@ -1342,6 +1342,10 @@ async def _execute_tool_call(tool_call: Any, user_id: int) -> dict[str, str]:
             logger.error("Tool %s failed: %s", fn_name, exc, exc_info=True)
             result = "Bu bilgiye şu anda ulaşılamıyor."
 
+    # Coerce non-string results (e.g. None from handler) to string before sanitization
+    if not isinstance(result, str):
+        result = str(result) if result is not None else ""
+
     result = _sanitize_tool_output(fn_name, result)
 
     logger.info(
