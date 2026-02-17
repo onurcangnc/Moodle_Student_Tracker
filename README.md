@@ -584,34 +584,44 @@ User message
 
 ### Security Test Report
 
-Tests run on Python 3.11 · `pytest` 9.0.2
+Tests run on **production server** · Python 3.10.12 · Ubuntu 22.04 · `pytest` 9.0.2
 
 ```
-platform linux -- Python 3.11, pytest-9.0.2
+platform linux -- Python 3.10.12, pytest-9.0.2, pluggy-1.6.0
+plugins: asyncio-1.3.0, anyio-4.12.1, cov-7.0.0
 ======================================================
-tests/unit/test_agent_service.py    76 tests
-tests/unit/test_safety_redteam.py  158 tests
-tests/unit/test_conversation_memory.py  10 tests
-tests/unit/test_user_service.py     10 tests
-tests/unit/test_config.py            8 tests
-tests/unit/test_exceptions.py        4 tests
-tests/unit/test_state.py             2 tests
-tests/unit/test_logging_config.py    2 tests
-+ telegram/numpy-dependent suites   ~30 tests (remote only)
+tests/integration/test_rag_pipeline.py        1 test
+tests/integration/test_telegram_handlers.py   1 test
+tests/unit/test_agent_service.py             76 tests
+tests/unit/test_auth.py                       4 tests
+tests/unit/test_commands.py                   2 tests
+tests/unit/test_config.py                     8 tests
+tests/unit/test_conversation_memory.py       10 tests
+tests/unit/test_document_service.py           4 tests
+tests/unit/test_exceptions.py                 4 tests
+tests/unit/test_formatters.py                 4 tests
+tests/unit/test_logging_config.py             2 tests
+tests/unit/test_main.py                      28 tests
+tests/unit/test_messages_handler.py           3 tests
+tests/unit/test_safety_redteam.py           158 tests
+tests/unit/test_state.py                      2 tests
+tests/unit/test_user_service.py              10 tests
+tests/unit/test_validators.py                 4 tests
+tests/unit/test_vector_store.py               3 tests
 ------------------------------------------------------
-TOTAL                              ~300 tests
+TOTAL                                       299 tests collected
 ```
 
-**Core safety suite result:**
+**Full suite result (production server):**
 ```
-221 passed · 24 xfailed (known gaps) · 1 xpassed · 1 warning
+274 passed · 24 xfailed (known gaps) · 1 xpassed · 3 warnings in 11.87s
 ```
 
 #### Result breakdown
 
 | Marker | Count | Meaning |
 |--------|-------|---------|
-| `passed` | 221 | Defense verified — attack blocked or safe input preserved |
+| `passed` | 274 | Defense verified — attack blocked or safe input preserved |
 | `xfailed` | 24 | Known gap — defense not yet implemented (see below) |
 | `xpassed` | 1 | Bonus: `new instruction via indirect route` already caught |
 
