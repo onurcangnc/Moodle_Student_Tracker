@@ -253,8 +253,9 @@ TOOLS: list[dict[str, Any]] = [
             "description": (
                 "Bilkent DAIS & AIRS mailleri. KRİTİK KURALLAR: "
                 "(1) Mail sorulursa varsayılan count=5 ile çağır. Kullanıcı farklı sayı isterse o sayıyı kullan. "
-                "(2) Hoca adıyla sorulursa sender_filter kullan. "
-                "(3) Sonuç boşsa 'Yakın zamanda yok, istersen son maillerini gösterebilirim' de."
+                "(2) Hoca/gönderici adıyla sorulursa sender_filter kullan. "
+                "(3) Etkinlik/konu/duyuru adıyla sorulursa (örn: 'CTISTalk', 'final', 'iptal') subject_filter kullan — sender_filter DEĞİL. "
+                "(4) Sonuç boşsa count'u artırarak tekrar dene veya 'Yakın zamanda yok' de."
             ),
             "parameters": {
                 "type": "object",
@@ -265,7 +266,11 @@ TOOLS: list[dict[str, Any]] = [
                     },
                     "sender_filter": {
                         "type": "string",
-                        "description": "Gönderici adı filtresi",
+                        "description": "Gönderici/hoca adı filtresi. SADECE gönderici adı bilindiğinde kullan.",
+                    },
+                    "subject_filter": {
+                        "type": "string",
+                        "description": "Konu/başlık filtresi. Etkinlik adı, duyuru konusu veya anahtar kelimeyle arama için kullan (örn: 'CTISTalk', 'iptal', 'erteleme').",
                     },
                     "scope": {
                         "type": "string",
@@ -440,7 +445,9 @@ Konu bazlı çalışma (dosya adı belirtilmemişse):
 ## MAİL — DAIS & AIRS
 - Mail sorulursa → get_emails(count=5) direkt çağır
 - Daha fazla istenirse → belirtilen sayıyla çağır
-- Hoca adıyla: sender_filter kullan, sonuç yoksa "Yakın zamanda yok" de
+- Hoca/gönderici adıyla → sender_filter kullan (örn: sender_filter="Serhat")
+- Etkinlik/konu/duyuru kelimesiyle → subject_filter kullan — sender_filter DEĞİL (örn: subject_filter="CTISTalk", subject_filter="iptal")
+- Sonuç boşsa count=20 ile tekrar dene, hâlâ yoksa "Yakın zamanda yok" de
 - Mail detayı: get_email_detail
 - Ödev sorusunda mail de kontrol et (çapraz sorgu)
 
@@ -1220,12 +1227,16 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
     count = args.get("count", 5)
     scope = args.get("scope", "recent")
     sender_filter = args.get("sender_filter", "")
+    subject_filter = args.get("subject_filter", "")
+
+    # Fetch more when filtering so we have enough candidates
+    fetch_count = max(count, 20) if (sender_filter or subject_filter) else count
 
     try:
         if scope == "unread":
             mails = await asyncio.to_thread(webmail.check_all_unread)
         else:
-            mails = await asyncio.to_thread(webmail.get_recent_airs_dais, count)
+            mails = await asyncio.to_thread(webmail.get_recent_airs_dais, fetch_count)
     except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
         logger.error("Email fetch failed: %s", exc, exc_info=True)
         return f"E-postalar alınamadı: {exc}"
@@ -1233,6 +1244,10 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
     if sender_filter:
         sf = sender_filter.lower()
         mails = [m for m in mails if sf in m.get("from", "").lower() or sf in m.get("source", "").lower()]
+
+    if subject_filter:
+        sf = subject_filter.lower()
+        mails = [m for m in mails if sf in m.get("subject", "").lower()]
 
     if scope != "unread":
         mails = mails[:count]
