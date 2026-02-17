@@ -649,6 +649,48 @@ async def _plan_agent(user_text: str, history: list[dict], tool_names: list[str]
     return ""
 
 
+_CRITIC_SYSTEM = (
+    "You are a fact-checking critic for an academic assistant. "
+    "Given a student question, the assistant's response, and the raw data sources used, verify:\n"
+    "1. Are all dates/deadlines taken directly from the data (not invented)?\n"
+    "2. Are all filenames/source names real (appear in data)?\n"
+    "3. Does the response contradict any data source?\n"
+    "Return JSON: {\"ok\": true} if all checks pass, "
+    "or {\"ok\": false, \"issue\": \"short description\"} if not. Return ONLY the JSON."
+)
+
+
+async def _critic_agent(user_text: str, response: str, tool_results: list[str]) -> bool:
+    """
+    Post-loop grounding check. Returns True if response is grounded in tool data.
+    Only runs when tool results are non-empty. Uses cheapest model (extraction).
+    """
+    llm = STATE.llm
+    if llm is None or not tool_results:
+        return True
+    data_summary = "\n---\n".join(tool_results[:6])[:3000]
+    user_prompt = (
+        f"STUDENT QUESTION:\n{user_text}\n\n"
+        f"ASSISTANT RESPONSE:\n{response}\n\n"
+        f"DATA SOURCES USED:\n{data_summary}"
+    )
+    try:
+        raw = await asyncio.to_thread(
+            llm.engine.complete,
+            "extraction",
+            _CRITIC_SYSTEM,
+            [{"role": "user", "content": user_prompt}],
+            150,
+        )
+        data = json.loads(raw)
+        if not data.get("ok", True):
+            logger.warning("Critic flagged response: %s", data.get("issue", ""))
+            return False
+    except Exception as exc:
+        logger.debug("Critic step skipped: %s", exc)
+    return True
+
+
 async def _call_llm_with_tools(
     messages: list[dict[str, Any]],
     system_prompt: str,
@@ -1289,6 +1331,8 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
     # Fetch more when filtering so we have enough candidates after filtering
     fetch_count = max(count, 20) if (sender_filter or subject_filter) else max(count, 20)
 
+    came_from_cache = False
+
     if scope == "unread":
         # Unread must always be live — no cache
         try:
@@ -1300,6 +1344,7 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
         # Try cache first
         mails = cache_db.get_emails(fetch_count)
         if mails is not None:
+            came_from_cache = True
             logger.debug("Email cache hit (%d mails)", len(mails))
         else:
             logger.debug("Email cache miss — fetching live from IMAP")
@@ -1322,43 +1367,60 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
         except Exception:
             return True  # unparseable → keep
 
-    mails = [m for m in mails if _is_recent(m)]
+    def _apply_filters(mail_list: list[dict]) -> list[dict]:
+        """Apply date, sender, and subject filters to a mail list."""
+        result = [m for m in mail_list if _is_recent(m)]
+        if sender_filter:
+            parts = [p for p in sender_filter.lower().split() if p]
+            result = [
+                m for m in result
+                if all(
+                    p in m.get("from", "").lower() or p in m.get("source", "").lower()
+                    for p in parts
+                )
+            ]
+        if subject_filter:
+            sf = subject_filter.lower()
+            _TR_EN = {
+                "iptal": ["iptal", "cancel", "cancelled"],
+                "erteleme": ["erteleme", "postpone", "postponed"],
+                "ertelendi": ["ertelendi", "postpone", "postponed"],
+                "duyuru": ["duyuru", "announcement", "announce"],
+                "hatırlatma": ["hatırlatma", "reminder", "remind"],
+                "acil": ["acil", "urgent"],
+                "ödev": ["ödev", "assignment", "homework", "hw"],
+                "sınav": ["sınav", "exam", "quiz", "test"],
+                "vize": ["vize", "midterm"],
+                "final": ["final"],
+            }
+            variants = _TR_EN.get(sf, [sf])
+            result = [
+                m for m in result
+                if any(
+                    v in m.get("subject", "").lower() or v in m.get("body_preview", "").lower()
+                    for v in variants
+                )
+            ]
+        return result
 
-    if sender_filter:
-        # Split into individual words → "Erkan Uçar", "Erkan", "UÇAR" all work.
-        # All parts must appear in the from/source field (AND, case-insensitive).
-        parts = [p for p in sender_filter.lower().split() if p]
-        mails = [
-            m for m in mails
-            if all(
-                p in m.get("from", "").lower() or p in m.get("source", "").lower()
-                for p in parts
-            )
-        ]
+    mails = _apply_filters(mails)
 
-    if subject_filter:
-        sf = subject_filter.lower()
-        # Expand Turkish keywords to English equivalents for cross-language matching
-        _TR_EN = {
-            "iptal": ["iptal", "cancel", "cancelled"],
-            "erteleme": ["erteleme", "postpone", "postponed"],
-            "ertelendi": ["ertelendi", "postpone", "postponed"],
-            "duyuru": ["duyuru", "announcement", "announce"],
-            "hatırlatma": ["hatırlatma", "reminder", "remind"],
-            "acil": ["acil", "urgent"],
-            "ödev": ["ödev", "assignment", "homework", "hw"],
-            "sınav": ["sınav", "exam", "quiz", "test"],
-            "vize": ["vize", "midterm"],
-            "final": ["final"],
-        }
-        variants = _TR_EN.get(sf, [sf])
-        mails = [
-            m for m in mails
-            if any(
-                v in m.get("subject", "").lower() or v in m.get("body_preview", "").lower()
-                for v in variants
-            )
-        ]
+    # Cache stale fallback: if filters produced no results from cache, try a live IMAP
+    # fetch to catch emails that arrived since the last background job run (≤5 min ago).
+    has_active_filter = bool(sender_filter or subject_filter)
+    if not mails and came_from_cache and has_active_filter and scope != "unread":
+        logger.debug(
+            "Filtered result empty from cache — falling back to live IMAP fetch "
+            "(sender_filter=%r, subject_filter=%r)", sender_filter, subject_filter
+        )
+        try:
+            fresh = await asyncio.to_thread(webmail.get_recent_airs_dais, 20)
+            asyncio.create_task(asyncio.to_thread(cache_db.store_emails, fresh))
+            mails = _apply_filters(fresh)
+            if mails:
+                logger.info("Live IMAP fallback found %d matching mails", len(mails))
+        except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
+            logger.warning("Live IMAP fallback failed: %s", exc)
 
     if scope != "unread":
         mails = mails[:count]
@@ -1581,6 +1643,8 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
         system_prompt = system_prompt + f"\n\n{plan_hint}"
         logger.debug("Planner hint injected (%d chars)", len(plan_hint))
 
+    collected_tool_outputs: list[str] = []  # for Critic grounding check
+
     for iteration in range(MAX_TOOL_ITERATIONS):
         try:
             response_msg = await _call_llm_with_tools(
@@ -1596,6 +1660,19 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
         tool_calls = getattr(response_msg, "tool_calls", None)
         if not tool_calls:
             final_text = response_msg.content or ""
+
+            # Critic step: validate that final response is grounded in tool data
+            if collected_tool_outputs:
+                try:
+                    grounded = await _critic_agent(user_text, final_text, collected_tool_outputs)
+                    if not grounded:
+                        final_text += (
+                            "\n\n⚠️ *Not:* Bu yanıttaki tarih veya kaynak bilgilerini "
+                            "doğrulamak isterseniz ilgili komutu tekrar çalıştırabilirsiniz."
+                        )
+                except Exception as exc:
+                    logger.debug("Critic agent error (non-fatal): %s", exc)
+
             user_service.add_conversation_turn(user_id, "user", user_text)
             user_service.add_conversation_turn(user_id, "assistant", final_text)
 
@@ -1629,6 +1706,9 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
             *[_execute_tool_call(tc, user_id) for tc in tool_calls]
         )
         messages.extend(tool_results)
+
+        # Collect tool outputs for Critic step
+        collected_tool_outputs.extend(tr["content"] for tr in tool_results if tr.get("content"))
 
         logger.info(
             "Tool loop iteration %d: %d tools",
