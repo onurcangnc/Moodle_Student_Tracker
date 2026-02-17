@@ -253,12 +253,43 @@ TELEGRAM_OWNER_ID=...
 OPENAI_API_KEY=...
 GEMINI_API_KEY=...
 
+# ── EMAIL & STARS (enables email and grade tools) ─
+WEBMAIL_EMAIL=...
+WEBMAIL_PASSWORD=...
+STARS_USERNAME=...
+STARS_PASSWORD=...
+
 # ── OPTIONAL (defaults are usually fine) ──────────
 # MODEL_CHAT=gemini-2.5-flash
+# MODEL_COMPLEXITY=gpt-4.1-mini
 # RAG_SIMILARITY_THRESHOLD=0.65
 # HEALTHCHECK_PORT=9090
 # LOG_LEVEL=INFO
 ```
+
+### Data Directory Layout
+
+The bot creates a `data/` directory automatically on first run. **None of these files are committed to git.**
+
+```
+data/
+├── downloads/              Raw Moodle files (PDF, DOCX, PPTX) downloaded during sync
+├── chromadb/               FAISS vector index + BM25 index + chunk metadata
+├── cache.db                SQLite persistent cache
+│                           ├── emails table  — refreshed every 5 min by background job
+│                           ├── grades        — refreshed every 30 min
+│                           ├── assignments   — refreshed every 10 min
+│                           └── schedule      — refreshed every 6 h
+├── memory.db               Per-user conversation history (TTL-based)
+├── .moodle_token           Cached Moodle session token (auto-renewed)
+├── sync_state.json         Tracks which Moodle files have been downloaded
+├── study_sessions.json     Study session analytics
+├── profile.md              User profile (topic preferences, study history)
+├── file_summaries.json     LLM-generated summaries for RAG prioritization
+└── source_summaries/       Per-course source summaries
+```
+
+**Background jobs vs. tool handlers:** Background jobs are the only writers to `cache.db`. Tool handlers (email, grades, assignments) read from the cache for instant responses. On a fresh install, the cache is empty; the bot falls back to live API calls until the first background job cycle completes (~5 minutes after startup).
 
 ### Configuration Reference
 
@@ -513,6 +544,17 @@ cd /opt/moodle-bot/data
 rm -f faiss.index metadata.json sync_state.json
 systemctl restart moodle-bot
 # Bot re-downloads and re-indexes all Moodle materials on startup
+```
+
+### Reset the SQLite Cache
+
+If the email/grades/assignments cache appears stale or corrupt:
+
+```bash
+cd /opt/moodle-bot/data
+rm -f cache.db
+systemctl restart moodle-bot
+# Background jobs repopulate the cache within the first 5–10 minutes
 ```
 
 ### Offline Mode for Embedding Model
