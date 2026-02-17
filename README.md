@@ -367,7 +367,7 @@ Supported models: Gemini 2.5 Flash/Pro, GPT-4.1 nano/mini, GPT-5 mini, GLM 4.5/4
 
 ## Testing
 
-The test suite covers **126+ tests** across unit, integration, and end-to-end layers using pytest and pytest-asyncio. All unit tests run without any external dependencies.
+The test suite covers **359 tests** across unit, integration, and end-to-end layers using pytest and pytest-asyncio. All unit tests run without any external dependencies.
 
 ```bash
 # Install dev dependencies
@@ -404,6 +404,7 @@ python -m pytest -k "critic" -v
 | File | Classes | Tests | Focus |
 |------|---------|-------|-------|
 | `test_agent_service.py` | 8 | 76 | Agentic loop, safety, email tools |
+| `test_new_tools.py` | 8 | 60 | 4 new tools: exam schedule, assignment detail, upcoming events, GPA calculator |
 | `test_main.py` | — | 28 | Bot initialization, command routing |
 | `test_conversation_memory.py` | — | 10 | TTL, per-user history |
 | `test_user_service.py` | — | 10 | Course selection, fuzzy matching |
@@ -603,18 +604,19 @@ tests/unit/test_formatters.py                 4 tests
 tests/unit/test_logging_config.py             2 tests
 tests/unit/test_main.py                      28 tests
 tests/unit/test_messages_handler.py           3 tests
+tests/unit/test_new_tools.py                 60 tests
 tests/unit/test_safety_redteam.py           158 tests
 tests/unit/test_state.py                      2 tests
 tests/unit/test_user_service.py              10 tests
 tests/unit/test_validators.py                 4 tests
 tests/unit/test_vector_store.py               3 tests
 ------------------------------------------------------
-TOTAL                                       299 tests collected
+TOTAL                                       359 tests collected
 ```
 
 **Full suite result (production server):**
 ```
-274 passed · 24 xfailed (known gaps) · 1 xpassed · 3 warnings in 11.87s
+334 passed · 24 xfailed (known gaps) · 1 xpassed · 3 warnings
 ```
 
 #### Result breakdown
