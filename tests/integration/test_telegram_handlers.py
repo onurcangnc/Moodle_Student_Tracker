@@ -27,7 +27,7 @@ def test_register_handlers_adds_expected_groups():
     register_command_handlers(app)
     register_message_handlers(app)
 
-    assert len(app.handlers) == 7
+    assert len(app.handlers) == 4  # /start, /upload, Document, Text
     command_handlers = [h for h in app.handlers if hasattr(h, "commands")]
     assert any("start" in h.commands for h in command_handlers)
-    assert any("courses" in h.commands for h in command_handlers)
+    assert any("upload" in h.commands for h in command_handlers)
