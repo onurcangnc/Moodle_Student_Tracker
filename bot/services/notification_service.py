@@ -138,6 +138,16 @@ async def _check_deadline_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Failed to send deadline reminder: %s", exc)
 
 
+async def _refresh_sessions(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Hourly re-login for webmail IMAP and STARS to keep sessions fresh."""
+    from bot.main import refresh_external_sessions
+
+    try:
+        await asyncio.to_thread(refresh_external_sessions)
+    except Exception as exc:
+        logger.error("Session refresh failed: %s", exc, exc_info=True)
+
+
 async def _generate_missing_summaries(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Background job: generate KATMAN 2 summaries for files that don't have one."""
     store = STATE.vector_store
@@ -185,6 +195,14 @@ def register_notification_jobs(app: Application) -> None:
         name="deadline_reminder",
     )
 
+    # Session refresh — every 60 min (re-login webmail + STARS)
+    jq.run_repeating(
+        _refresh_sessions,
+        interval=timedelta(minutes=60),
+        first=timedelta(minutes=60),  # First run after 1 hour (startup already logged in)
+        name="session_refresh",
+    )
+
     # KATMAN 2: Generate missing source summaries — every 60 min
     jq.run_repeating(
         _generate_missing_summaries,
@@ -195,6 +213,6 @@ def register_notification_jobs(app: Application) -> None:
 
     logger.info(
         "Notification jobs registered: assignment_check=%ds, email_check=300s, "
-        "deadline_reminder=1800s, summary_generation=3600s",
+        "deadline_reminder=1800s, session_refresh=3600s, summary_generation=3600s",
         CONFIG.assignment_check_interval,
     )

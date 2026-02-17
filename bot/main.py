@@ -120,6 +120,61 @@ def _validate_startup_config() -> None:
         raise RuntimeError("TELEGRAM_OWNER_ID not set in environment. Owner check is required for secure startup.")
 
 
+def refresh_external_sessions() -> None:
+    """Login (or re-login) webmail IMAP and STARS sessions.
+
+    Called once at startup and then hourly via the notification job queue.
+    Logs out first so stale connections are discarded before reconnecting.
+    """
+    # --- Webmail ---
+    webmail = STATE.webmail_client
+    webmail_email = os.getenv("WEBMAIL_EMAIL", "")
+    webmail_password = os.getenv("WEBMAIL_PASSWORD", "")
+    if webmail is None or not webmail_email or not webmail_password:
+        logger.info("Webmail refresh skipped (no credentials)")
+        return
+
+    if webmail.authenticated:
+        webmail.logout()
+    if webmail.login(webmail_email, webmail_password):
+        logger.info("Webmail IMAP login OK: %s", webmail_email)
+    else:
+        logger.warning("Webmail IMAP login failed for %s", webmail_email)
+        return  # Can't do STARS without webmail
+
+    # --- STARS ---
+    stars = STATE.stars_client
+    stars_user = os.getenv("STARS_USERNAME", "")
+    stars_pass = os.getenv("STARS_PASSWORD", "")
+    owner_id = CONFIG.owner_id
+    if stars is None or not stars_user or not stars_pass or not owner_id:
+        logger.info("STARS refresh skipped (no credentials)")
+        return
+
+    if stars.is_authenticated(owner_id):
+        stars.logout(owner_id)
+
+    logger.info("STARS login attempt for owner %s...", owner_id)
+    result = stars.start_login(owner_id, stars_user, stars_pass)
+    if result.get("status") == "sms_sent":
+        for _attempt in range(4):
+            time.sleep(5)
+            code = webmail.fetch_stars_verification_code(max_age_seconds=60)
+            if code:
+                verify = stars.verify_sms(owner_id, code)
+                if verify.get("status") == "ok":
+                    logger.info("STARS login OK for owner %s", owner_id)
+                else:
+                    logger.warning("STARS verify failed: %s", verify.get("message", ""))
+                break
+        else:
+            logger.warning("STARS verification code not received within 20s")
+    elif result.get("status") == "ok":
+        logger.info("STARS login OK (no 2FA needed)")
+    else:
+        logger.warning("STARS login failed: %s", result.get("message", ""))
+
+
 def _initialize_components() -> None:
     """Initialize core RAG components and cache Moodle course metadata."""
     errors = core_config.validate()
@@ -142,45 +197,8 @@ def _initialize_components() -> None:
     STATE.stars_client = StarsClient()
     STATE.webmail_client = WebmailClient()
 
-    # Auto-login webmail if credentials provided in .env
-    webmail_email = os.getenv("WEBMAIL_EMAIL", "")
-    webmail_password = os.getenv("WEBMAIL_PASSWORD", "")
-    if webmail_email and webmail_password:
-        if STATE.webmail_client.login(webmail_email, webmail_password):
-            logger.info("Webmail IMAP login OK: %s", webmail_email)
-        else:
-            logger.warning("Webmail IMAP login failed for %s", webmail_email)
-    else:
-        logger.info("Webmail credentials not set, skipping auto-login")
-
-    # Auto-login STARS if credentials provided in .env + webmail is available
-    stars_user = os.getenv("STARS_USERNAME", "")
-    stars_pass = os.getenv("STARS_PASSWORD", "")
-    owner_id = CONFIG.owner_id
-    if stars_user and stars_pass and owner_id and STATE.webmail_client.authenticated:
-        logger.info("Attempting STARS auto-login for owner %s...", owner_id)
-        result = STATE.stars_client.start_login(owner_id, stars_user, stars_pass)
-        if result.get("status") == "sms_sent":
-            # Wait for verification email to arrive
-            import time as _t
-            for attempt in range(4):
-                _t.sleep(5)
-                code = STATE.webmail_client.fetch_stars_verification_code(max_age_seconds=60)
-                if code:
-                    verify = STATE.stars_client.verify_sms(owner_id, code)
-                    if verify.get("status") == "ok":
-                        logger.info("STARS auto-login OK for owner %s", owner_id)
-                    else:
-                        logger.warning("STARS verify failed: %s", verify.get("message", ""))
-                    break
-            else:
-                logger.warning("STARS verification code not received within 20s")
-        elif result.get("status") == "ok":
-            logger.info("STARS auto-login OK (no 2FA needed)")
-        else:
-            logger.warning("STARS login failed: %s", result.get("message", ""))
-    else:
-        logger.info("STARS auto-login skipped (missing credentials or webmail)")
+    # Initial login for webmail + STARS (also runs hourly via notification job)
+    refresh_external_sessions()
 
     if moodle.connect():
         courses = moodle.get_courses()
