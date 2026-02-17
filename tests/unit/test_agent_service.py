@@ -172,9 +172,10 @@ class TestScoreComplexity:
         assert score < 0.65
 
     def test_long_multistep_turkish_high(self):
+        # multi-step (hem/ayrıca/önce) + technical (algoritma) → score > 0.65
         query = (
             "Hem CTIS 256 hem de CTIS 363 materyallerini çalışmak istiyorum, "
-            "önce hangi konulara bakmalıyım, ayrıca ödev durumumu da kontrol et, "
+            "önce hangi algoritma konularına bakmalıyım, ayrıca ödev durumumu da kontrol et, "
             "bunun yanı sıra devamsızlık durumum tehlikede mi?"
         )
         score = _score_complexity(query)
