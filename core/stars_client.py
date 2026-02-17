@@ -329,6 +329,74 @@ class StarsClient:
             logger.error(f"STARS AJAX {endpoint} error: {e}")
             return None
 
+    def _ajax_get(self, user_id: int, endpoint: str) -> BeautifulSoup | None:
+        """GET a STARS AJAX endpoint (SPA navigation pattern), return parsed HTML or None."""
+        ss = self._sessions.get(user_id)
+        if not ss or not ss.authenticated:
+            return None
+        if ss.expired:
+            ss.authenticated = False
+            return None
+
+        url = f"{BASE}/srs/ajax/{endpoint}"
+        try:
+            r = ss.session.get(url, timeout=15)
+            if r.status_code != 200:
+                logger.debug("STARS AJAX GET %s: HTTP %s", endpoint, r.status_code)
+                return None
+            return BeautifulSoup(r.text, "html.parser")
+        except requests.RequestException as e:
+            logger.error("STARS AJAX GET %s error: %s", endpoint, e)
+            return None
+
+    def _discover_prog_string(self, user_id: int) -> str | None:
+        """
+        Find the progString parameter needed for curriculum.php.
+
+        The SPA JavaScript navigation calls:
+          paneSplitter.loadContent("center", "ajax/curriculum.php?progString=DEPT,PROG,1&rndval=...", ...)
+
+        We search for this URL pattern in the home page and the main SRS page.
+        """
+        ss = self._sessions.get(user_id)
+        if not ss or not ss.authenticated:
+            return None
+
+        _PATTERN = re.compile(r"curriculum\.php\?progString=([^&\"'<>\s]+)")
+
+        sources = []
+
+        # 1. Try the SRS home page — the shell or home fragment may embed navigation links
+        try:
+            r = ss.session.get(f"{BASE}/srs/", timeout=15)
+            sources.append(r.text)
+        except requests.RequestException:
+            pass
+
+        # 2. Try home.php — the home content panel loaded by completeLogin
+        try:
+            r = ss.session.get(f"{BASE}/srs/ajax/home.php", timeout=15)
+            sources.append(r.text)
+        except requests.RequestException:
+            pass
+
+        # 3. Try the setup JS — navigation is configured in setup-dhtml.js
+        try:
+            r = ss.session.get(f"{BASE}/srs/js/setup-dhtml.js", timeout=15)
+            sources.append(r.text)
+        except requests.RequestException:
+            pass
+
+        for text in sources:
+            m = _PATTERN.search(text)
+            if m:
+                from urllib.parse import unquote
+                prog = unquote(m.group(1))
+                logger.info("STARS: discovered progString=%s", prog)
+                return prog
+
+        return None
+
     # ── User Info + CGPA ──────────────────────────────────────────────────
 
     def get_user_info(self, user_id: int) -> dict | None:
@@ -634,16 +702,18 @@ class StarsClient:
 
     def get_transcript(self, user_id: int) -> list[dict] | None:
         """
-        Fetch full degree-audit transcript from the STARS curriculum page.
+        Fetch full degree-audit transcript from /srs/ajax/curriculum.php.
 
-        STARS is a single-page application — content is loaded via AJAX POST
-        into a #center div. Direct GET requests return only the shell HTML.
-        We first try AJAX POST endpoints (same pattern as grade/exam/attendance),
-        then fall back to direct GETs for the srs-v2 sub-app which serves
-        content fragments directly.
+        Confirmed endpoint (from browser network inspection):
+          GET /srs/ajax/curriculum.php?progString=DEPT,PROG,1&rndval=<timestamp>
 
-        Returns a flat list of graded courses (skips 'Not graded'):
-          {code, name, grade, credits, semester, status}
+        progString (e.g. "CTISS,CTIS_BS,1") identifies the student's curriculum.
+        We first try without it (server may infer from session), then discover it.
+
+        Columns: Code(0) | Name(1) | Status(2) | Grade(3) | Credits(4) | Semester(5)
+                 | Course Taken Instead(6)   ← elective slots have empty Code cell
+
+        Returns a flat list of graded courses (skips 'Not graded' and S/U/T/W/P).
         """
         ss = self._sessions.get(user_id)
         if not ss or not ss.authenticated:
@@ -652,69 +722,72 @@ class StarsClient:
             ss.authenticated = False
             return None
 
-        soup = None
+        def _fetch_curriculum(extra_params: dict) -> BeautifulSoup | None:
+            params = {"rndval": str(int(time.time() * 1000))}
+            params.update(extra_params)
+            try:
+                r = ss.session.get(
+                    f"{BASE}/srs/ajax/curriculum.php",
+                    params=params,
+                    timeout=15,
+                )
+                if r.status_code == 200 and "Curriculum" in r.text:
+                    return BeautifulSoup(r.text, "html.parser")
+                logger.debug("curriculum.php %s → HTTP %s (%d bytes)", extra_params, r.status_code, len(r.text))
+            except requests.RequestException as exc:
+                logger.warning("curriculum.php error: %s", exc)
+            return None
 
-        # Strategy 1: AJAX POST endpoints (same mechanism as grade/exam/attendance)
-        ajax_endpoints = [
-            "curriculum/index.php",
-            "curriculum/curriculum.php",
-            "registrations/curriculum.php",
-        ]
-        for endpoint in ajax_endpoints:
-            soup = self._ajax_post(user_id, endpoint)
-            if soup:
-                text = soup.get_text()
-                # Verify we got actual course data, not an error page
-                if re.search(r"[A-Z]{2,}\s*\d{3}", text):
-                    logger.debug("STARS transcript: AJAX POST %s succeeded", endpoint)
-                    break
-                logger.debug("STARS transcript: AJAX POST %s returned no course data", endpoint)
-                soup = None
+        # Strategy 1: Try without progString — server may infer from session cookie
+        soup = _fetch_curriculum({})
 
-        # Strategy 2: Direct GET to srs-v2 sub-app (serves fragments, not SPA shell)
+        # Strategy 2: Discover progString from navigation sources, then retry
         if soup is None:
-            urls_to_try = [
-                f"{BASE}/srs-v2/curriculum/index",
-                f"{BASE}/srs-v2/curriculum",
-            ]
-            for url in urls_to_try:
-                try:
-                    r = ss.session.get(url, timeout=15)
-                    if r.status_code == 200 and re.search(r"[A-Z]{2,}\s*\d{3}", r.text):
-                        soup = BeautifulSoup(r.text, "html.parser")
-                        logger.debug("STARS transcript: direct GET %s succeeded", url)
-                        break
-                    logger.debug("STARS transcript: %s → HTTP %s (no course pattern)", url, r.status_code)
-                except requests.RequestException as exc:
-                    logger.warning("STARS transcript: %s error: %s", url, exc)
+            prog = self._discover_prog_string(user_id)
+            if prog:
+                soup = _fetch_curriculum({"progString": prog})
 
         if soup is None:
-            logger.error("STARS transcript: all fetch strategies failed")
+            logger.error("STARS transcript: curriculum.php not reachable")
             return None
 
         courses = []
-        # The curriculum page has tables inside year/semester sections.
-        # Typical columns: Course Code | Course Name | Status | Grade | Credits | Semester | [elective]
+        # Columns: Code | Name | Status | Grade | Credits | Semester | Course Taken Instead
+        # Elective slots have empty Code — actual course is in cell[6]
         for table in soup.find_all("table"):
-            rows = table.find_all("tr")
-            for row in rows:
+            for row in table.find_all("tr"):
                 cells = row.find_all("td")
                 if len(cells) < 5:
-                    continue  # header or empty row
+                    continue
 
-                code_text   = cells[0].get_text(strip=True)
-                name_text   = cells[1].get_text(strip=True) if len(cells) > 1 else ""
-                status_text = cells[2].get_text(strip=True) if len(cells) > 2 else ""
-                grade_text  = cells[3].get_text(strip=True) if len(cells) > 3 else ""
-                cred_text   = cells[4].get_text(strip=True) if len(cells) > 4 else ""
-                sem_text    = cells[5].get_text(strip=True) if len(cells) > 5 else ""
+                def _cell(i: int) -> str:
+                    if i >= len(cells):
+                        return ""
+                    # replace \xa0 (non-breaking space from &nbsp;) with nothing
+                    return cells[i].get_text(separator=" ", strip=True).replace("\xa0", "").strip()
 
-                # Skip header rows and rows without a course code (e.g. "CTIS 256")
+                code_text   = _cell(0)
+                name_text   = _cell(1)
+                status_text = _cell(2)
+                grade_text  = _cell(3)
+                cred_text   = _cell(4)
+                sem_text    = _cell(5)
+                taken_text  = _cell(6)  # "MATH 105 Introduction to Calculus I" for elective rows
+
+                # Elective slot row: code is empty, actual course is in taken_text
+                if not code_text and taken_text:
+                    # Extract code from the beginning: e.g. "MATH 105 ..." → "MATH 105"
+                    m = re.match(r"([A-Z]{2,}\s*\d{3}[A-Z]?)\s+(.*)", taken_text)
+                    if m:
+                        code_text = m.group(1).strip()
+                        name_text = m.group(2).strip()
+
+                # Skip header rows and rows with no course code pattern
                 if not code_text or not re.match(r"[A-Z]{2,}", code_text):
                     continue
 
                 # Skip "Not graded" rows
-                if not grade_text or grade_text.lower() in ("", "-", "not graded", "—"):
+                if not grade_text or grade_text.lower() in ("", "-", "not graded", "—", "not graded"):
                     continue
 
                 try:
@@ -729,7 +802,7 @@ class StarsClient:
                     "code": code_text,
                     "name": name_text,
                     "status": status_text,
-                    "grade": grade_text.strip(),
+                    "grade": grade_text,
                     "credits": credits,
                     "semester": sem_text,
                 })
