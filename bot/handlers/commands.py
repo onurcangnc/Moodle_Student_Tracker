@@ -17,28 +17,42 @@ logger = logging.getLogger(__name__)
 async def post_init(app: Application) -> None:
     """Register visible command list in Telegram client UI."""
     commands = [
-        BotCommand("start", "Botu baslat"),
-        BotCommand("help", "Kullanim rehberi"),
-        BotCommand("courses", "Kurslari listele ve sec"),
-        BotCommand("upload", "Admin materyal yukleme"),
+        BotCommand("start", "Botu başlat"),
+        BotCommand("help", "Kullanım rehberi"),
+        BotCommand("courses", "Kursları listele ve seç"),
+        BotCommand("upload", "Admin materyal yükleme"),
         BotCommand("stats", "Admin bot istatistikleri"),
     ]
     await app.bot.set_my_commands(commands)
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send short welcome message for chat-first workflow."""
+    """Send welcome message for chat-first workflow."""
     await update.effective_message.reply_text(
-        "Merhaba. Bu bot ders materyallerini kullanarak sohbet seklinde ogretir.\n"
-        "Bir kurs secmek icin /courses yazin, sonra sorunu normal mesaj olarak gonderin."
+        "Merhaba! 👋\n\n"
+        "Ben ders materyallerinden öğrenmenizi kolaylaştıran bir asistanım.\n\n"
+        "📚 /courses — Kurslarınızı listeleyin ve aktif kurs seçin\n"
+        "❓ Soru sorun — Aktif kurstaki materyallerden cevap alırsınız\n\n"
+        "📤 /upload — Doküman yükle (admin)\n"
+        "📊 /stats — Bot istatistikleri (admin)\n"
+        "ℹ️ /help — Yardım\n\n"
+        "Başlamak için /courses ile bir kurs seçin, sonra sorunuzu yazın!"
     )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send concise usage guidance."""
+    """Send usage guidance."""
     await update.effective_message.reply_text(
-        "Kullanim cok basit: once /courses ile aktif kurs secin, sonra sorularinizi mesaj olarak yazin.\n"
-        "Bot materyale dayali aciklama yapar; konu materyalde yoksa sizi uygun basliklara yonlendirir."
+        "📖 Nasıl Kullanılır?\n\n"
+        "1️⃣ /courses ile kurslarınızı görün\n"
+        "2️⃣ /courses <kurs_adı> ile aktif kurs seçin\n"
+        "3️⃣ Sorunuzu mesaj olarak yazın\n\n"
+        "Bot, seçtiğiniz kurstaki materyallerden cevap üretir.\n"
+        "Yeterli materyal bulamazsa sizi doğru konulara yönlendirir.\n\n"
+        "Komutlar:\n"
+        "• /courses — Kurs listesi ve seçimi\n"
+        "• /upload — Doküman yükle (admin)\n"
+        "• /stats — İstatistikler (admin)"
     )
 
 
@@ -50,26 +64,28 @@ async def cmd_courses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     courses = user_service.list_courses()
     if not courses:
-        await update.effective_message.reply_text("Henuz yuklu kurs bulunamadi.")
+        await update.effective_message.reply_text("Henüz yüklü kurs bulunamadı.")
         return
 
     if context.args:
         query = " ".join(context.args).strip()
         match = user_service.find_course(query)
         if match is None:
-            await update.effective_message.reply_text("Kurs eslesmedi. Ornek: /courses CTIS 363 veya /courses POLS")
+            await update.effective_message.reply_text(
+                "Kurs eşleşmedi. Örnek: /courses CTIS 363 veya /courses POLS"
+            )
             return
 
         user_service.set_active_course(user.id, match.course_id)
-        await update.effective_message.reply_text(f"Aktif kurs secildi: {match.display_name}")
+        await update.effective_message.reply_text(f"✅ Aktif kurs seçildi: {match.display_name}")
         return
 
     active = user_service.get_active_course(user.id)
-    lines = ["Yuklu kurslar:"]
+    lines = ["📚 Yüklü kurslar:\n"]
     for course in courses:
-        prefix = "* " if active and active.course_id == course.course_id else "- "
-        lines.append(f"{prefix}{course.short_name} | {course.display_name}")
-    lines.append("\nKurs secmek icin: /courses <kisa_ad_veya_ad>")
+        prefix = "▸ " if active and active.course_id == course.course_id else "  "
+        lines.append(f"{prefix}{course.short_name} — {course.display_name}")
+    lines.append("\nKurs seçmek için: /courses <kurs_adı>")
     await update.effective_message.reply_text("\n".join(lines))
 
 
@@ -83,8 +99,8 @@ async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     user_service.begin_upload_session(user.id)
     await update.effective_message.reply_text(
-        "Yukleme modu acildi. Simdi dokumani gonderin. "
-        "Dokuman aktif kursa veya dosya adindan tespit edilen kursa indexlenecek."
+        "📤 Yükleme modu açıldı. Şimdi dokümanı gönderin.\n"
+        "Doküman aktif kursa veya dosya adından tespit edilen kursa indexlenecek."
     )
 
 
@@ -95,17 +111,17 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     store = STATE.vector_store
     if store is None:
-        await update.effective_message.reply_text("Vector store henuz hazir degil.")
+        await update.effective_message.reply_text("Vector store henüz hazır değil.")
         return
 
     stats = store.get_stats()
     lines = [
-        "Bot istatistikleri:",
-        f"- Toplam chunk: {stats.get('total_chunks', 0)}",
-        f"- Kurs sayisi: {stats.get('unique_courses', 0)}",
-        f"- Dosya sayisi: {stats.get('unique_files', 0)}",
-        f"- Aktif kurs secimi olan kullanici: {len(STATE.active_courses)}",
-        f"- Bekleyen upload oturumu: {len(STATE.pending_upload_users)}",
+        "📊 Bot İstatistikleri:\n",
+        f"Toplam chunk: {stats.get('total_chunks', 0)}",
+        f"Kurs sayısı: {stats.get('unique_courses', 0)}",
+        f"Dosya sayısı: {stats.get('unique_files', 0)}",
+        f"Aktif kurs seçimi olan kullanıcı: {len(STATE.active_courses)}",
+        f"Bekleyen upload oturumu: {len(STATE.pending_upload_users)}",
     ]
     await update.effective_message.reply_text("\n".join(lines))
 
