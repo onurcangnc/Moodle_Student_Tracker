@@ -153,7 +153,34 @@ def _initialize_components() -> None:
     else:
         logger.info("Webmail credentials not set, skipping auto-login")
 
-    logger.info("STARS client initialized (requires SMS login per-user)")
+    # Auto-login STARS if credentials provided in .env + webmail is available
+    stars_user = os.getenv("STARS_USERNAME", "")
+    stars_pass = os.getenv("STARS_PASSWORD", "")
+    owner_id = CONFIG.owner_id
+    if stars_user and stars_pass and owner_id and STATE.webmail_client.authenticated:
+        logger.info("Attempting STARS auto-login for owner %s...", owner_id)
+        result = STATE.stars_client.start_login(owner_id, stars_user, stars_pass)
+        if result.get("status") == "sms_sent":
+            # Wait for verification email to arrive
+            import time as _t
+            for attempt in range(4):
+                _t.sleep(5)
+                code = STATE.webmail_client.fetch_stars_verification_code(max_age_seconds=60)
+                if code:
+                    verify = STATE.stars_client.verify_sms(owner_id, code)
+                    if verify.get("status") == "ok":
+                        logger.info("STARS auto-login OK for owner %s", owner_id)
+                    else:
+                        logger.warning("STARS verify failed: %s", verify.get("message", ""))
+                    break
+            else:
+                logger.warning("STARS verification code not received within 20s")
+        elif result.get("status") == "ok":
+            logger.info("STARS auto-login OK (no 2FA needed)")
+        else:
+            logger.warning("STARS login failed: %s", result.get("message", ""))
+    else:
+        logger.info("STARS auto-login skipped (missing credentials or webmail)")
 
     if moodle.connect():
         courses = moodle.get_courses()
