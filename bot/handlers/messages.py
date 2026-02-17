@@ -19,13 +19,41 @@ from core import config as core_config
 
 logger = logging.getLogger(__name__)
 
+_TELEGRAM_MAX_LEN = 4096
+
+
+def _split_message(text: str, max_len: int = _TELEGRAM_MAX_LEN) -> list[str]:
+    """Split a long message into chunks, preferring paragraph → line → word breaks."""
+    if len(text) <= max_len:
+        return [text]
+    chunks: list[str] = []
+    while len(text) > max_len:
+        split_at = text.rfind("\n\n", 0, max_len)
+        if split_at == -1:
+            split_at = text.rfind("\n", 0, max_len)
+        if split_at == -1:
+            split_at = text.rfind(" ", 0, max_len)
+        if split_at == -1:
+            split_at = max_len
+        chunks.append(text[:split_at].rstrip())
+        text = text[split_at:].lstrip()
+    if text:
+        chunks.append(text)
+    return chunks
+
 
 async def _reply_message(message: Message, text: str) -> None:
-    """Send response with Markdown fallback to plain text on parse errors."""
-    try:
-        await message.reply_text(text, parse_mode="Markdown")
-    except TelegramError:
-        await message.reply_text(text)
+    """Send response with Markdown fallback and automatic chunking for long messages."""
+    chunks = _split_message(text)
+    for chunk in chunks:
+        try:
+            await message.reply_text(chunk, parse_mode="Markdown")
+        except TelegramError:
+            try:
+                await message.reply_text(chunk)
+            except TelegramError as exc:
+                logger.error("Failed to send message chunk: %s", exc)
+                await message.reply_text("Yanıt gönderilirken hata oluştu.")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
