@@ -2,12 +2,14 @@
 Unit tests for bot/services/agent_service.py
 =============================================
 Covers:
+  - _normalize_tr          (Turkish char normalization)
   - _sanitize_user_input   (injection blocking)
   - _sanitize_tool_output  (injection + HTML stripping)
   - _score_complexity      (heuristic scoring)
   - _plan_agent            (planner step, mocked LLM)
   - _critic_agent          (grounding check, mocked LLM)
   - _tool_get_emails       (filter logic + cache stale fallback)
+  - _tool_get_email_detail (cache-first + normalized subject match)
 """
 
 from __future__ import annotations
@@ -21,12 +23,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from bot.services.agent_service import (
+    _normalize_tr,
     _sanitize_tool_output,
     _sanitize_user_input,
     _score_complexity,
     _plan_agent,
     _critic_agent,
     _tool_get_emails,
+    _tool_get_email_detail,
 )
 from bot.state import STATE
 
@@ -558,4 +562,174 @@ class TestToolGetEmails:
         with patch("bot.services.agent_service.STATE") as mock_state:
             mock_state.webmail_client = None
             result = await _tool_get_emails({}, user_id=1)
+        assert "giriş yapılmamış" in result.lower() or "webmail" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_sender_filter_turkish_char_normalization(self):
+        """'Erkan Uçar' filter should match 'Erkan Ucar' in IMAP headers (ç→c)."""
+        mails = [
+            _mail("Mail 1", from_addr="Erkan Ucar <erkan@bilkent.edu.tr>"),
+            _mail("Mail 2", from_addr="Ali Veli <ali@bilkent.edu.tr>"),
+        ]
+        with patch("bot.services.agent_service.cache_db") as mock_cache, \
+             patch("bot.services.agent_service.STATE") as mock_state:
+            mock_cache.get_emails.return_value = mails
+            mock_state.webmail_client = self._setup_webmail()
+
+            result = await _tool_get_emails(
+                {"sender_filter": "Erkan Uçar", "count": 5}, user_id=1
+            )
+        assert "Mail 1" in result
+        assert "Mail 2" not in result
+
+    @pytest.mark.asyncio
+    async def test_sender_filter_reverse_turkish_normalization(self):
+        """Turkish 'Uçar' in from field should match ASCII 'ucar' in filter."""
+        mails = [
+            _mail("Mail A", from_addr="Erkan Uçar <erkan@bilkent.edu.tr>"),
+        ]
+        with patch("bot.services.agent_service.cache_db") as mock_cache, \
+             patch("bot.services.agent_service.STATE") as mock_state:
+            mock_cache.get_emails.return_value = mails
+            mock_state.webmail_client = self._setup_webmail()
+
+            result = await _tool_get_emails(
+                {"sender_filter": "Erkan Ucar", "count": 5}, user_id=1
+            )
+        assert "Mail A" in result
+
+
+# ─── _normalize_tr ───────────────────────────────────────────────────────────
+
+class TestNormalizeTr:
+    def test_cедilla_to_c(self):
+        assert _normalize_tr("Uçar") == "ucar"
+
+    def test_s_cedilla_to_s(self):
+        assert _normalize_tr("Şahin") == "sahin"
+
+    def test_g_breve_to_g(self):
+        assert _normalize_tr("Doğan") == "dogan"
+
+    def test_u_umlaut_to_u(self):
+        assert _normalize_tr("Ünal") == "unal"
+
+    def test_o_umlaut_to_o(self):
+        assert _normalize_tr("Öztürk") == "ozturk"
+
+    def test_dotless_i_to_i(self):
+        assert _normalize_tr("Bilkent") == "bilkent"  # regular i unaffected
+        assert _normalize_tr("ışık") == "isik"
+
+    def test_uppercase_dotted_i_to_i(self):
+        assert _normalize_tr("İstanbul") == "istanbul"
+
+    def test_full_name_normalization(self):
+        assert _normalize_tr("Erkan Uçar") == "erkan ucar"
+
+    def test_already_ascii_unchanged(self):
+        assert _normalize_tr("Erkan Ucar") == "erkan ucar"
+
+    def test_mixed_case_lowercased(self):
+        assert _normalize_tr("CTIS 256") == "ctis 256"
+
+
+# ─── _tool_get_email_detail ──────────────────────────────────────────────────
+
+class TestToolGetEmailDetail:
+    def _setup_webmail(self):
+        webmail = MagicMock()
+        webmail.authenticated = True
+        return webmail
+
+    @pytest.mark.asyncio
+    async def test_finds_mail_in_cache_by_subject(self):
+        cached_mails = [
+            _mail("CANCELLED: CTISTalk Today", from_addr="ecem@bilkent.edu.tr", body="Event cancelled."),
+            _mail("Other mail"),
+        ]
+        with patch("bot.services.agent_service.cache_db") as mock_cache, \
+             patch("bot.services.agent_service.STATE") as mock_state:
+            mock_cache.get_emails.return_value = cached_mails
+            mock_state.webmail_client = self._setup_webmail()
+
+            result = await _tool_get_email_detail(
+                {"email_subject": "CANCELLED: CTISTalk"}, user_id=1
+            )
+        assert "CANCELLED: CTISTalk Today" in result
+        assert "Event cancelled" in result
+
+    @pytest.mark.asyncio
+    async def test_normalized_subject_match(self):
+        """'CTIStalk' (mixed case) should match 'CTISTalk' in cache."""
+        cached_mails = [_mail("CTISTalk Seminar Today")]
+        with patch("bot.services.agent_service.cache_db") as mock_cache, \
+             patch("bot.services.agent_service.STATE") as mock_state:
+            mock_cache.get_emails.return_value = cached_mails
+            mock_state.webmail_client = self._setup_webmail()
+
+            result = await _tool_get_email_detail(
+                {"email_subject": "ctistalk seminar"}, user_id=1
+            )
+        assert "CTISTalk Seminar Today" in result
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_imap_when_not_in_cache(self):
+        fresh_mails = [_mail("New Mail From IMAP", body="Fresh content")]
+
+        with patch("bot.services.agent_service.cache_db") as mock_cache, \
+             patch("bot.services.agent_service.STATE") as mock_state, \
+             patch("bot.services.agent_service.asyncio.create_task"):
+            mock_cache.get_emails.return_value = [_mail("Unrelated mail")]
+            webmail = self._setup_webmail()
+            webmail.get_recent_airs_dais = MagicMock(return_value=fresh_mails)
+            mock_state.webmail_client = webmail
+
+            result = await _tool_get_email_detail(
+                {"email_subject": "New Mail From IMAP"}, user_id=1
+            )
+        assert "New Mail From IMAP" in result
+        webmail.get_recent_airs_dais.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_not_found_when_absent(self):
+        with patch("bot.services.agent_service.cache_db") as mock_cache, \
+             patch("bot.services.agent_service.STATE") as mock_state, \
+             patch("bot.services.agent_service.asyncio.create_task"):
+            mock_cache.get_emails.return_value = [_mail("Completely different mail")]
+            webmail = self._setup_webmail()
+            webmail.get_recent_airs_dais = MagicMock(return_value=[])
+            mock_state.webmail_client = webmail
+
+            result = await _tool_get_email_detail(
+                {"email_subject": "nonexistent subject xyz"}, user_id=1
+            )
+        assert "bulunamadı" in result
+
+    @pytest.mark.asyncio
+    async def test_uses_body_full_if_available(self):
+        cached_mails = [{
+            "uid": "1",
+            "subject": "Test Mail",
+            "from": "test@b.edu",
+            "date": _recent_date(0),
+            "body_preview": "Short preview...",
+            "body_full": "This is the complete full body text.",
+            "source": "DAIS",
+        }]
+        with patch("bot.services.agent_service.cache_db") as mock_cache, \
+             patch("bot.services.agent_service.STATE") as mock_state:
+            mock_cache.get_emails.return_value = cached_mails
+            mock_state.webmail_client = self._setup_webmail()
+
+            result = await _tool_get_email_detail(
+                {"email_subject": "Test Mail"}, user_id=1
+            )
+        assert "complete full body" in result
+
+    @pytest.mark.asyncio
+    async def test_webmail_none_returns_error(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.webmail_client = None
+            result = await _tool_get_email_detail({"email_subject": "test"}, user_id=1)
         assert "giriş yapılmamış" in result.lower() or "webmail" in result.lower()

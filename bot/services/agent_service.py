@@ -535,6 +535,20 @@ def _get_available_tools(user_id: int) -> list[dict[str, Any]]:
 # ─── LLM Call with Tools ─────────────────────────────────────────────────────
 
 
+# ─── Turkish Character Normalization ────────────────────────────────────────
+# Used in sender/subject matching to handle ç≠c, ş≠s, ğ≠g, ü≠u, ö≠o, ı≠i
+
+_TR_NORMALIZE = str.maketrans(
+    "çşğüöıİÇŞĞÜÖ",
+    "csguo iCSGUO",
+)
+
+
+def _normalize_tr(text: str) -> str:
+    """Lowercase + map Turkish chars to ASCII equivalents for fuzzy matching."""
+    return text.lower().translate(_TR_NORMALIZE)
+
+
 # ─── Security: Tool Output Sanitization ──────────────────────────────────────
 
 _INJECTION_RE = re.compile(
@@ -652,11 +666,15 @@ async def _plan_agent(user_text: str, history: list[dict], tool_names: list[str]
 _CRITIC_SYSTEM = (
     "You are a fact-checking critic for an academic assistant. "
     "Given a student question, the assistant's response, and the raw data sources used, verify:\n"
-    "1. Are all dates/deadlines taken directly from the data (not invented)?\n"
-    "2. Are all filenames/source names real (appear in data)?\n"
-    "3. Does the response contradict any data source?\n"
-    "Return JSON: {\"ok\": true} if all checks pass, "
-    "or {\"ok\": false, \"issue\": \"short description\"} if not. Return ONLY the JSON."
+    "1. Are specific dates/deadlines (e.g. '18 Şubat', '23:59') present in the data? "
+    "   Note: reformatting data is OK — 'Pazartesi'→'bugün', '08:30-09:20'→'08:30' are fine. "
+    "   Only flag if a specific date/deadline appears in the response but is ABSENT from the data.\n"
+    "2. Are filenames/source names mentioned in the response real (appear in data)?\n"
+    "3. Does the response make factual claims that directly CONTRADICT the data?\n"
+    "Be lenient: summarizing, translating day names, or reformatting is acceptable. "
+    "Return JSON: {\"ok\": true} if all checks pass (default to true when uncertain), "
+    "or {\"ok\": false, \"issue\": \"short description\"} only for clear hallucinations. "
+    "Return ONLY the JSON."
 )
 
 
@@ -1371,16 +1389,18 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
         """Apply date, sender, and subject filters to a mail list."""
         result = [m for m in mail_list if _is_recent(m)]
         if sender_filter:
-            parts = [p for p in sender_filter.lower().split() if p]
+            # Normalize Turkish chars so "Uçar" matches "Ucar" in IMAP headers
+            parts = [p for p in _normalize_tr(sender_filter).split() if p]
             result = [
                 m for m in result
                 if all(
-                    p in m.get("from", "").lower() or p in m.get("source", "").lower()
+                    p in _normalize_tr(m.get("from", ""))
+                    or p in _normalize_tr(m.get("source", ""))
                     for p in parts
                 )
             ]
         if subject_filter:
-            sf = subject_filter.lower()
+            sf = _normalize_tr(subject_filter)
             _TR_EN = {
                 "iptal": ["iptal", "cancel", "cancelled"],
                 "erteleme": ["erteleme", "postpone", "postponed"],
@@ -1397,7 +1417,8 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
             result = [
                 m for m in result
                 if any(
-                    v in m.get("subject", "").lower() or v in m.get("body_preview", "").lower()
+                    v in _normalize_tr(m.get("subject", ""))
+                    or v in _normalize_tr(m.get("body_preview", ""))
                     for v in variants
                 )
             ]
@@ -1446,7 +1467,7 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
 
 
 async def _tool_get_email_detail(args: dict, user_id: int) -> str:
-    """Get full content of a specific email."""
+    """Get full content of a specific email. Checks cache first, falls back to live IMAP."""
     webmail = STATE.webmail_client
     if webmail is None or not webmail.authenticated:
         return "Webmail girişi yapılmamış."
@@ -1455,33 +1476,42 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
     if not subject_query:
         return "Mail konusu belirtilmedi."
 
-    try:
-        mails = await asyncio.to_thread(webmail.get_recent_airs_dais, 20)
-    except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
-        logger.error("Email detail fetch failed: %s", exc, exc_info=True)
-        return f"Mail detayı alınamadı: {exc}"
+    sq = _normalize_tr(subject_query)
 
-    sq = subject_query.lower()
-    match = None
-    for m in mails:
-        if sq in m.get("subject", "").lower():
-            match = m
-            break
+    def _find_in_list(mail_list: list[dict]) -> dict | None:
+        """Find best matching mail by normalized subject then body_preview."""
+        for m in mail_list:
+            if sq in _normalize_tr(m.get("subject", "")):
+                return m
+        for m in mail_list:
+            if sq in _normalize_tr(m.get("body_preview", "")):
+                return m
+        return None
 
-    if not match:
-        for m in mails:
-            if sq in m.get("body_preview", "").lower():
-                match = m
-                break
+    # 1. Try cache first (avoids IMAP round-trip and connection failures)
+    mails = cache_db.get_emails(50)
+    match = _find_in_list(mails or [])
+
+    # 2. Cache miss or not found in cache → live IMAP
+    if match is None:
+        logger.debug("Email detail: not found in cache, fetching live IMAP (query=%r)", subject_query)
+        try:
+            fresh = await asyncio.to_thread(webmail.get_recent_airs_dais, 20)
+            asyncio.create_task(asyncio.to_thread(cache_db.store_emails, fresh))
+            match = _find_in_list(fresh)
+        except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
+            logger.error("Email detail fetch failed: %s", exc, exc_info=True)
+            return f"Mail detayı alınamadı: {exc}"
 
     if not match:
         return f"'{subject_query}' konusuyla eşleşen mail bulunamadı."
 
+    body = match.get("body_full") or match.get("body_preview", "")
     return (
         f"📧 *{match.get('subject', 'Konusuz')}*\n"
         f"Kimden: {match.get('from', '')}\n"
         f"Tarih: {match.get('date', '')}\n\n"
-        f"{match.get('body_preview', '')}"
+        f"{body}"
     )
 
 
