@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import timedelta
 
 from telegram.ext import Application, ContextTypes
@@ -32,8 +33,29 @@ logger = logging.getLogger(__name__)
 
 OWNER_ID = CONFIG.owner_id
 
-# Attendance warning threshold (%)
+# Attendance warning threshold (%) — fallback when no syllabus limit found
 _ATTENDANCE_WARN_THRESHOLD = 85.0
+
+# Notify when this many absence slots remain (syllabus-based tracking)
+_ABSENCE_WARN_REMAINING = 3   # ⚠️ warning
+_ABSENCE_CRIT_REMAINING = 1   # 🚨 critical
+
+# Regex patterns to extract max absence hours from syllabus text
+_ABSENCE_PATTERNS = [
+    # "Do not miss more than 12 hrs of lecture"
+    re.compile(r"miss\s+more\s+than\s+(\d+)\s*hr", re.IGNORECASE),
+    # "maximum 12 hours of absence"
+    re.compile(r"maximum\s+(\d+)\s*hour", re.IGNORECASE),
+    # "absence limit: 12" / "absence limit 12 hours"
+    re.compile(r"absence\s+limit[:\s]+(\d+)", re.IGNORECASE),
+    # "(\d+) hours of absence allowed"
+    re.compile(r"(\d+)\s*hours?\s+of\s+absence", re.IGNORECASE),
+    # Turkish: "devamsızlık hakkı 12 saat" / "12 saatlik devamsızlık"
+    re.compile(r"devams[ıi]zl[ıi]k\s+hakk[ıi][:\s]+(\d+)\s*saat", re.IGNORECASE),
+    re.compile(r"(\d+)\s*saatlik\s+devams[ıi]zl[ıi]k", re.IGNORECASE),
+    # "12 hrs" near "lecture" (loose match for various phrasings)
+    re.compile(r"(\d+)\s*hrs?\b.*lecture", re.IGNORECASE),
+]
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -74,6 +96,63 @@ def _attendance_ratios(attendance: list[dict]) -> dict[str, float]:
             ratio = 100.0
         ratios[cname] = ratio
     return ratios
+
+
+def _extract_syllabus_attendance_limit(course_name: str) -> int | None:
+    """
+    Search the RAG vector store for the course's syllabus and extract the max
+    absence hours/sessions. Returns an integer limit or None if not found.
+
+    Uses course_filter to stay within the course's documents, then tries
+    broader queries for syllabi that may be indexed under a different course label.
+    """
+    store = STATE.vector_store
+    if store is None:
+        return None
+
+    # (query, use_course_filter)
+    searches = [
+        ("syllabus attendance absence limit hours", True),
+        ("devamsızlık saat limit hakkı", True),
+        ("minimum requirements qualify final exam miss lecture", True),
+        # Broader fallback without course filter
+        (f"{course_name} syllabus attendance miss hours", False),
+    ]
+
+    seen_texts: list[str] = []
+    for query, use_filter in searches:
+        try:
+            hits = store.query(
+                query,
+                n_results=5,
+                course_filter=course_name if use_filter else None,
+            )
+            for hit in hits or []:
+                text = hit.get("text", "")
+                if text and text not in seen_texts:
+                    seen_texts.append(text)
+        except Exception as exc:
+            logger.debug("Syllabus RAG query failed for %s: %s", course_name, exc)
+
+    combined = "\n".join(seen_texts)
+    for pattern in _ABSENCE_PATTERNS:
+        m = pattern.search(combined)
+        if m:
+            val = int(m.group(1))
+            # Sanity check: Bilkent semesters ~28-42 sessions; limits are 10-25% of that
+            if 4 <= val <= 50:
+                logger.info(
+                    "Syllabus attendance limit found for %s: %d (pattern: %s)",
+                    course_name, val, pattern.pattern,
+                )
+                return val
+
+    return None
+
+
+def _count_absences(records: list[dict]) -> int:
+    """Count sessions where the student was absent."""
+    return sum(1 for r in records if not r.get("attended", True))
 
 
 async def _send(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
@@ -204,14 +283,28 @@ async def _sync_grades(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _sync_attendance(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fetch attendance from STARS → detect drops → notify + cache."""
+    """
+    Fetch attendance from STARS → detect drops → notify + cache.
+
+    Per-course logic:
+    - If syllabus limit found in RAG: hour-based tracking (remaining = limit - absences)
+      Notify at ≤3 remaining (⚠️) and ≤1 remaining (🚨).
+    - Fallback: ratio-based (notify on first drop below 85%).
+    """
     stars = STATE.stars_client
     if stars is None or not stars.is_authenticated(OWNER_ID):
         return
 
-    # Snapshot previous ratios
+    # Snapshot previous state for change detection
     prev = cache_db.get_json("attendance", OWNER_ID)
     prev_ratios = _attendance_ratios(prev)
+    prev_abs_counts: dict[str, int] = {
+        cd.get("course", ""): _count_absences(cd.get("records", []))
+        for cd in (prev or [])
+    }
+
+    # Load cached syllabus limits {course_name: max_hours}
+    syllabus_limits: dict[str, int] = cache_db.get_json("syllabus_limits", OWNER_ID) or {}
 
     try:
         attendance = await asyncio.to_thread(stars.get_attendance, OWNER_ID)
@@ -226,24 +319,54 @@ async def _sync_attendance(context: ContextTypes.DEFAULT_TYPE) -> None:
     cache_db.set_json("attendance", OWNER_ID, attendance)
     logger.debug("Attendance cached: %d courses", len(attendance))
 
-    # Notify for courses that newly dropped below threshold
-    new_ratios = _attendance_ratios(attendance)
-    warnings = []
-    for course, ratio in new_ratios.items():
-        was_ok = prev_ratios.get(course, 100.0) >= _ATTENDANCE_WARN_THRESHOLD
-        now_low = ratio < _ATTENDANCE_WARN_THRESHOLD
-        if was_ok and now_low:
-            warnings.append((course, ratio))
+    warnings: list[str] = []
+
+    for cd in attendance:
+        course = cd.get("course", "")
+        records = cd.get("records", [])
+        absent_now = _count_absences(records)
+        absent_prev = prev_abs_counts.get(course, 0)
+
+        limit = syllabus_limits.get(course) or None  # 0 = "not found" sentinel → None
+
+        if limit is not None:
+            # ── Syllabus-based tracking ──────────────────────────────
+            remaining = limit - absent_now
+            prev_remaining = limit - absent_prev
+
+            # Notify only when we cross a threshold (not every sync)
+            crossed_warn = prev_remaining > _ABSENCE_WARN_REMAINING >= remaining
+            crossed_crit = prev_remaining > _ABSENCE_CRIT_REMAINING >= remaining
+
+            if crossed_crit:
+                warnings.append(
+                    f"🚨 *{course}*: {absent_now}/{limit} saat devamsızlık — "
+                    f"yalnızca *{remaining} saat* kaldı! KRİTİK!"
+                )
+            elif crossed_warn:
+                warnings.append(
+                    f"⚠️ *{course}*: {absent_now}/{limit} saat devamsızlık — "
+                    f"*{remaining} saat* kaldı."
+                )
+        else:
+            # ── Fallback: ratio-based (existing logic) ───────────────
+            try:
+                ratio = float(cd.get("ratio", "100").replace("%", ""))
+            except (ValueError, AttributeError):
+                ratio = 100.0
+            was_ok = prev_ratios.get(course, 100.0) >= _ATTENDANCE_WARN_THRESHOLD
+            now_low = ratio < _ATTENDANCE_WARN_THRESHOLD
+            if was_ok and now_low:
+                warnings.append(
+                    f"⚠️ *{course}*: %{ratio:.1f} devam oranı — limit yaklaşıyor!"
+                )
 
     if not warnings:
         return
 
-    lines = ["⚠️ *Devamsızlık Uyarısı*\n"]
-    for course, ratio in warnings:
-        lines.append(f"• *{course}*: %{ratio:.1f} devam oranı — limit yaklaşıyor!")
-
+    lines = ["⚠️ *Devamsızlık Uyarısı*\n"] + warnings
     await _send(context, "\n".join(lines))
-    logger.info("Attendance warning sent: %d courses below threshold", len(warnings))
+    logger.info("Attendance warning sent: %d courses", len(warnings))
 
 
 async def _sync_schedule(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -323,6 +446,43 @@ async def _generate_missing_summaries(context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.error("Background summary generation failed: %s", exc, exc_info=True)
 
 
+async def _sync_syllabus_limits(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Daily job: for each course in attendance cache, search RAG for the syllabus
+    and extract the max absence limit. Caches results as {course_name: max_hours}.
+
+    Runs once at startup (after 5 min) then every 24h. Results persist in SQLite
+    so they survive bot restarts.
+    """
+    attendance = cache_db.get_json("attendance", OWNER_ID) or []
+    if not attendance:
+        # No attendance data yet — skip silently
+        return
+
+    existing: dict[str, int] = cache_db.get_json("syllabus_limits", OWNER_ID) or {}
+    updated = dict(existing)
+    found = 0
+
+    for cd in attendance:
+        course = cd.get("course", "")
+        if not course:
+            continue
+        # Re-scan even if already cached (syllabus might be uploaded mid-semester)
+        limit = await asyncio.to_thread(_extract_syllabus_attendance_limit, course)
+        if limit is not None:
+            updated[course] = limit
+            found += 1
+        elif course not in updated:
+            # Explicitly mark as "no limit found" so we don't re-scan every 24h
+            # Use 0 as sentinel → treated as None in _sync_attendance
+            updated[course] = 0
+
+    cache_db.set_json("syllabus_limits", OWNER_ID, updated)
+    logger.info(
+        "Syllabus limits synced: %d courses checked, %d limits found", len(attendance), found
+    )
+
+
 # ─── Registration ─────────────────────────────────────────────────────────────
 
 def register_notification_jobs(app: Application) -> None:
@@ -386,9 +546,15 @@ def register_notification_jobs(app: Application) -> None:
         first=timedelta(hours=1),  # First run 1h after startup (non-urgent)
         name="cache_cleanup",
     )
+    jq.run_repeating(
+        _sync_syllabus_limits,
+        interval=timedelta(hours=24),
+        first=timedelta(minutes=5),  # Run soon after startup so limits are ready
+        name="syllabus_limits_sync",
+    )
 
     logger.info(
         "Notification jobs registered: assignments=10m, emails=5m, grades=30m, "
         "attendance=60m, schedule=6h, deadlines=30m, session=60m, summaries=60m, "
-        "cache_cleanup=weekly"
+        "cache_cleanup=weekly, syllabus_limits=24h"
     )
