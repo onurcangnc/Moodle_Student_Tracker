@@ -545,17 +545,19 @@ class TestToolGetSyllabusInfo:
 
     @pytest.mark.asyncio
     async def test_found_syllabus_returns_content(self):
+        """RAG has a file named *syllabus* → get_files_for_course + get_file_chunks used."""
         mock_store = MagicMock()
-        mock_store.query.return_value = [
-            {
-                "text": "Midterm: 35%, Final: 40%, Homework: 25%. "
-                        "Do not miss more than 12 hours of lecture.",
-                "metadata": {"filename": "CTIS256_syllabus.pdf"},
-            }
+        mock_store.get_files_for_course.return_value = [
+            {"filename": "CTIS256_Syllabus.pdf", "chunk_count": 3, "course": "CTIS 256"},
+        ]
+        mock_store.get_file_chunks.return_value = [
+            {"text": "Midterm: 35%, Final: 40%, Homework: 25%. "
+                     "Do not miss more than 12 hours of lecture."},
         ]
 
         with patch("bot.services.agent_service.STATE") as mock_state:
             mock_state.vector_store = mock_store
+            mock_state.moodle = None
             result = await _tool_get_syllabus_info({"course_name": "CTIS 256"}, USER_ID)
 
         assert "CTIS 256" in result
@@ -564,10 +566,11 @@ class TestToolGetSyllabusInfo:
     @pytest.mark.asyncio
     async def test_not_found_returns_helpful_message(self):
         mock_store = MagicMock()
-        mock_store.query.return_value = []
+        mock_store.get_files_for_course.return_value = []
 
         with patch("bot.services.agent_service.STATE") as mock_state:
             mock_state.vector_store = mock_store
+            mock_state.moodle = None
             result = await _tool_get_syllabus_info({"course_name": "MATH 101"}, USER_ID)
 
         assert "bulunamadı" in result
@@ -575,30 +578,33 @@ class TestToolGetSyllabusInfo:
 
     @pytest.mark.asyncio
     async def test_uses_short_code_as_filter(self):
-        """Should pass short code (e.g. 'HCIV 201') to store.query, not full name."""
+        """get_files_for_course should be called with short code 'HCIV 201'."""
         mock_store = MagicMock()
-        mock_store.query.return_value = []
+        mock_store.get_files_for_course.return_value = []
 
         with patch("bot.services.agent_service.STATE") as mock_state:
             mock_state.vector_store = mock_store
+            mock_state.moodle = None
             await _tool_get_syllabus_info(
                 {"course_name": "HCIV 201 Science and Technology in History"}, USER_ID
             )
 
-        # At least one call should use "HCIV 201" as the filter
-        all_calls = [str(call) for call in mock_store.query.call_args_list]
+        # At least one call should use "HCIV 201" as the arg
+        all_calls = [str(call) for call in mock_store.get_files_for_course.call_args_list]
         assert any("HCIV 201" in c for c in all_calls)
 
     @pytest.mark.asyncio
     async def test_output_truncated_at_4000_chars(self):
         long_text = "A" * 5000
         mock_store = MagicMock()
-        mock_store.query.return_value = [
-            {"text": long_text, "metadata": {"filename": "big_syllabus.pdf"}}
+        mock_store.get_files_for_course.return_value = [
+            {"filename": "big_syllabus.pdf", "chunk_count": 1, "course": "TEST 101"},
         ]
+        mock_store.get_file_chunks.return_value = [{"text": long_text}]
 
         with patch("bot.services.agent_service.STATE") as mock_state:
             mock_state.vector_store = mock_store
+            mock_state.moodle = None
             result = await _tool_get_syllabus_info({"course_name": "TEST 101"}, USER_ID)
 
         assert len(result) < 4500  # header + truncated content

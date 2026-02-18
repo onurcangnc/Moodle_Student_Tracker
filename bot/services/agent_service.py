@@ -1531,7 +1531,7 @@ def _short_code(course_name: str) -> str:
 
 
 async def _tool_get_syllabus_info(args: dict, user_id: int) -> str:
-    """Search RAG for a course syllabus and return assessment weights, attendance limit, grade cutoffs."""
+    """Find course syllabus: (1) RAG filename search, (2) Moodle file listing."""
     course_name = args.get("course_name", "").strip()
     if not course_name:
         return "Ders adı belirtilmedi."
@@ -1542,48 +1542,89 @@ async def _tool_get_syllabus_info(args: dict, user_id: int) -> str:
 
     short = _short_code(course_name)
 
-    # Multiple queries ordered best-first; try with course_filter and without
-    searches = [
-        ("syllabus assessment grading criteria midterm final quiz homework weight percentage", short),
-        ("syllabus assessment grading criteria midterm final quiz homework weight percentage", course_name),
-        ("harf notu değerlendirme ölçütleri ağırlık katılım proje", short),
-        ("harf notu değerlendirme ölçütleri ağırlık katılım proje", course_name),
-        ("attendance absence limit hours miss lecture devamsızlık", short),
-        ("letter grade cutoff A B C D passing score threshold", short),
-        # Broad fallback without filter
-        (f"{short} syllabus grading attendance assessment weight", None),
-    ]
-
-    seen_texts: list[str] = []
-    seen_files: list[str] = []
-
-    for query, cf in searches:
+    # ── Step 1: RAG — find indexed files whose filename contains "syllabus" ──
+    syllabus_files: list[str] = []
+    for name_variant in dict.fromkeys([short, course_name]):  # dedup, keep order
         try:
-            hits = await asyncio.to_thread(store.query, query, 6, cf)
-            for hit in hits or []:
-                text = hit.get("text", "")
-                filename = hit.get("metadata", {}).get("filename", "")
-                if text and text not in seen_texts:
-                    seen_texts.append(text)
-                    if filename and filename not in seen_files:
-                        seen_files.append(filename)
+            files = await asyncio.to_thread(store.get_files_for_course, name_variant)
+            for f in files or []:
+                fname = f.get("filename", "")
+                if "syllabus" in fname.lower() and fname not in syllabus_files:
+                    syllabus_files.append(fname)
         except Exception as exc:
-            logger.debug("Syllabus info RAG query failed (%s): %s", course_name, exc)
+            logger.debug("get_files_for_course failed (%s): %s", name_variant, exc)
 
-    if not seen_texts:
-        return (
-            f"'{course_name}' dersi için syllabus bulunamadı. "
-            "Moodle'a yüklenmemiş olabilir. "
-            "Not hesaplamak için assessment ağırlıklarını (midterm %, final %, vb.) manuel gir."
-        )
+    # Fallback: scan ALL indexed files for "syllabus" + course code in filename/course
+    if not syllabus_files:
+        try:
+            all_files = await asyncio.to_thread(store.get_files_for_course, None)
+            short_lower = short.lower()
+            for f in all_files or []:
+                fname = f.get("filename", "")
+                course_field = f.get("course", "").lower()
+                if "syllabus" in fname.lower() and (
+                    short_lower in fname.lower() or short_lower in course_field
+                ):
+                    if fname not in syllabus_files:
+                        syllabus_files.append(fname)
+        except Exception as exc:
+            logger.debug("get_files_for_course (all) failed: %s", exc)
 
-    sources = ", ".join(seen_files[:3]) if seen_files else "syllabus"
-    combined = "\n\n---\n\n".join(seen_texts[:10])
-    header = f"📋 {course_name} — Syllabus bilgisi ({sources}):\n\n"
-    # Cap total output at 4000 chars so LLM can process comfortably
-    if len(combined) > 3800:
-        combined = combined[:3800] + "\n\n[... kısaltıldı ...]"
-    return header + combined
+    # ── Step 2: Read chunks from found syllabus file(s) ──────────────────────
+    if syllabus_files:
+        all_chunks: list[str] = []
+        for fname in syllabus_files[:2]:  # max 2 files
+            try:
+                chunks = await asyncio.to_thread(store.get_file_chunks, fname, 0)
+                for chunk in chunks or []:
+                    text = chunk.get("text", "")
+                    if text and text not in all_chunks:
+                        all_chunks.append(text)
+            except Exception as exc:
+                logger.debug("get_file_chunks failed (%s): %s", fname, exc)
+
+        if all_chunks:
+            combined = "\n\n---\n\n".join(all_chunks[:20])
+            sources = ", ".join(syllabus_files[:2])
+            header = f"📋 {course_name} — Syllabus ({sources}):\n\n"
+            if len(combined) > 3800:
+                combined = combined[:3800] + "\n\n[... kısaltıldı ...]"
+            return header + combined
+
+    # ── Step 3: Moodle file listing — check if syllabus exists but not indexed ─
+    moodle = STATE.moodle
+    if moodle is not None:
+        try:
+            courses = await asyncio.to_thread(moodle.get_courses)
+            short_lower = short.lower()
+            cn_lower = course_name.lower()
+            target = next(
+                (c for c in courses
+                 if short_lower in c.shortname.lower() or cn_lower in c.fullname.lower()),
+                None,
+            )
+            if target:
+                moodle_files = await asyncio.to_thread(moodle.discover_files, target)
+                moodle_syllabus = [
+                    mf.filename for mf in (moodle_files or [])
+                    if "syllabus" in mf.filename.lower()
+                ]
+                if moodle_syllabus:
+                    return (
+                        f"📋 {course_name} dersi için Moodle'da syllabus dosyası bulundu: "
+                        f"{', '.join(moodle_syllabus[:3])}\n\n"
+                        "⚠️ Bu dosya henüz RAG'a indexlenmemiş. "
+                        "Admin /upload ile indexlediğinde burada görünecek."
+                    )
+        except Exception as exc:
+            logger.debug("Moodle syllabus search failed (%s): %s", course_name, exc)
+
+    return (
+        f"'{course_name}' dersi için syllabus bulunamadı. "
+        "Moodle'a yüklenmemiş ya da farklı isimle ('ders izlencesi', 'course outline') "
+        "kaydedilmiş olabilir. "
+        "Not hesaplamak için assessment ağırlıklarını kullanıcıdan al."
+    )
 
 
 def _serialize_assignments(assignments: list) -> list[dict]:
