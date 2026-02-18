@@ -378,13 +378,22 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "calculate_grade",
             "description": (
-                "Bilkent Üniversitesi not hesaplayıcısı. Üç mod: "
+                "Bilkent Üniversitesi not hesaplayıcısı. MUTLAKA bu tool'u çağır — kendi kendine hesaplama yapma. "
+                "Üç mod: "
                 "(1) 'gpa' — tek dönem GPA hesaplar (harf notu + kredi). "
                 "(2) 'cgpa' — tüm döneme ait kümülatif CGPA + AGPA hesaplar, tekrar edilen dersleri doğru işler, "
                 "her ders için geçer/başarısız durumunu gösterir, mezuniyet şeref derecesini (cum laude) hesaplar. "
-                "(3) 'course' — ağırlıklı notlar + what-if senaryosu ile dönem sonu notu hesaplar. "
-                "'CGPA hesapla', 'kümülatif notum ne', 'mezuniyet şerefim ne olur', 'summa cum laude olabilir miyim', "
-                "'dersleri geçtim mi', 'Finalde X alırsam ne olur' gibi isteklerde kullan."
+                "(3) 'course' — ağırlıklı ders notu hesaplar, what-if senaryosu destekler. "
+                "Şu durumlarda mode='course' ile çağır: "
+                "'midterm X aldım final %N ağırlıklı ne olur', "
+                "'geçmek için finalden kaç almam lazım', "
+                "'şimdiye kadar X puan aldım Y alırsam not kaç olur', "
+                "'ağırlıklı notum ne', 'dönem sonu notum ne olur'. "
+                "Şu durumlarda mode='gpa' ile çağır: "
+                "'bu dönem GPA'm kaç', harf notları ve kredi verildiğinde. "
+                "Şu durumlarda mode='cgpa' ile çağır: "
+                "'CGPA hesapla', 'kümülatif notum', 'mezuniyet şerefim', 'summa/magna cum laude'. "
+                "KESİNLİKLE kendi aklınla hesaplama yapma — her zaman bu tool'u kullan."
             ),
             "parameters": {
                 "type": "object",
