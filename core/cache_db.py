@@ -12,7 +12,7 @@ Background job refresh intervals (for reference):
   attendance  → 60 min  (attendance_sync)
   schedule    → 6 h     (schedule_sync)
 
-Cleanup: emails older than CLEANUP_DAYS are removed by a weekly job.
+Cleanup: emails older than CLEANUP_DAYS are removed by a monthly job.
 data_cache rows are single key-value entries that get overwritten on each
 write — no accumulation, no cleanup needed there.
 """
@@ -29,7 +29,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _DB_PATH = Path("data/cache.db")
-CLEANUP_DAYS = 90  # delete emails older than this
+CLEANUP_DAYS = 365  # delete emails older than this (1 year retention)
 
 _initialized = False
 

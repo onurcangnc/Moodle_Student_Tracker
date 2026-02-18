@@ -1683,8 +1683,8 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
             # Store to cache asynchronously (don't block response)
             asyncio.create_task(asyncio.to_thread(cache_db.store_emails, mails))
 
-    # Drop mails older than 7 days — irrelevant for recent academic queries
-    _cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    # Drop mails older than 30 days — keeps a full month of mail history visible
+    _cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     def _is_recent(mail: dict) -> bool:
         try:
             dt = parsedate_to_datetime(mail.get("date", ""))

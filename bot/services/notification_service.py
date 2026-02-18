@@ -436,7 +436,7 @@ async def _check_deadline_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _cleanup_old_cache(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Weekly job: delete emails older than 90 days from SQLite."""
+    """Monthly job: delete emails older than 365 days from SQLite."""
     deleted = cache_db.clean_old_emails()
     if deleted:
         logger.info("Weekly cache cleanup: removed %d old emails", deleted)
@@ -564,8 +564,8 @@ def register_notification_jobs(app: Application) -> None:
     )
     jq.run_repeating(
         _cleanup_old_cache,
-        interval=timedelta(weeks=1),
-        first=timedelta(hours=1),  # First run 1h after startup (non-urgent)
+        interval=timedelta(weeks=4),  # Monthly — 365-day retention means no rush
+        first=timedelta(hours=1),
         name="cache_cleanup",
     )
     jq.run_repeating(

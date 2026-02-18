@@ -809,9 +809,9 @@ class TestToolGetEmails:
 
     @pytest.mark.asyncio
     async def test_old_emails_filtered_out(self):
-        """Emails older than 7 days should be excluded."""
+        """Emails older than 30 days should be excluded."""
         old_date = format_datetime(
-            datetime.now(timezone.utc) - timedelta(days=10)
+            datetime.now(timezone.utc) - timedelta(days=35)
         )
         recent_date = format_datetime(datetime.now(timezone.utc))
         mails = [
