@@ -484,6 +484,25 @@ class StarsClient:
 
         courses = []
         divs = soup.find_all("div", class_="attendDiv")
+
+        # --- DIAGNOSTIC: log HTML structure to identify parsing issues ---
+        logger.debug(
+            "Attendance page: %d attendDiv found. h4 texts: %s",
+            len(divs),
+            [d.find("h4").get_text(strip=True)[:40] if d.find("h4") else "NO_H4"
+             for d in divs],
+        )
+        for d in divs:
+            _h4 = d.find("h4")
+            _h4_text = _h4.get_text(strip=True)[:35] if _h4 else "?"
+            _table_in_div = bool(d.find("table"))
+            _table_after_h4 = bool(_h4.find_next("table")) if _h4 else False
+            logger.debug(
+                "  [%s] table_in_div=%s  table_after_h4=%s",
+                _h4_text, _table_in_div, _table_after_h4,
+            )
+        # --- END DIAGNOSTIC ---
+
         if not divs:
             # Try alternate: look for h4 + table pairs
             divs = [soup]
