@@ -22,11 +22,14 @@ from bot.services.agent_service import (
     _academic_standing,
     _bilkent_cgpa,
     _bilkent_gpa,
+    # Agentic components
+    _critic_agent,
     _cum_laude,
     _format_assignments,
     _honor_status,
     _normalize_tr,
     _pass_fail,
+    _plan_agent,
     _sanitize_tool_output,
     _sanitize_user_input,
     _score_complexity,
@@ -52,9 +55,6 @@ from bot.services.agent_service import (
     _tool_read_source,
     _tool_set_active_course,
     _tool_study_topic,
-    # Agentic components
-    _critic_agent,
-    _plan_agent,
     handle_agent_message,
 )
 
@@ -2096,7 +2096,7 @@ class TestPlannerAgent:
             })
             mock_state.llm = mock_llm
             result = await _plan_agent("complex query", [], ["get_grades"])
-        lines = [l for l in result.split("\n") if l.strip().startswith(("1.", "2.", "3.", "4.", "5.", "6."))]
+        lines = [ln for ln in result.split("\n") if ln.strip().startswith(("1.", "2.", "3.", "4.", "5.", "6."))]
         assert len(lines) <= 4
 
     @pytest.mark.asyncio
@@ -2720,7 +2720,6 @@ class TestEdgeCasesInputValidation:
     @pytest.mark.asyncio
     async def test_tool_handler_all_callable(self):
         """Every entry in TOOL_HANDLERS must be an async callable."""
-        import asyncio as _asyncio
         import inspect
         for name, handler in TOOL_HANDLERS.items():
             assert callable(handler), f"{name} is not callable"
