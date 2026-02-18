@@ -103,35 +103,52 @@ def _attendance_ratios(attendance: list[dict]) -> dict[str, float]:
     return ratios
 
 
+_COURSE_CODE_RE = re.compile(r"^([A-Z]{2,}\s*\d{3}[A-Z]?)\b")
+
+
+def _short_course_code(course_name: str) -> str:
+    """
+    Extract the short course code from a full STARS course name.
+
+    STARS returns long names like "HCIV 201 Science and Technology in History".
+    RAG metadata stores the short code "HCIV 201" (or similar prefix).
+    The vector_store course_filter checks: filter.lower() in meta["course"].lower()
+    So we need the SHORT code so it is a substring of the metadata value.
+    """
+    m = _COURSE_CODE_RE.match(course_name.strip())
+    return m.group(1).strip() if m else course_name
+
+
 def _extract_syllabus_attendance_limit(course_name: str) -> int | None:
     """
-    Search the RAG vector store for the course's syllabus and extract the max
-    absence hours/sessions. Returns an integer limit or None if not found.
+    Dynamically search RAG for any course's syllabus and extract the max
+    absence limit. Works for every enrolled course — nothing hardcoded.
 
-    Uses course_filter to stay within the course's documents, then tries
-    broader queries for syllabi that may be indexed under a different course label.
+    Strategy:
+    1. Derive short code from STARS full name (e.g. "HCIV 201 Sci..." → "HCIV 201")
+    2. Query RAG with course_filter=short_code (substring match in metadata)
+    3. Fallback: query without filter but embed course name in query text
+    Returns integer hour limit, or None if not found / no syllabus uploaded.
     """
     store = STATE.vector_store
     if store is None:
         return None
 
-    # (query, use_course_filter)
+    short_code = _short_course_code(course_name)
+
+    # (query_text, course_filter)  — ordered best-first
     searches = [
-        ("syllabus attendance absence limit hours", True),
-        ("devamsızlık saat limit hakkı", True),
-        ("minimum requirements qualify final exam miss lecture", True),
-        # Broader fallback without course filter
-        (f"{course_name} syllabus attendance miss hours", False),
+        ("syllabus attendance absence limit hours miss lecture", short_code),
+        ("devamsızlık saat limit hakkı miss", short_code),
+        ("minimum requirements qualify final exam", short_code),
+        # Fallback: no filter, course code embedded in query text
+        (f"{short_code} syllabus attendance miss hours absence limit", None),
     ]
 
     seen_texts: list[str] = []
-    for query, use_filter in searches:
+    for query, cf in searches:
         try:
-            hits = store.query(
-                query,
-                n_results=5,
-                course_filter=course_name if use_filter else None,
-            )
+            hits = store.query(query, n_results=5, course_filter=cf)
             for hit in hits or []:
                 text = hit.get("text", "")
                 if text and text not in seen_texts:
@@ -144,11 +161,11 @@ def _extract_syllabus_attendance_limit(course_name: str) -> int | None:
         m = pattern.search(combined)
         if m:
             val = int(m.group(1))
-            # Sanity check: Bilkent semesters ~28-42 sessions; limits are 10-25% of that
+            # Sanity check: Bilkent semesters ~28-42 sessions; absence limits 4-50h
             if 4 <= val <= 50:
                 logger.info(
-                    "Syllabus attendance limit found for %s: %d (pattern: %s)",
-                    course_name, val, pattern.pattern,
+                    "Syllabus attendance limit found for %s (code=%s): %d h",
+                    course_name, short_code, val,
                 )
                 return val
 
