@@ -378,22 +378,16 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "calculate_grade",
             "description": (
-                "Bilkent Üniversitesi not hesaplayıcısı. MUTLAKA bu tool'u çağır — kendi kendine hesaplama yapma. "
+                "⚠️ STANDALONE hesap makinesi — Moodle veya STARS'a BAKMA, dersin kayıtlı olup olmadığını KONTROL ETME. "
+                "Kullanıcının verdiği sayılar (ağırlık + puan) yeterli — dış veri GEREKMEZ. "
                 "Üç mod: "
-                "(1) 'gpa' — tek dönem GPA hesaplar (harf notu + kredi). "
-                "(2) 'cgpa' — tüm döneme ait kümülatif CGPA + AGPA hesaplar, tekrar edilen dersleri doğru işler, "
-                "her ders için geçer/başarısız durumunu gösterir, mezuniyet şeref derecesini (cum laude) hesaplar. "
-                "(3) 'course' — ağırlıklı ders notu hesaplar, what-if senaryosu destekler. "
-                "Şu durumlarda mode='course' ile çağır: "
-                "'midterm X aldım final %N ağırlıklı ne olur', "
-                "'geçmek için finalden kaç almam lazım', "
-                "'şimdiye kadar X puan aldım Y alırsam not kaç olur', "
-                "'ağırlıklı notum ne', 'dönem sonu notum ne olur'. "
-                "Şu durumlarda mode='gpa' ile çağır: "
-                "'bu dönem GPA'm kaç', harf notları ve kredi verildiğinde. "
-                "Şu durumlarda mode='cgpa' ile çağır: "
-                "'CGPA hesapla', 'kümülatif notum', 'mezuniyet şerefim', 'summa/magna cum laude'. "
-                "KESİNLİKLE kendi aklınla hesaplama yapma — her zaman bu tool'u kullan."
+                "(1) mode='course' — kullanıcı midterm/quiz/final ağırlığı ve puanı verdiğinde HEMEN çağır. "
+                "Örnekler: 'midterm 55 aldım %40, final %60, geçmek için kaç?', "
+                "'Midterm 68 (%35), Quiz 85 (%15), final 80 alırsam?', "
+                "'geçmek için finalden kaç almam lazım'. "
+                "Ders kayıtlı değil diye reddetme — HEMEN hesapla. "
+                "(2) mode='gpa' — harf notu + kredi listesi verildiğinde dönem GPA hesapla. "
+                "(3) mode='cgpa' — tüm dönem CGPA/AGPA, cum laude, geçer/başarısız durumu. "
             ),
             "parameters": {
                 "type": "object",
@@ -579,6 +573,18 @@ Tarih: {date_str} ({today_tr})
 ## KİMLİK KURALI
 Sen bir Bilkent akademik asistanısın. GPT, Claude, Gemini, OpenAI gibi model isimlerini ASLA söyleme.
 
+## ⚠️ NOT HESAPLAMA — EN ÖNCELİKLİ KURAL
+Kullanıcı ağırlıklı not, geçme notu veya GPA sorarsa:
+→ `calculate_grade` tool'unu HEMEN çağır. Başka tool çağırma. Moodle/STARS'a BAKMA.
+→ Ders kayıtlı olmasa da, Moodle'da bulunmasa da hesapla — araç standalonedir.
+→ Kendi aklınla ASLA hesaplama. Tahmin YAPMA.
+
+Örnekler (→ hemen `calculate_grade` çağır, başka tool yok):
+• "CTIS 496'da midterm 55 aldım %40, geçmek için final'den kaç?"  → mode=course
+• "Midterm 68 (%35), final 80 alırsam notum ne?"                  → mode=course + what_if
+• "Bu dönem şu notlarla GPA'm kaç: A, B+, C (3'er kredi)?"       → mode=gpa
+• Sadece CGPA/mezuniyet şeref sorusu                              → get_cgpa (STARS otomatik)
+
 ## ÇOKLU TOOL
 Birden fazla bilgi gerekiyorsa tool'ları paralel çağır.
 "Bugün ne var?" → get_schedule(today) + get_assignments(upcoming) paralel
@@ -620,18 +626,13 @@ Konu bazlı çalışma (dosya adı belirtilmemişse):
 - Genel sorulursa → tüm dersler
 - Devamsızlık limitine yaklaşıyorsa → ⚠️ UYAR
 
-## NOT HESAPLAMA — KESİN KURAL
-Kullanıcı ağırlıklı not, GPA veya geçme hesabı sorarsa:
-- ASLA kendi aklınla hesaplama yapma
-- ASLA Moodle veya STARS'ta ders ara — kayıt kontrolü YAPMA
-- Her zaman `calculate_grade` tool'unu çağır:
-  • "midterm X aldım, final Y ağırlıklı, Z alırsam ne olur?" → mode=course, what_if ile
-  • "geçmek için finalden kaç almam gerekiyor?" → mode=course, what_if ile
-  • "bu dönem GPA'm kaç?" (harf notu + kredi verilmişse) → mode=gpa
-  • "CGPA'm kaç?" veya "mezuniyet şerefim?" → get_cgpa tool'unu çağır (STARS'tan otomatik çeker)
-- Ders adı (CTIS 496 gibi) geçse bile hesaplama sorusunda `calculate_grade` direkt çağır, ders kaydına bakma
-- İpucu: Dersin syllabus PDF'inde harf notu kesme noktaları olabilir (A: 90+, B: 80+, vb.)
-  Eğer not kesimlerini bilmek isterlerse → önce read_source/search_topic ile syllabus'a bak, sonra calculate_grade çağır
+## SYLLABUS + NOT HESAPLAMA
+Kullanıcı "syllabus'a göre geçmek için kaç?" veya "harf notu sınırları neler?" derse:
+1. study_topic ile dersin syllabus PDF'ini ara (Moodle'a yüklü olabilir)
+2. Harf notu kesim noktalarını bul (A:90+, B:80+, vb. formatında)
+3. Ardından calculate_grade (mode=course) çağır — what_if ile sonucu hesapla
+4. İkisini birleştir: "Syllabus'a göre C için 60 gerekiyor. Şu an 47.5 puandasın..."
+Syllabus'ta kesim yok veya dosya yoksa → calculate_grade'i yine de çağır, "50 geçme notu varsayımıyla" not ekle
 
 ## MAİL — DAIS & AIRS
 - Mail sorulursa → get_emails(count=5) direkt çağır
