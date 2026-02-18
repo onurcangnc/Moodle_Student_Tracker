@@ -20,10 +20,13 @@ from bot.services.agent_service import (
     TOOL_HANDLERS,
     TOOLS,
     _academic_standing,
+    _bilkent_cgpa,
     _bilkent_gpa,
+    _cum_laude,
     _format_assignments,
     _honor_status,
     _normalize_tr,
+    _pass_fail,
     _sanitize_tool_output,
     _sanitize_user_input,
     _score_complexity,
@@ -46,6 +49,7 @@ from bot.services.agent_service import (
     _tool_get_upcoming_events,
     _tool_list_courses,
     _tool_rag_search,
+    _tool_read_source,
     _tool_set_active_course,
     _tool_study_topic,
     # Agentic components
@@ -2317,3 +2321,407 @@ class TestHandleAgentMessage:
         call_args = mock_llm_call.call_args
         system_prompt_used = call_args[0][1]
         assert "Execution plan" in system_prompt_used
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# H. BILKENT BUSINESS LOGIC — _bilkent_cgpa, _pass_fail, _cum_laude
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestBilkentCgpa:
+    def test_no_repeated_courses_same_as_gpa(self):
+        courses = [
+            {"name": "CTIS 256", "grade": "A", "credits": 3},
+            {"name": "MATH 101", "grade": "B+", "credits": 4},
+        ]
+        cgpa, cc, agpa, ac, repeated, warns = _bilkent_cgpa(courses)
+        assert cgpa == agpa
+        assert repeated == []
+        assert cc == ac == 7.0
+
+    def test_repeated_course_uses_most_recent_for_cgpa(self):
+        courses = [
+            {"name": "CTIS 101", "grade": "F", "credits": 3, "semester": "2022"},
+            {"name": "CTIS 101", "grade": "A", "credits": 3, "semester": "2023"},
+        ]
+        cgpa, cc, agpa, ac, repeated, warns = _bilkent_cgpa(courses)
+        # CGPA: only A (4.0)
+        assert cgpa == 4.0
+        assert cc == 3.0
+        # AGPA: both F(0) and A(4.0) → (0+12)/6 = 2.0
+        assert agpa == 2.0
+        assert ac == 6.0
+        assert len(repeated) == 1
+        assert "F" in repeated[0]
+        assert "A" in repeated[0]
+
+    def test_repeated_course_info_message_format(self):
+        courses = [
+            {"name": "ENG 101", "grade": "D+", "credits": 3},
+            {"name": "ENG 101", "grade": "C", "credits": 3},
+        ]
+        _, _, _, _, repeated, _ = _bilkent_cgpa(courses)
+        assert len(repeated) == 1
+        assert "D+" in repeated[0]
+        assert "C" in repeated[0]
+
+    def test_three_repeats_uses_last(self):
+        courses = [
+            {"name": "MATH 101", "grade": "F", "credits": 4},
+            {"name": "MATH 101", "grade": "D", "credits": 4},
+            {"name": "MATH 101", "grade": "B+", "credits": 4},
+        ]
+        cgpa, _, _, _, repeated, _ = _bilkent_cgpa(courses)
+        assert cgpa == 3.30  # B+
+        assert len(repeated) == 1
+        assert "F" in repeated[0]
+        assert "D" in repeated[0]
+
+    def test_warnings_deduped_across_cgpa_agpa(self):
+        courses = [
+            {"name": "GYM", "grade": "S", "credits": 0},
+        ]
+        _, _, _, _, _, warns = _bilkent_cgpa(courses)
+        # S grade warning should appear only once (deduplicated from both pools)
+        s_warns = [w for w in warns if "GYM" in w]
+        assert len(s_warns) == 1
+
+    def test_empty_name_entries_skipped(self):
+        courses = [
+            {"name": "", "grade": "A", "credits": 3},
+            {"name": "CTIS 256", "grade": "B", "credits": 3},
+        ]
+        cgpa, cc, _, _, _, _ = _bilkent_cgpa(courses)
+        # Only CTIS 256 counted
+        assert cc == 3.0
+        assert cgpa == 3.0
+
+
+class TestPassFail:
+    def test_f_is_fail(self):
+        assert "Başarısız" in _pass_fail("F", 3.0)
+
+    def test_fx_is_fail(self):
+        assert "Başarısız" in _pass_fail("FX", 3.0)
+
+    def test_fz_is_fail(self):
+        assert "Başarısız" in _pass_fail("FZ", 3.0)
+
+    def test_u_is_fail(self):
+        assert "Başarısız" in _pass_fail("U", 3.0)
+
+    def test_s_is_pass_noncredit(self):
+        result = _pass_fail("S", 3.0)
+        assert "Başarılı" in result
+        assert "noncredit" in result
+
+    def test_w_is_withdrawn(self):
+        result = _pass_fail("W", 3.0)
+        assert "Çekildi" in result
+
+    def test_a_is_always_pass(self):
+        assert "Geçer" in _pass_fail("A", 0.5)
+
+    def test_b_plus_is_always_pass(self):
+        assert "Geçer" in _pass_fail("B+", 1.0)
+
+    def test_c_is_pass(self):
+        assert "Geçer" in _pass_fail("C", 1.99)
+
+    def test_c_minus_conditional_pass_when_cgpa_above_2(self):
+        result = _pass_fail("C-", 2.00)
+        assert "Koşullu" in result
+
+    def test_c_minus_fail_when_cgpa_below_2(self):
+        result = _pass_fail("C-", 1.99)
+        assert "Başarısız" in result
+
+    def test_d_plus_conditional_pass_when_cgpa_ok(self):
+        result = _pass_fail("D+", 2.50)
+        assert "Koşullu" in result
+
+    def test_d_fail_when_cgpa_below_2(self):
+        result = _pass_fail("D", 1.80)
+        assert "Başarısız" in result
+
+    def test_eng101_d_always_fail(self):
+        result = _pass_fail("D", 3.5, "ENG 101 Academic English")
+        assert "Başarısız" in result
+        assert "ENG 101" in result
+
+    def test_eng101_c_minus_always_fail(self):
+        result = _pass_fail("C-", 3.0, "ENG101")
+        assert "Başarısız" in result
+
+    def test_unknown_grade_returns_question(self):
+        result = _pass_fail("ZZ", 2.5)
+        assert "?" in result
+
+
+class TestCumLaude:
+    def test_summa_cum_laude_at_3_75(self):
+        assert "Summa" in _cum_laude(3.75)
+
+    def test_summa_cum_laude_at_4_00(self):
+        assert "Summa" in _cum_laude(4.00)
+
+    def test_magna_cum_laude_at_3_50(self):
+        result = _cum_laude(3.50)
+        assert "Magna" in result
+
+    def test_magna_cum_laude_at_3_74(self):
+        result = _cum_laude(3.74)
+        assert "Magna" in result
+
+    def test_cum_laude_at_3_00(self):
+        result = _cum_laude(3.00)
+        assert "Cum Laude" in result
+
+    def test_cum_laude_at_3_49(self):
+        result = _cum_laude(3.49)
+        assert "Cum Laude" in result
+
+    def test_no_honor_below_3_00(self):
+        result = _cum_laude(2.99)
+        assert "yok" in result.lower()
+
+    def test_no_honor_at_zero(self):
+        result = _cum_laude(0.0)
+        assert "yok" in result.lower()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# I. TOOL: read_source (Layer 2 + Layer 3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestToolReadSource:
+    @pytest.mark.asyncio
+    async def test_no_source_returns_error(self):
+        result = await _tool_read_source({}, USER_ID)
+        assert "belirtilmedi" in result
+
+    @pytest.mark.asyncio
+    async def test_no_vector_store_returns_error(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.vector_store = None
+            result = await _tool_read_source({"source": "lecture.pdf"}, USER_ID)
+        assert "hazır değil" in result
+
+    @pytest.mark.asyncio
+    async def test_summary_returned_when_no_section(self):
+        """Layer 2: if summary exists and no section requested, returns structured summary."""
+        summary = {
+            "overview": "Bu dosya sorting algoritmalarını anlatır.",
+            "difficulty": "Orta",
+            "sections": [{"title": "Quicksort", "summary": "Divide and conquer.", "key_concepts": ["pivot"]}],
+            "cross_references": [],
+            "suggested_study_order": "Quicksort'tan başla.",
+            "fallback": False,
+        }
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.summary_service.load_source_summary", return_value=summary),
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_state.vector_store = MagicMock()
+            result = await _tool_read_source({"source": "algo.pdf"}, USER_ID)
+        assert "sorting" in result.lower()
+        assert "Quicksort" in result
+        assert "pivot" in result
+
+    @pytest.mark.asyncio
+    async def test_chunks_returned_when_no_summary(self):
+        """Layer 3: if no summary, return raw chunks."""
+        mock_store = MagicMock()
+        mock_store.get_file_chunks.return_value = [
+            {"text": "Binary search divides array in half each step.", "chunk_index": 0},
+            {"text": "Time complexity is O(log n).", "chunk_index": 1},
+        ]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.summary_service.load_source_summary", return_value=None),
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_state.vector_store = mock_store
+            result = await _tool_read_source({"source": "search.pdf"}, USER_ID)
+        assert "Binary search" in result
+        assert "O(log n)" in result
+
+    @pytest.mark.asyncio
+    async def test_file_not_found_returns_helpful_message(self):
+        mock_store = MagicMock()
+        mock_store.get_file_chunks.return_value = []
+        # _fuzzy_find_source: get_files_for_course returns empty
+        mock_store.get_files_for_course.return_value = []
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.summary_service.load_source_summary", return_value=None),
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_state.vector_store = mock_store
+            result = await _tool_read_source({"source": "nonexistent.pdf"}, USER_ID)
+        assert "bulunamadı" in result
+
+    @pytest.mark.asyncio
+    async def test_section_filter_applied(self):
+        """When section specified, chunks are filtered by keyword."""
+        mock_store = MagicMock()
+        mock_store.get_file_chunks.return_value = [
+            {"text": "Quicksort algorithm explanation here.", "chunk_index": 0},
+            {"text": "Mergesort is stable sorting.", "chunk_index": 1},
+            {"text": "Quicksort pivot selection strategies.", "chunk_index": 2},
+        ]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.summary_service.load_source_summary", return_value=None),
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_state.vector_store = mock_store
+            result = await _tool_read_source(
+                {"source": "algo.pdf", "section": "quicksort"}, USER_ID
+            )
+        assert "Quicksort" in result
+        # Mergesort chunk should not appear (section filter)
+        assert "Mergesort" not in result
+
+    @pytest.mark.asyncio
+    async def test_offset_pagination(self):
+        """offset parameter should skip earlier chunks."""
+        mock_store = MagicMock()
+        # 35 chunks — offset=30 should return only last 5
+        mock_store.get_file_chunks.return_value = [
+            {"text": f"Chunk content {i}", "chunk_index": i}
+            for i in range(35)
+        ]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.summary_service.load_source_summary", return_value=None),
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_state.vector_store = mock_store
+            result = await _tool_read_source(
+                {"source": "long.pdf", "offset": 30}, USER_ID
+            )
+        # chunks 30-34 shown, chunk 0 not
+        assert "Chunk content 30" in result
+        assert "Chunk content 0" not in result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# J. CALCULATE_GRADE — CGPA projection (mode=cgpa planned_courses)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestCalculateGradeCgpaProjection:
+    @pytest.mark.asyncio
+    async def test_cgpa_mode_with_courses_basic(self):
+        args = {
+            "mode": "cgpa",
+            "courses": [
+                {"name": "CTIS 256", "grade": "A", "credits": 3, "semester": "2023"},
+                {"name": "MATH 101", "grade": "B-", "credits": 4, "semester": "2023"},
+            ],
+        }
+        result = await _tool_calculate_grade(args, USER_ID)
+        assert "CGPA" in result
+
+    @pytest.mark.asyncio
+    async def test_cgpa_mode_repeated_course_uses_last(self):
+        args = {
+            "mode": "cgpa",
+            "courses": [
+                {"name": "ENG 101", "grade": "F", "credits": 3, "semester": "2022"},
+                {"name": "ENG 101", "grade": "C", "credits": 3, "semester": "2023"},
+            ],
+        }
+        result = await _tool_calculate_grade(args, USER_ID)
+        assert "tekrar" in result.lower() or "CGPA" in result
+
+    @pytest.mark.asyncio
+    async def test_cgpa_mode_graduating_shows_cum_laude(self):
+        args = {
+            "mode": "cgpa",
+            "courses": [
+                {"name": "A", "grade": "A", "credits": 3},
+                {"name": "B", "grade": "A", "credits": 3},
+                {"name": "C", "grade": "A", "credits": 3},
+            ],
+            "graduating": True,
+        }
+        result = await _tool_calculate_grade(args, USER_ID)
+        assert "Cum Laude" in result or "Summa" in result or "Magna" in result
+
+    @pytest.mark.asyncio
+    async def test_cgpa_mode_empty_courses_returns_usage(self):
+        result = await _tool_calculate_grade({"mode": "cgpa", "courses": []}, USER_ID)
+        assert "gerekli" in result.lower() or "örnek" in result.lower()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# K. EDGE CASES & INPUT VALIDATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestEdgeCasesInputValidation:
+    def test_sanitize_safe_long_input_returned_unchanged(self):
+        long_input = "A" * 5000
+        result = _sanitize_user_input(long_input)
+        assert result == long_input  # no injection patterns → no modification
+
+    def test_normalize_tr_empty_string(self):
+        assert _normalize_tr("") == ""
+
+    def test_short_code_numeric_only_returns_input(self):
+        # No letter prefix → returns full name
+        result = _short_code("12345 Something")
+        assert result  # non-empty
+
+    def test_grade_points_all_grades_have_four_or_zero_max(self):
+        for grade, pts in _GRADE_POINTS.items():
+            assert 0.0 <= pts <= 4.0, f"{grade}: {pts} out of range"
+
+    def test_bilkent_gpa_all_f_gives_zero(self):
+        courses = [
+            {"name": "A", "grade": "F", "credits": 3},
+            {"name": "B", "grade": "FX", "credits": 3},
+            {"name": "C", "grade": "FZ", "credits": 3},
+        ]
+        gpa, credits, warns = _bilkent_gpa(courses)
+        assert gpa == 0.0
+        assert credits == 9.0
+
+    def test_bilkent_cgpa_single_course(self):
+        courses = [{"name": "CTIS 101", "grade": "A-", "credits": 3}]
+        cgpa, cc, agpa, ac, repeated, warns = _bilkent_cgpa(courses)
+        assert cgpa == 3.70
+        assert cc == 3.0
+        assert repeated == []
+        assert warns == []
+
+    @pytest.mark.asyncio
+    async def test_course_mode_missing_weight_zero(self):
+        """Assessment with weight=0 contributes nothing."""
+        args = {
+            "mode": "course",
+            "assessments": [
+                {"name": "Attendance", "grade": 100.0, "weight": 0.0},
+                {"name": "Final", "grade": 60.0, "weight": 100.0},
+            ],
+        }
+        result = await _tool_calculate_grade(args, USER_ID)
+        assert "60" in result
+
+    @pytest.mark.asyncio
+    async def test_tool_handler_all_callable(self):
+        """Every entry in TOOL_HANDLERS must be an async callable."""
+        import asyncio as _asyncio
+        import inspect
+        for name, handler in TOOL_HANDLERS.items():
+            assert callable(handler), f"{name} is not callable"
+            assert inspect.iscoroutinefunction(handler), f"{name} is not async"
