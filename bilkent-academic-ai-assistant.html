@@ -18,64 +18,61 @@
   <meta name="twitter:description" content="Hybrid RAG, 25 agentic tools, and three jailbreaks that taught me more about AI safety than any paper." />
   <meta name="twitter:image" content="https://onurcangnc.github.io/Moodle_Student_Tracker/images/anthropic.jpg" />
 
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet" />
+
   <style>
     /* ── Reset & Base ── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
 
     body {
-      font-family: "Georgia", "Times New Roman", serif;
+      font-family: "Lora", "Georgia", serif;
       font-size: 20px;
-      line-height: 1.8;
-      color: #292929;
+      line-height: 1.85;
+      color: #242424;
       background: #fff;
     }
 
     /* ── Layout ── */
     .container {
-      max-width: 740px;
+      max-width: 700px;
       margin: 0 auto;
-      padding: 48px 24px 96px;
+      padding: 60px 24px 100px;
     }
 
     /* ── Typography ── */
     h1 {
-      font-size: 42px;
+      font-family: "Inter", "Helvetica Neue", sans-serif;
+      font-size: 44px;
       font-weight: 700;
-      line-height: 1.2;
-      letter-spacing: -0.5px;
-      margin-bottom: 16px;
-      color: #111;
+      line-height: 1.18;
+      letter-spacing: -0.8px;
+      margin-bottom: 18px;
+      color: #0a0a0a;
     }
 
     h2 {
-      font-size: 30px;
+      font-family: "Inter", "Helvetica Neue", sans-serif;
+      font-size: 28px;
       font-weight: 700;
-      margin-top: 64px;
-      margin-bottom: 20px;
-      color: #111;
-      border-left: 4px solid #1a8917;
-      padding-left: 16px;
+      margin-top: 72px;
+      margin-bottom: 24px;
+      color: #0a0a0a;
+      letter-spacing: -0.3px;
     }
 
     h3 {
-      font-size: 22px;
-      font-weight: 700;
-      margin-top: 40px;
-      margin-bottom: 12px;
-      color: #111;
+      font-family: "Inter", "Helvetica Neue", sans-serif;
+      font-size: 21px;
+      font-weight: 600;
+      margin-top: 44px;
+      margin-bottom: 14px;
+      color: #1a1a1a;
     }
 
-    h4 {
-      font-size: 18px;
-      font-weight: 700;
-      margin-top: 28px;
-      margin-bottom: 8px;
-      color: #333;
-    }
-
-    p {
-      margin-bottom: 24px;
-    }
+    p { margin-bottom: 26px; }
 
     a { color: #1a8917; text-decoration: none; }
     a:hover { text-decoration: underline; }
@@ -85,67 +82,74 @@
 
     /* ── Subtitle / Kicker ── */
     .kicker {
-      font-size: 20px;
-      color: #555;
-      margin-bottom: 40px;
+      font-family: "Lora", "Georgia", serif;
+      font-size: 22px;
+      color: #6b6b6b;
+      margin-bottom: 32px;
       font-style: italic;
-      line-height: 1.6;
+      line-height: 1.55;
     }
 
     /* ── Divider ── */
     hr {
       border: none;
-      border-top: 1px solid #e6e6e6;
-      margin: 48px 0;
+      text-align: center;
+      margin: 52px 0;
+    }
+    hr::after {
+      content: "···";
+      font-size: 28px;
+      letter-spacing: 12px;
+      color: #bbb;
     }
 
     /* ── Images ── */
     figure {
-      margin: 40px 0;
+      margin: 44px 0;
       text-align: center;
     }
 
     figure img {
       max-width: 100%;
-      border-radius: 4px;
-      border: 1px solid #e6e6e6;
+      border-radius: 6px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
     }
 
     figcaption {
+      font-family: "Inter", sans-serif;
       font-size: 14px;
-      color: #757575;
-      margin-top: 10px;
-      font-style: italic;
+      color: #8a8a8a;
+      margin-top: 12px;
+      line-height: 1.5;
     }
 
     .img-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 16px;
-      margin: 40px 0;
+      gap: 20px;
+      margin: 44px 0;
     }
 
     .img-grid figure { margin: 0; }
 
     /* ── Code ── */
     pre {
-      background: #f8f8f8;
-      border: 1px solid #e0e0e0;
-      border-left: 4px solid #1a8917;
-      border-radius: 4px;
-      padding: 20px 24px;
+      background: #fafafa;
+      border: 1px solid #eaeaea;
+      border-radius: 8px;
+      padding: 22px 26px;
       overflow-x: auto;
-      margin: 28px 0;
+      margin: 32px 0;
       font-size: 14px;
-      line-height: 1.6;
+      line-height: 1.65;
     }
 
     code {
-      font-family: "Fira Code", "Courier New", monospace;
-      font-size: 0.85em;
-      background: #f3f3f3;
-      padding: 2px 6px;
-      border-radius: 3px;
+      font-family: "JetBrains Mono", "Fira Code", monospace;
+      font-size: 0.82em;
+      background: #f0f0f0;
+      padding: 2px 7px;
+      border-radius: 4px;
     }
 
     pre code {
@@ -156,13 +160,11 @@
 
     /* ── Blockquote ── */
     blockquote {
-      border-left: 4px solid #1a8917;
-      padding: 12px 24px;
-      margin: 28px 0;
-      color: #444;
+      border-left: 3px solid #242424;
+      padding: 4px 28px;
+      margin: 36px 0;
+      color: #3a3a3a;
       font-style: italic;
-      background: #f9fdf9;
-      border-radius: 0 4px 4px 0;
     }
 
     blockquote p { margin-bottom: 0; }
@@ -171,110 +173,118 @@
     table {
       width: 100%;
       border-collapse: collapse;
-      margin: 28px 0;
-      font-size: 15px;
+      margin: 32px 0;
+      font-size: 16px;
+      font-family: "Inter", sans-serif;
     }
 
     th {
-      background: #f0f7f0;
-      padding: 10px 14px;
+      background: #f7f7f7;
+      padding: 12px 16px;
       text-align: left;
-      font-weight: 700;
-      border-bottom: 2px solid #c8e6c8;
-      color: #1a1a1a;
+      font-weight: 600;
+      border-bottom: 2px solid #e0e0e0;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #555;
     }
 
     td {
-      padding: 9px 14px;
-      border-bottom: 1px solid #ebebeb;
+      padding: 12px 16px;
+      border-bottom: 1px solid #f0f0f0;
       vertical-align: top;
     }
 
     tr:last-child td { border-bottom: none; }
-    tr:hover td { background: #fafff9; }
 
     /* ── Call-out box ── */
     .callout {
-      background: #f0f7f0;
-      border: 1px solid #b2d8b2;
-      border-left: 4px solid #1a8917;
-      border-radius: 4px;
-      padding: 16px 20px;
-      margin: 28px 0;
-      font-size: 17px;
+      background: #f8faf8;
+      border-left: 3px solid #1a8917;
+      border-radius: 0 8px 8px 0;
+      padding: 20px 24px;
+      margin: 36px 0;
+      font-size: 18px;
     }
 
     /* ── Attack / security card ── */
     .attack-card {
-      background: #fff8f0;
-      border: 1px solid #f5c68a;
-      border-left: 4px solid #e07b00;
-      border-radius: 4px;
-      padding: 20px 24px;
-      margin: 36px 0;
+      background: #fffbf5;
+      border: 1px solid #f0dcc0;
+      border-radius: 10px;
+      padding: 28px 28px 20px;
+      margin: 40px 0;
     }
 
     .attack-card h3 {
-      color: #c56000;
+      color: #b85c00;
       margin-top: 0;
       font-size: 19px;
     }
 
     .attack-label {
+      font-family: "Inter", sans-serif;
       display: inline-block;
       background: #e07b00;
       color: #fff;
       font-size: 11px;
       font-weight: 700;
-      letter-spacing: 1px;
-      padding: 3px 8px;
-      border-radius: 3px;
+      letter-spacing: 1.2px;
+      padding: 4px 10px;
+      border-radius: 4px;
       text-transform: uppercase;
-      margin-bottom: 10px;
+      margin-bottom: 12px;
     }
 
     .fix-label {
+      font-family: "Inter", sans-serif;
       display: inline-block;
       background: #1a8917;
       color: #fff;
       font-size: 11px;
       font-weight: 700;
-      letter-spacing: 1px;
-      padding: 3px 8px;
-      border-radius: 3px;
+      letter-spacing: 1.2px;
+      padding: 4px 10px;
+      border-radius: 4px;
       text-transform: uppercase;
-      margin-top: 16px;
+      margin-top: 18px;
       margin-bottom: 8px;
     }
 
     /* ── Author / meta ── */
     .meta {
+      font-family: "Inter", sans-serif;
       font-size: 15px;
-      color: #888;
+      color: #999;
       margin-bottom: 48px;
       padding-bottom: 32px;
-      border-bottom: 1px solid #e6e6e6;
+      border-bottom: 1px solid #eee;
     }
 
     /* ── Tag pills ── */
-    .tags { margin-top: 64px; }
+    .tags { margin-top: 72px; }
     .tag {
+      font-family: "Inter", sans-serif;
       display: inline-block;
-      border: 1px solid #d0d0d0;
+      background: #f5f5f5;
+      border: none;
       border-radius: 100px;
-      padding: 4px 14px;
+      padding: 6px 16px;
       font-size: 13px;
       color: #555;
       margin: 4px 4px 4px 0;
-      font-family: sans-serif;
+      transition: background 0.2s;
     }
+    .tag:hover { background: #eaeaea; }
 
     /* ── Responsive ── */
     @media (max-width: 600px) {
-      h1 { font-size: 30px; }
+      h1 { font-size: 32px; }
       h2 { font-size: 24px; }
       .img-grid { grid-template-columns: 1fr; }
       body { font-size: 18px; }
+      .attack-card { padding: 20px; }
     }
   </style>
 </head>
@@ -342,24 +352,24 @@
 
   <table>
     <thead>
-      <tr><th>What you type</th><th>What happens behind the scenes</th></tr>
+      <tr><th>What you type</th><th>What the bot does</th></tr>
     </thead>
     <tbody>
       <tr>
         <td><code>"Günlük özetim"</code></td>
-        <td>Fetches today's schedule, upcoming exams, pending assignments, recent emails, attendance warnings — all in parallel</td>
+        <td>Pulls today's schedule, upcoming exams, assignments, emails, and attendance warnings — all at once</td>
       </tr>
       <tr>
-        <td><code>"HCIV 102'den geçmek için finalden kaç almam lazım? Midterm 68, quiz 75"</code></td>
-        <td>Calls <code>get_syllabus_info</code> for grading weights → <code>calculate_grade</code> for exact score — one turn, no follow-up</td>
+        <td><code>"Finalde kaç almam lazım?"</code></td>
+        <td>Looks up grading weights from the syllabus, then calculates the exact score you need</td>
       </tr>
       <tr>
         <td><code>"3.0 GPA için ne almam lazım?"</code></td>
-        <td>Fetches STARS transcript → reverse-calculates per-course minimum grades</td>
+        <td>Reads your transcript and reverse-calculates minimum grades per course</td>
       </tr>
       <tr>
         <td><code>"Erkan hocanın mailini göster"</code></td>
-        <td>Normalizes Turkish characters (ü→u, ş→s) → fuzzy-matches sender name → returns full email body</td>
+        <td>Finds the instructor's email even with Turkish character variations</td>
       </tr>
     </tbody>
   </table>
@@ -376,230 +386,50 @@
   </div>
 
   <!-- ══════════════════════════════════════════
-       ARCHITECTURE
-  ══════════════════════════════════════════ -->
-  <h2>Architecture — How It's Built</h2>
-
-  <h3>The Layered Stack</h3>
-
-  <p>
-    The bot follows a strict layered architecture where each layer only talks to the one below it:
-  </p>
-
-  <pre><code>Telegram Handler
-       ↓
-  Input Sanitizer  ←── regex + Unicode normalization
-       ↓
-  Planner Agent   ←── lightweight LLM generates tool selection plan
-       ↓
-  Agentic Loop    ←── up to 5 iterations, parallel tool calls
-       ↓
-  Tool Handlers   ←── 25 tools across 6 data sources
-       ↓
-  Critic Agent    ←── validates grounding, appends ⚠️ if hallucinated
-       ↓
-   Response</code></pre>
-
-  <p>
-    Every user message flows through all six stages. This isn't just architecture for architecture's sake —
-    each gate serves a specific purpose in reliability and security.
-  </p>
-
-  <h3>Design Patterns That Actually Mattered</h3>
-
-  <p>
-    <strong>Cache-first with live fallback.</strong> Every tool checks SQLite first (WAL mode for
-    concurrent reads). Cache TTLs are set by data volatility: schedule = 6 hours, grades = 30 minutes,
-    attendance = 60 minutes, emails = 5 minutes. On cache miss, the tool fetches live and writes back.
-    Most queries respond in under 200ms even on a low-spec VPS.
-  </p>
-
-  <p>
-    <strong>Parallel tool execution.</strong> The OpenAI function calling API supports
-    <code>parallel_tool_calls=True</code>. The bot uses this aggressively — when you ask for "my weekly
-    overview," a single LLM call dispatches 5 simultaneous tool calls. The <code>get_weekly_digest</code>
-    tool goes further, using <code>asyncio.gather</code> internally to fetch 6 cache keys at the same time.
-  </p>
-
-  <p>
-    <strong>The Planner step.</strong> Before the agentic loop starts, a cheap, fast model (GPT-4.1-nano)
-    generates a brief plan: which tools to use and in what order. This costs ~5ms and dramatically reduces
-    "hallucinated" tool calls — situations where the main model invents tool parameters or calls tools that
-    won't help. The planner is intentionally restrictive: if the query is clearly off-scope, it flags it
-    before the loop even starts.
-  </p>
-
-  <p>
-    <strong>The Critic step.</strong> After the loop finishes, another lightweight model validates the
-    response against the actual tool outputs. Three checks:
-  </p>
-
-  <ul style="margin: 0 0 24px 28px; line-height: 2;">
-    <li>Does any claimed fact contradict the data?</li>
-    <li>Are any dates, file names, or grades invented?</li>
-    <li>Is anything stated as certain that was never returned by a tool?</li>
-  </ul>
-
-  <p>
-    If yes → append <code>⚠️ Bu yanıt doğrulanamamıştır.</code> rather than regenerate (which would double
-    latency). The critic is intentionally lenient about paraphrasing — "Pazartesi" reformatted as "today"
-    is fine. An invented exam date is not.
-  </p>
-
-  <figure>
-    <img src="images/rag-multi-source-session.png" alt="Multi-source session" />
-    <figcaption>Multi-source session: bot selects relevant files across courses automatically</figcaption>
-  </figure>
-
-  <!-- ══════════════════════════════════════════
        EVOLUTION
   ══════════════════════════════════════════ -->
   <h2>Three Architectures in Nine Days</h2>
 
   <p>
-    The current architecture didn't emerge from a design document. It evolved through three complete
-    rewrites, each one replacing the previous approach after hitting a wall in production.
-  </p>
-
-  <h3>v1 — Intent Classification (Day 2)</h3>
-
-  <p>
-    The first "smart" version used a dedicated LLM call (GPT-4.1-mini) as an intent classifier. Every
-    incoming message was routed through a 12-intent NLU layer — <code>assignments</code>,
-    <code>mail</code>, <code>exams</code>, <code>grades</code>, <code>schedule</code>,
-    <code>attendance</code>, <code>study</code>, and so on — before reaching any handler.
+    The bot was rewritten three times in nine days. Not because I planned to — because each version hit a
+    wall that forced a rethink.
   </p>
 
   <p>
-    This meant two LLM calls per query: one to classify, one to respond. It worked, but the extra call
-    added ~400ms of latency and introduced a failure mode: misclassified intents produced confident but
-    wrong answers. A question about "exam grades" could land in the <code>exams</code> handler (which
-    shows dates) instead of <code>grades</code> (which shows scores). The classification layer was
-    897 lines of routing code that was supposed to make the system smarter — but mostly made it fragile.
-  </p>
-
-  <h3>v2 — Keyword Routing (Day 5)</h3>
-
-  <p>
-    The fix was radical: delete the entire intent classifier. Replace it with keyword triggers that inject
-    relevant context into a single LLM call. If the query mentions "not" or "grade," inject grade context.
-    If it mentions "mail" or "email," inject email context. No second LLM call, no classification errors.
-    897 lines removed — 27% of the codebase gone in one commit.
+    <strong>Version 1</strong> used a separate AI call to classify every message into categories like
+    "grades," "email," or "schedule" before routing it to the right handler. This broke when questions
+    spanned multiple categories — "exam grades" could end up in the wrong handler and produce a confident
+    but wrong answer.
   </p>
 
   <p>
-    This worked surprisingly well for simple queries. But it couldn't handle multi-step tasks:
-    <em>"What do I need on the final to pass HCIV 102?"</em> requires fetching the syllabus for grading
-    weights, then calculating the minimum score. Keyword routing doesn't know to chain two operations.
-  </p>
-
-  <h3>v3 — Agentic Function Calling (Day 7)</h3>
-
-  <p>
-    The third and final rewrite moved decision-making to the LLM itself. Instead of pre-routing queries,
-    the model receives a list of available tools and decides which ones to call, in what order, with what
-    parameters. OpenAI's function calling API handles the interface — the model returns structured JSON,
-    the bot executes the tool, feeds the result back, and the loop continues for up to 5 iterations.
+    <strong>Version 2</strong> scrapped classification entirely. Keywords in the message triggered
+    context injection into a single AI call. Simpler, faster — but it couldn't chain operations.
+    <em>"What do I need on the final to pass?"</em> requires two steps: look up grading weights, then
+    calculate. Keyword routing can't do that.
   </p>
 
   <p>
-    The tool count grew quickly: 10 on day 7, 14 by the evening (with parallel calling enabled), 20 by
-    day 8, and 25 by day 9. Each new tool was immediately available to every query without any routing
-    changes — the model just learned to use it from the tool description.
+    <strong>Version 3</strong> — the current one — gives the AI a toolbox of 25 tools and lets it decide
+    which ones to call, in what order, with what parameters. Need grades and syllabus info to answer a
+    question? The AI calls both, combines the results, and responds. Adding a new capability means adding
+    a new tool — no routing changes needed.
   </p>
 
   <div class="callout">
-    <strong>The lesson:</strong> Each architecture was the right choice at the time. Intent classification
-    was correct when there were 4 handlers. Keyword routing was correct when classification became a
-    bottleneck. Agentic calling was correct when chaining became necessary. The mistake would have been
-    committing to any of them permanently instead of treating each as a stepping stone.
+    <strong>The lesson:</strong> Each architecture was the right choice at the time. The mistake would have
+    been committing to any of them permanently instead of treating each as a stepping stone.
   </div>
-
-  <!-- ══════════════════════════════════════════
-       RAG
-  ══════════════════════════════════════════ -->
-  <h2>RAG Architecture — Teaching, Not Just Answering</h2>
-
-  <p>
-    The retrieval system is where the bot differs from a simple Q&amp;A wrapper. The goal was
-    <em>pedagogy-first</em> — teaching from source material the way an instructor would, not generating
-    plausible-sounding text.
-  </p>
-
-  <h3>Hybrid Search: FAISS + BM25</h3>
-
-  <p>
-    Pure semantic search (embeddings) is great for meaning but misses exact terms. Pure keyword search
-    (BM25) catches terms but ignores intent. The bot uses both, fused via
-    <strong>Reciprocal Rank Fusion</strong>:
-  </p>
-
-  <pre><code>Final score = 1/(k + rank_semantic) + 1/(k + rank_bm25)</code></pre>
-
-  <p>
-    A document that ranks 3rd semantically and 2nd by keyword beats one that ranks 1st only semantically.
-    In practice, this handles technical queries much better — searching "Ottoman social stratification"
-    returns different results than "how Ottoman society was organized," but combining both rankings finds
-    the right lecture notes reliably. <strong>3,661 chunks</strong> from course PDFs, DOCX, and PPTX files
-    are indexed.
-  </p>
-
-  <h3>Two Modes: Teaching vs. Guidance</h3>
-
-  <p>
-    <strong>Teaching Mode</strong> — when ≥2 chunks score above the similarity threshold (0.65): The bot
-    synthesizes an answer using the instructor's own terminology, cites specific source files by name, and
-    explicitly flags what the material <em>doesn't</em> cover. It doesn't add information from outside the
-    course materials.
-  </p>
-
-  <div class="img-grid">
-    <figure>
-      <img src="images/study-topic-literary.png" alt="Teaching mode on literary themes" />
-      <figcaption>Teaching mode — EDEB literary analysis from course notes</figcaption>
-    </figure>
-    <figure>
-      <img src="images/usecase-rag-microservice-study.png" alt="CTIS 465 microservice study" />
-      <figcaption>CTIS 465 — microservice design patterns from lecture slides</figcaption>
-    </figure>
-  </div>
-
-  <p>
-    <strong>Guidance Mode</strong> — when coverage is insufficient: Rather than hallucinating an answer,
-    the bot lists what <em>is</em> covered in the course and suggests more specific questions the student
-    could ask. It doesn't expose technical internals — just guides toward material that exists.
-  </p>
-
-  <div class="img-grid">
-    <figure>
-      <img src="images/usecase-rag-edeb-themes.png" alt="EDEB novel themes comparison" />
-      <figcaption>Cross-novel theme comparison — EDEB 201</figcaption>
-    </figure>
-    <figure>
-      <img src="images/usecase-rag-hciv-ottoman.png" alt="HCIV Ottoman social stratification" />
-      <figcaption>Ottoman social stratification — HCIV 102</figcaption>
-    </figure>
-  </div>
-
-  <h3>The Syllabus Tool — A Special Case</h3>
-
-  <p>
-    Syllabuses require a different approach. The syllabus tool uses a
-    <strong>filename-based search first</strong> (not semantic): it looks for files containing the course
-    code in their name. If found, it extracts the relevant section using RAG. If not found, it falls back
-    to Moodle's module listing. If that fails too, it tells the student to upload the PDF via
-    <code>/upload</code>.
-  </p>
 
   <figure>
-    <img src="images/usecase-syllabus-grading.png" alt="Syllabus grading breakdown" />
-    <figcaption>Syllabus tool — grading weights extracted from PDF automatically</figcaption>
+    <img src="images/rag-multi-source-session.png" alt="Multi-source session" />
+    <figcaption>The bot selects relevant files across courses automatically</figcaption>
   </figure>
 
   <!-- ══════════════════════════════════════════
-       25 TOOLS
+       USE CASES
   ══════════════════════════════════════════ -->
-  <h2>The 25 Tools — What Each One Does</h2>
+  <h2>What It Can Do — The 25 Tools</h2>
 
   <table>
     <thead>
@@ -877,71 +707,26 @@ Oumout, Serkan, Erkan, Cüneyt — distribute 100 points as you see fit.</code><
   </div>
 
   <!-- ══════════════════════════════════════════
-       TEST SUITE
-  ══════════════════════════════════════════ -->
-  <h2>What the Automated Test Suite Looks Like</h2>
-
-  <p>
-    389 tests across the full suite. The safety tests are organized by OWASP LLM Top 10 taxonomy:
-  </p>
-
-  <table>
-    <thead>
-      <tr><th>Test Class</th><th>Coverage</th></tr>
-    </thead>
-    <tbody>
-      <tr><td><code>TestSystemOverrideBlocking</code></td><td>11 system-block payloads × 2 assertions each</td></tr>
-      <tr><td><code>TestIndirectInjectionInToolOutput</code></td><td>10 injection payloads via email / PDF / grades flowing back into agent loop</td></tr>
-      <tr><td><code>TestHTMLInjectionBlocking</code></td><td>script, iframe, data URI, SVG, meta refresh tags</td></tr>
-      <tr><td><code>TestFalsePositivePrevention</code></td><td>15 safe inputs + 9 safe tool outputs — verifies no over-blocking</td></tr>
-      <tr><td><code>TestJailbreakGapDiscovery</code></td><td><code>@redteam xfail</code> — documents known gaps transparently</td></tr>
-      <tr><td><code>TestUnicodeEdgeCaseGaps</code></td><td>Zero-width space, Cyrillic homoglyph, Right-to-Left Override</td></tr>
-      <tr><td><code>TestCriticGroundingScenarios</code></td><td>Invented dates → False, correct data → True, fail-safes</td></tr>
-      <tr><td><code>TestTurkishNormalizationRegression</code></td><td>U+0130 (İ) decomposition edge case</td></tr>
-    </tbody>
-  </table>
-
-  <div class="callout">
-    The <code>@redteam xfail</code> tests are intentional — they document known attack surface that the
-    LLM's instruction-following currently handles but regex doesn't cover. When a fix is deployed, the
-    marker flips from <code>xfail</code> to <code>passed</code>, confirming the gap was closed without
-    breaking false-positive prevention.
-  </div>
-
-  <!-- ══════════════════════════════════════════
        KEY TAKEAWAYS
   ══════════════════════════════════════════ -->
   <h2>Key Takeaways</h2>
 
   <p>
-    <strong>1. Defense-in-depth isn't optional.</strong> None of the three production bypasses were stopped
-    by a single layer. Each layer (regex, system prompt, planner, critic) has blind spots. Overlapping them
-    reduces the attack surface — but sophisticated payloads can still thread the needle between layers.
+    <strong>1. No single defense layer is enough.</strong> None of the three bypasses were stopped by
+    just one layer. Regex misses creative phrasing. System prompts can be overridden. The only thing that
+    works is stacking imperfect defenses so they cover each other's blind spots.
   </p>
 
   <p>
-    <strong>2. Legitimate-looking tasks are the hardest to block.</strong> "Distribute 100 points among
-    students" isn't inherently harmful. The harm was contextual — the bot was manipulated into a persona
-    before receiving the request. Detecting harmful framing requires understanding <em>why</em> a task is
-    being requested, not just <em>what</em> is being requested.
+    <strong>2. The most dangerous attacks look legitimate.</strong> "Distribute 100 points among students"
+    isn't harmful on its own. The harm was that the bot had been tricked into a fake persona first.
+    Blocking harmful <em>actions</em> is easy — detecting harmful <em>framing</em> is the real challenge.
   </p>
 
   <p>
-    <strong>3. The attack surface grows with every new tool.</strong> Email content, PDF text, grade data —
-    any external content that flows back into the agent's context is a potential injection vector. Tool
-    output sanitization isn't optional in a multi-tool agentic system.
-  </p>
-
-  <p>
-    <strong>4. Test with real adversarial inputs, not just your own regex.</strong> My automated suite
-    didn't catch any of the three production bypasses. Automated tests verify known patterns. Humans find
-    unknown ones. Spend time manually trying to break your own system before users do.
-  </p>
-
-  <p>
-    <strong>5. The planner step pays for itself.</strong> A 5ms pre-loop plan from a cheap model
-    dramatically reduces hallucinated tool calls and keeps the bot on-scope. It's the cheapest reliability
-    improvement in the stack.
+    <strong>3. Try to break your own system before users do.</strong> My 389-test automated suite didn't
+    catch any of the three production bypasses. Automated tests verify known patterns. Humans find unknown
+    ones. Budget real time for manual adversarial testing.
   </p>
 
   <!-- ══════════════════════════════════════════
