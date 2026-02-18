@@ -1832,7 +1832,7 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
     if webmail is None or not webmail.authenticated:
         return "Webmail girişi yapılmamış. Mailleri görmek için önce /start ile webmail'e giriş yap."
 
-    count = args.get("count", 5)
+    count = min(int(args.get("count", 5)), 50)  # cap at 50 to prevent excessive reads
     scope = args.get("scope", "recent")
     sender_filter = args.get("sender_filter", "")
     subject_filter = args.get("subject_filter", "")

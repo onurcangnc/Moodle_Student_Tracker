@@ -99,7 +99,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await message.reply_text("Dokuman yuklemek icin once /upload komutunu kullanin.")
         return
 
-    filename = message.document.file_name or f"upload_{int(time.time())}.bin"
+    raw_name = message.document.file_name or f"upload_{int(time.time())}.bin"
+    filename = raw_name.replace("/", "_").replace("\\", "_").replace("..", "_")
     upload_dir = core_config.downloads_dir
     upload_dir.mkdir(parents=True, exist_ok=True)
     local_path = upload_dir / f"{int(time.time())}_{filename}"

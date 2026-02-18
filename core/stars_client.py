@@ -98,7 +98,7 @@ class StarsClient:
             logger.info(f"STARS login step1-4: {r.status_code} url={r.url}")
             for i, resp in enumerate(r.history):
                 logger.info(f"  init[{i}]: {resp.status_code} → {resp.headers.get('Location', '?')}")
-            logger.info(f"STARS cookies after init: {dict(s.cookies)}")
+            logger.debug(f"STARS cookies after init: {list(s.cookies.keys())}")
 
             # Parse login page for hidden fields (CSRF token etc.)
             login_soup = BeautifulSoup(r.text, "html.parser")
@@ -124,7 +124,7 @@ class StarsClient:
                 timeout=15,
             )
             logger.info(f"STARS login POST: {r.status_code} url={r.url}")
-            logger.info(f"STARS cookies after login: {dict(s.cookies)}")
+            logger.debug(f"STARS cookies after login: {list(s.cookies.keys())}")
 
             # Check if we landed on verification page (SMS or Email)
             is_verify = "verifySms" in r.url or "verifyEmail" in r.url or "verifyCode" in r.text.lower()
@@ -161,7 +161,7 @@ class StarsClient:
                         name = inp.get("name")
                         if name:
                             ss._sms_hidden[name] = inp.get("value", "")
-                    logger.info(f"STARS verify form hidden fields: {ss._sms_hidden}")
+                    logger.debug(f"STARS verify form hidden fields: {list(ss._sms_hidden.keys())}")
 
                 return {"status": "sms_sent"}
 
@@ -225,7 +225,7 @@ class StarsClient:
             loc = r.headers.get("Location", "")
             if loc.startswith("/"):
                 loc = f"{BASE}{loc}"
-            logger.info(f"STARS cookies for redirect: {list(s.cookies.keys())}")
+            logger.debug(f"STARS cookies for redirect: {list(s.cookies.keys())}")
 
             prev_url = verify_url
             max_hops = 15
@@ -233,8 +233,9 @@ class StarsClient:
             while loc and max_hops > 0:
                 s.headers["Referer"] = prev_url
                 r2 = s.get(loc, allow_redirects=False, timeout=15)
-                logger.info(
-                    f"STARS hop: {loc} → {r2.status_code} Location={r2.headers.get('Location', 'none')} Set-Cookie={r2.headers.get('Set-Cookie', 'none')[:100] if r2.headers.get('Set-Cookie') else 'none'}"
+                logger.debug(
+                    f"STARS hop: {loc} → {r2.status_code} Location={r2.headers.get('Location', 'none')} "
+                    f"Set-Cookie={'yes' if r2.headers.get('Set-Cookie') else 'none'}"
                 )
 
                 # Remove stale verification cookies set by intermediate redirects
