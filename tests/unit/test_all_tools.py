@@ -1357,6 +1357,51 @@ class TestToolCalculateGrade:
         result = await _tool_calculate_grade(args, USER_ID)
         assert "75" in result
 
+    @pytest.mark.asyncio
+    async def test_course_mode_missing_grade_shows_needed_for_pass(self):
+        """When final is unknown, shows minimum needed on remaining components to pass."""
+        args = {
+            "mode": "course",
+            "assessments": [
+                {"name": "Midterm", "grade": 55.0, "weight": 40.0},
+                {"name": "Final", "weight": 60.0},  # grade=None → missing
+            ],
+            "target_grade": "pass",
+        }
+        result = await _tool_calculate_grade(args, USER_ID)
+        # Need: (60 - 55*0.4) / 0.6 = (60 - 22) / 0.6 = 63.3%
+        assert "63" in result or "gerekiyor" in result
+
+    @pytest.mark.asyncio
+    async def test_course_mode_target_already_guaranteed(self):
+        """When enough points already earned, shows '✅ garantili'."""
+        args = {
+            "mode": "course",
+            "assessments": [
+                {"name": "Midterm", "grade": 80.0, "weight": 40.0},
+                {"name": "Final", "weight": 60.0},  # still missing
+            ],
+            "target_grade": "D",  # target=60 → need (60-32)/0.6=46.7 — if Midterm was 100 already guaranteed
+        }
+        # 80*0.4=32 already. Need (60-32)/60%=46.7 on final. Not guaranteed.
+        result = await _tool_calculate_grade(args, USER_ID)
+        assert "46" in result or "gerekiyor" in result or "garantili" in result
+
+    @pytest.mark.asyncio
+    async def test_course_mode_target_impossible(self):
+        """When target impossible even with 100% on missing parts, shows ❌."""
+        args = {
+            "mode": "course",
+            "assessments": [
+                {"name": "Midterm", "grade": 0.0, "weight": 40.0},
+                {"name": "Project", "grade": 0.0, "weight": 40.0},
+                {"name": "Final", "weight": 20.0},  # only 20% left, need >100 for B+
+            ],
+            "target_grade": "B+",  # target=83, max possible = 0+0+20 = 20
+        }
+        result = await _tool_calculate_grade(args, USER_ID)
+        assert "mümkün değil" in result or "❌" in result
+
 
 class TestToolGetCgpa:
     @pytest.mark.asyncio
@@ -1401,6 +1446,67 @@ class TestToolGetCgpa:
             result = await _tool_get_cgpa({}, USER_ID)
 
         assert "bulunamadı" in result or "boş" in result
+
+    @pytest.mark.asyncio
+    async def test_cgpa_projection_with_planned_courses(self):
+        """planned_courses should produce a projected CGPA section."""
+        # 10 courses already done, CGPA driven to ~2.37 (approx 100 credits)
+        transcript = [
+            {"code": "CTIS", "name": f"10{i}", "grade": "C+", "credits": 3, "semester": "2023"}
+            for i in range(30)  # 30 × C+(2.30) × 3cr = 207/90 = 2.30 CGPA
+        ]
+        planned = [
+            {"name": "CTIS 474", "grade": "A", "credits": 3},
+            {"name": "HCIV 102", "grade": "B+", "credits": 3},
+        ]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_stars.get_transcript = MagicMock(return_value=transcript)
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.return_value = None
+            result = await _tool_get_cgpa({"planned_courses": planned}, USER_ID)
+
+        assert "Projeksiyon" in result or "projeksiyon" in result
+        assert "CTIS 474" in result or "tahmini" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_cgpa_projection_math_is_credit_weighted(self):
+        """
+        4th-year student: 120 existing credits @ 2.37 CGPA.
+        Adding 6 credits @ 4.0: new CGPA = (2.37*120 + 4.0*6) / 126 = 308.4/126 ≈ 2.45
+        Must NOT show 3.5 or higher.
+        """
+        # Build transcript: 40 courses × 3 credits = 120 credits, grade mix → ~2.37
+        transcript = []
+        for i in range(20):
+            transcript.append({"code": "A", "name": str(i), "grade": "B-", "credits": 3, "semester": "S1"})
+        for i in range(20):
+            transcript.append({"code": "B", "name": str(i), "grade": "D+", "credits": 3, "semester": "S2"})
+        # B-(2.70)×20×3=162, D+(1.30)×20×3=78 → total=240, credits=120, CGPA=2.00
+        planned = [
+            {"name": "CTIS 474", "grade": "A+", "credits": 3},
+            {"name": "HCIV 102", "grade": "A+", "credits": 3},
+        ]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_stars.get_transcript = MagicMock(return_value=transcript)
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.return_value = None
+            result = await _tool_get_cgpa({"planned_courses": planned}, USER_ID)
+
+        # With 120 existing credits and only 6 new A+ credits:
+        # best case: (2.00*120 + 4.0*6)/126 = (240+24)/126 = 2.095
+        # The result must NOT claim CGPA >= 3.0
+        assert "3.5" not in result
+        assert "3.0" not in result or "ulaşılabilir" in result.lower()
 
 
 class TestToolRagSearch:

@@ -409,11 +409,12 @@ TOOLS: list[dict[str, Any]] = [
                 "⚠️ STANDALONE hesap makinesi — Moodle veya STARS'a BAKMA, dersin kayıtlı olup olmadığını KONTROL ETME. "
                 "Kullanıcının verdiği sayılar (ağırlık + puan) yeterli — dış veri GEREKMEZ. "
                 "Üç mod: "
-                "(1) mode='course' — kullanıcı midterm/quiz/final ağırlığı ve puanı verdiğinde HEMEN çağır. "
-                "Örnekler: 'midterm 55 aldım %40, final %60, geçmek için kaç?', "
-                "'Midterm 68 (%35), Quiz 85 (%15), final 80 alırsam?', "
-                "'geçmek için finalden kaç almam lazım'. "
-                "Ders kayıtlı değil diye reddetme — HEMEN hesapla. "
+                "(1) mode='course' — ders içi ağırlıklı not hesabı. "
+                "Örnekler: 'midterm 70 aldım proje 80 final 50 alırsam dersten ne çıkar?', "
+                "'geçmek için finalden kaç almam lazım', "
+                "'midtermi 50 alsam projelerden 100 alsam ne olur'. "
+                "Syllabus'tan assessment ağırlıkları önceden biliniyorsa kullan. "
+                "target_grade ile hedef belirt (örn: 'C', 'pass', 'B+'). "
                 "(2) mode='gpa' — harf notu + kredi listesi verildiğinde dönem GPA hesapla. "
                 "(3) mode='cgpa' — tüm dönem CGPA/AGPA, cum laude, geçer/başarısız durumu. "
             ),
@@ -426,7 +427,7 @@ TOOLS: list[dict[str, Any]] = [
                         "description": (
                             "gpa: tek dönem GPA (harf notu + kredi). "
                             "cgpa: kümülatif CGPA + AGPA, tekrar edilen dersler otomatik işlenir. "
-                            "course: ağırlıklı değerlendirmelerle ders notu hesapla."
+                            "course: ağırlıklı değerlendirmelerle ders notu hesapla + hedef not analizi."
                         ),
                     },
                     "courses": {
@@ -449,21 +450,37 @@ TOOLS: list[dict[str, Any]] = [
                     },
                     "assessments": {
                         "type": "array",
-                        "description": "mode=course için değerlendirme listesi",
+                        "description": (
+                            "mode=course için değerlendirme listesi. "
+                            "grade=null bırakılırsa 'henüz girilmemiş' sayılır ve "
+                            "o bileşen için minimum gereken hesaplanır."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
                                 "name": {"type": "string"},
-                                "grade": {"type": "number", "description": "Alınan puan (0-100 veya mevcut not)"},
+                                "grade": {"type": "number", "description": "Alınan puan (0-100). null=henüz bilinmiyor (what-if)"},
                                 "weight": {"type": "number", "description": "Ağırlık yüzdesi (örn: 40 = %40)"},
                                 "max_grade": {"type": "number", "description": "Maksimum puan (varsayılan 100)"},
                             },
                             "required": ["name", "weight"],
                         },
                     },
+                    "target_grade": {
+                        "type": "string",
+                        "description": (
+                            "mode=course: Hedef harf notu veya 'pass'/'geç'. "
+                            "Örn: 'C', 'B+', 'pass'. "
+                            "Girilirse kalan bileşenlerde minimum kaç almak gerektiğini hesaplar."
+                        ),
+                    },
+                    "target_score": {
+                        "type": "number",
+                        "description": "mode=course: Hedef toplam puan (0-100). target_grade yerine kullanılabilir.",
+                    },
                     "what_if": {
                         "type": "object",
-                        "description": "mode=course için varsayımsal senaryo",
+                        "description": "mode=course için varsayımsal senaryo (ek tek bileşen)",
                         "properties": {
                             "name": {"type": "string", "description": "Varsayımsal değerlendirme adı (örn: Final)"},
                             "grade": {"type": "number", "description": "Varsayımsal not"},
@@ -487,7 +504,10 @@ TOOLS: list[dict[str, Any]] = [
                 "'CGPA'mı hesapla', 'kümülatif notum ne', 'mezuniyet şerefim var mı', "
                 "'notlarımı analiz et' gibi isteklerde kullan. "
                 "calculate_grade(mode=cgpa)'dan farkı: notları kendin vermek zorunda değilsin, "
-                "STARS'tan otomatik çeker."
+                "STARS'tan otomatik çeker. "
+                "ÖNEMLI: 'Bu dönem A alırsam CGPA'm ne olur?' gibi projeksiyon sorularında "
+                "planned_courses ile tahmin hesabı yap — mevcut kredi yüküyle birlikte "
+                "gerçekçi CGPA tahmini gösterir."
             ),
             "parameters": {
                 "type": "object",
@@ -495,6 +515,23 @@ TOOLS: list[dict[str, Any]] = [
                     "graduating": {
                         "type": "boolean",
                         "description": "True ise mezuniyet şeref derecesi (cum laude) hesaplanır",
+                    },
+                    "planned_courses": {
+                        "type": "array",
+                        "description": (
+                            "Bu dönem almayı planladığın / tahmin edilen dersler. "
+                            "Mevcut CGPA + kredi üzerine eklenerek projeksiyon gösterilir. "
+                            "Örn: [{name:'CTIS 474', grade:'A', credits:3}, {name:'HCIV 102', grade:'B+', credits:3}]"
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "Ders adı"},
+                                "grade": {"type": "string", "description": "Tahmini harf notu (A+, A, A-, B+, ...)"},
+                                "credits": {"type": "number", "description": "Kredi sayısı"},
+                            },
+                            "required": ["grade", "credits"],
+                        },
                     },
                 },
                 "required": [],
@@ -2084,6 +2121,62 @@ async def _tool_get_cgpa(args: dict, user_id: int) -> str:
         f"\n_Kaynak: STARS curriculum sayfası — {len(raw)} ders satırı okundu, "
         f"{len(raw) - len(courses)} 'Not graded' atlandı._"
     )
+
+    # ── CGPA Projection: planned courses for this / next semester ────────────
+    planned = args.get("planned_courses", [])
+    if planned:
+        lines.append("\n" + "─" * 40)
+        lines.append("*Bu Dönem Tahmin Edilen CGPA Projeksiyonu*\n")
+        new_points = 0.0
+        new_credits = 0.0
+        proj_lines = []
+        proj_warns = []
+        for pc in planned:
+            g = str(pc.get("grade", "")).strip().upper()
+            cr = float(pc.get("credits", 0))
+            name = pc.get("name", "Bilinmeyen")
+            if g not in _GRADE_POINTS:
+                proj_warns.append(f"'{g}' tanımsız harf notu — atlandı ({name})")
+                continue
+            if cr <= 0:
+                proj_warns.append(f"Geçersiz kredi ({cr}) — atlandı ({name})")
+                continue
+            pts = _GRADE_POINTS[g]
+            new_points += pts * cr
+            new_credits += cr
+            proj_lines.append(f"  {name}: {g} ({pts:.2f} × {cr:.0f} kr)")
+
+        if proj_lines:
+            for pl in proj_lines:
+                lines.append(pl)
+            lines.append("")
+            new_gpa = round(new_points / new_credits, 2) if new_credits > 0 else 0.0
+            total_cr = cgpa_cred + new_credits
+            projected_cgpa = round(
+                (cgpa * cgpa_cred + new_points) / total_cr, 2
+            ) if total_cr > 0 else cgpa
+            lines.append(f"Bu dönem tahmini GPA: *{new_gpa:.2f}* ({new_credits:.0f} yeni kredi)")
+            lines.append(f"*Tahmini yeni CGPA: {projected_cgpa:.2f}*")
+            lines.append(
+                f"_(Mevcut: {cgpa:.2f} × {cgpa_cred:.0f} kr + "
+                f"{new_gpa:.2f} × {new_credits:.0f} kr = "
+                f"{projected_cgpa:.2f} × {total_cr:.0f} kr)_"
+            )
+            # Show realistic ceiling: what if student gets 4.0 on all remaining
+            best_cgpa = round((cgpa * cgpa_cred + 4.0 * new_credits) / total_cr, 2)
+            worst_cgpa = round((cgpa * cgpa_cred + 0.0 * new_credits) / total_cr, 2)
+            lines.append(
+                f"\n_Bu dönem için ulaşılabilir CGPA aralığı: "
+                f"{worst_cgpa:.2f} (tüm F) — {best_cgpa:.2f} (tüm A)_"
+            )
+            lines.append(
+                f"_Not: {cgpa_cred:.0f} mevcut kredi üzerine yalnızca {new_credits:.0f} kredi "
+                f"ekleniyor; CGPA bir sonraki dönemde de benzer oranda değişir._"
+            )
+        if proj_warns:
+            lines.append("\n⚠️ Projeksiyon uyarıları:")
+            lines.extend(f"  • {w}" for w in proj_warns)
+
     return "\n".join(lines)
 
 
@@ -2577,41 +2670,87 @@ async def _tool_calculate_grade(args: dict, user_id: int) -> str:
             )
 
         lines.append(f"\nToplam ağırlık: %{total_weight:.0f}")
+        # target_grade: what score is needed on missing components to reach a goal
+        target_score_raw = args.get("target_score")  # e.g. 60 (passing) or 73 (C+)
+        target_letter = args.get("target_grade", "")  # e.g. "C" "B+" "pass"
+
+        # Resolve target_score from letter if not directly given
+        _LETTER_CUTOFFS = [
+            ("A+", 95), ("A", 90), ("A-", 87), ("B+", 83), ("B", 80), ("B-", 77),
+            ("C+", 73), ("C", 70), ("C-", 67), ("D+", 63), ("D", 60), ("F", 0),
+        ]
+        _CUTOFF_MAP = dict(_LETTER_CUTOFFS)
+        if target_score_raw is None and target_letter:
+            tl = target_letter.strip().upper()
+            if tl in ("PASS", "GEÇ", "GEÇMEK"):
+                target_score_raw = 60  # minimum passing (D)
+            elif tl in _CUTOFF_MAP:
+                target_score_raw = _CUTOFF_MAP[tl]
+
         if missing_weight > 0:
-            lines.append(f"Mevcut not (kalanlar hariç): {weighted_sum:.2f}/{ (total_weight - missing_weight):.0f}")
-            # Best/worst case
+            earned_weight = total_weight - missing_weight
+            lines.append(
+                f"\nMevcut durum: {weighted_sum:.2f} puan "
+                f"(%{earned_weight:.0f} ağırlık tamamlandı, %{missing_weight:.0f} eksik)"
+            )
             best = weighted_sum + missing_weight
             worst = weighted_sum
-            lines.append(f"En iyi senaryo (%100 alırsan): {best:.2f}")
-            lines.append(f"En kötü senaryo (%0 alırsan): {worst:.2f}")
+            lines.append(f"En iyi senaryo (%100 alırsan): *{best:.2f}*")
+            lines.append(f"En kötü senaryo (%0 alırsan): *{worst:.2f}*")
+
+            # Compute minimum score needed on missing components for target
+            if target_score_raw is not None:
+                target = float(target_score_raw)
+                needed_raw = target - weighted_sum  # points still needed
+                if missing_weight > 0:
+                    needed_pct = (needed_raw / missing_weight) * 100
+                else:
+                    needed_pct = 0.0
+                target_letter_str = target_letter.upper() if target_letter else f"{target:.0f}"
+                if needed_pct <= 0:
+                    lines.append(
+                        f"\n✅ Kalan sınavları %0 alsan bile {target_letter_str} "
+                        f"için gereken {target:.0f} puanı zaten geçtiniz!"
+                    )
+                elif needed_pct > 100:
+                    lines.append(
+                        f"\n❌ {target_letter_str} için kalan %{missing_weight:.0f} ağırlıkta "
+                        f"%{needed_pct:.1f} almanız gerekirdi — artık mümkün değil "
+                        f"(en yüksek ulaşılabilir: {best:.2f})."
+                    )
+                else:
+                    lines.append(
+                        f"\n🎯 {target_letter_str} için kalan %{missing_weight:.0f} ağırlıkta "
+                        f"ortalama *%{needed_pct:.1f}* almanız gerekiyor."
+                    )
+            else:
+                # Default: show needed for passing (D=60) and C (70)
+                for tgt, tgt_name in [(60, "D (geçmek için minimum)"), (70, "C")]:
+                    needed_raw = tgt - weighted_sum
+                    if missing_weight > 0:
+                        needed_pct = (needed_raw / missing_weight) * 100
+                    else:
+                        needed_pct = 0.0
+                    if needed_pct <= 0:
+                        lines.append(f"✅ {tgt_name}: Zaten garantili ({weighted_sum:.2f} ≥ {tgt})")
+                    elif needed_pct > 100:
+                        lines.append(f"❌ {tgt_name}: Artık mümkün değil (max {best:.2f})")
+                    else:
+                        lines.append(
+                            f"🎯 {tgt_name}: Kalan bileşenlerden ort. *%{needed_pct:.1f}* gerekiyor"
+                        )
+
         else:
             current = weighted_sum
             lines.append(f"\n*Toplam not: {current:.2f}/100*")
-            # Map to letter grade (Bilkent approximate thresholds)
-            if current >= 90:
-                letter = "A / A+"
-            elif current >= 87:
-                letter = "A-"
-            elif current >= 83:
-                letter = "B+"
-            elif current >= 80:
-                letter = "B"
-            elif current >= 77:
-                letter = "B-"
-            elif current >= 73:
-                letter = "C+"
-            elif current >= 70:
-                letter = "C"
-            elif current >= 67:
-                letter = "C-"
-            elif current >= 63:
-                letter = "D+"
-            elif current >= 60:
-                letter = "D"
-            else:
-                letter = "F"
+            # Map to letter grade using approximate Bilkent thresholds
+            letter = "F"
+            for ltr, cut in _LETTER_CUTOFFS:
+                if current >= cut:
+                    letter = ltr
+                    break
             lines.append(f"Tahmini harf notu: *{letter}*")
-            lines.append("_(Harf not sınırları hocaya göre değişebilir)_")
+            lines.append("_(Harf not sınırları hocaya göre değişir — bu yaklaşık bir tahmindir)_")
 
         return "\n".join(lines)
 
