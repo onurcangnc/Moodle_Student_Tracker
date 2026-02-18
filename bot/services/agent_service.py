@@ -2218,7 +2218,7 @@ async def _tool_calculate_grade(args: dict, user_id: int) -> str:
         standing = _academic_standing(gpa)
         honor = _honor_status(gpa, gpa, len(courses))
 
-        lines = [f"*Bilkent GPA Hesabı*\n"]
+        lines = ["*Bilkent GPA Hesabı*\n"]
         for c in courses:
             grade = str(c.get("grade", "")).upper()
             pts = _GRADE_POINTS.get(grade, "—")
@@ -2229,11 +2229,7 @@ async def _tool_calculate_grade(args: dict, user_id: int) -> str:
 
         # Satisfactory boundary warnings
         if 0 < gpa < 2.00:
-            needed = round((2.00 * total_credits - sum(
-                _GRADE_POINTS.get(str(c.get("grade","")).upper(), 0) * float(c.get("credits", 0))
-                for c in courses
-            )) / max(total_credits, 1), 2)
-            lines.append(f"\n_İpucu: Satisfactory için GPA 2.00 gerekli._")
+            lines.append("\n_İpucu: Satisfactory için GPA 2.00 gerekli._")
 
         if warns:
             lines.append("\n⚠️ Uyarılar:")
