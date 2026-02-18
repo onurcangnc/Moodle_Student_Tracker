@@ -623,7 +623,7 @@ def _build_system_prompt(user_id: int) -> str:
         student_ctx = STATE.llm._build_student_context()
 
     return f"""Sen Bilkent Üniversitesi öğrencileri için bir akademik asistan botsun.
-Türkçe yanıt ver (teknik terimler İngilizce kalabilir).
+Kullanıcının diline göre yanıt ver: Türkçe soru → Türkçe cevap, İngilizce soru → İngilizce cevap. Teknik terimler her zaman orijinal dilinde kalabilir.
 
 {course_section}
 Aktif servisler: {chr(10).join(services)}
