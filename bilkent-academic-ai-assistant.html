@@ -434,6 +434,70 @@
   </figure>
 
   <!-- ══════════════════════════════════════════
+       EVOLUTION
+  ══════════════════════════════════════════ -->
+  <h2>Three Architectures in Nine Days</h2>
+
+  <p>
+    The current architecture didn't emerge from a design document. It evolved through three complete
+    rewrites, each one replacing the previous approach after hitting a wall in production.
+  </p>
+
+  <h3>v1 — Intent Classification (Day 2)</h3>
+
+  <p>
+    The first "smart" version used a dedicated LLM call (GPT-4.1-mini) as an intent classifier. Every
+    incoming message was routed through a 12-intent NLU layer — <code>assignments</code>,
+    <code>mail</code>, <code>exams</code>, <code>grades</code>, <code>schedule</code>,
+    <code>attendance</code>, <code>study</code>, and so on — before reaching any handler.
+  </p>
+
+  <p>
+    This meant two LLM calls per query: one to classify, one to respond. It worked, but the extra call
+    added ~400ms of latency and introduced a failure mode: misclassified intents produced confident but
+    wrong answers. A question about "exam grades" could land in the <code>exams</code> handler (which
+    shows dates) instead of <code>grades</code> (which shows scores). The classification layer was
+    897 lines of routing code that was supposed to make the system smarter — but mostly made it fragile.
+  </p>
+
+  <h3>v2 — Keyword Routing (Day 5)</h3>
+
+  <p>
+    The fix was radical: delete the entire intent classifier. Replace it with keyword triggers that inject
+    relevant context into a single LLM call. If the query mentions "not" or "grade," inject grade context.
+    If it mentions "mail" or "email," inject email context. No second LLM call, no classification errors.
+    897 lines removed — 27% of the codebase gone in one commit.
+  </p>
+
+  <p>
+    This worked surprisingly well for simple queries. But it couldn't handle multi-step tasks:
+    <em>"What do I need on the final to pass HCIV 102?"</em> requires fetching the syllabus for grading
+    weights, then calculating the minimum score. Keyword routing doesn't know to chain two operations.
+  </p>
+
+  <h3>v3 — Agentic Function Calling (Day 7)</h3>
+
+  <p>
+    The third and final rewrite moved decision-making to the LLM itself. Instead of pre-routing queries,
+    the model receives a list of available tools and decides which ones to call, in what order, with what
+    parameters. OpenAI's function calling API handles the interface — the model returns structured JSON,
+    the bot executes the tool, feeds the result back, and the loop continues for up to 5 iterations.
+  </p>
+
+  <p>
+    The tool count grew quickly: 10 on day 7, 14 by the evening (with parallel calling enabled), 20 by
+    day 8, and 25 by day 9. Each new tool was immediately available to every query without any routing
+    changes — the model just learned to use it from the tool description.
+  </p>
+
+  <div class="callout">
+    <strong>The lesson:</strong> Each architecture was the right choice at the time. Intent classification
+    was correct when there were 4 handlers. Keyword routing was correct when classification became a
+    bottleneck. Agentic calling was correct when chaining became necessary. The mistake would have been
+    committing to any of them permanently instead of treating each as a stepping stone.
+  </div>
+
+  <!-- ══════════════════════════════════════════
        RAG
   ══════════════════════════════════════════ -->
   <h2>RAG Architecture — Teaching, Not Just Answering</h2>
