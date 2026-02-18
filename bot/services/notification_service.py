@@ -40,21 +40,26 @@ _ATTENDANCE_WARN_THRESHOLD = 85.0
 _ABSENCE_WARN_REMAINING = 3   # ⚠️ warning
 _ABSENCE_CRIT_REMAINING = 1   # 🚨 critical
 
-# Regex patterns to extract max absence hours from syllabus text
+# Regex patterns to extract max absence hours from syllabus text.
+# Ordered most-specific → least-specific; first match wins.
 _ABSENCE_PATTERNS = [
-    # "Do not miss more than 12 hrs of lecture"
-    re.compile(r"miss\s+more\s+than\s+(\d+)\s*hr", re.IGNORECASE),
+    # "miss more than 12 hrs of lecture"
+    # "miss more than 10-class hours"   ← dash+word before "hours"
+    # "miss more than 10 class hours"
+    re.compile(r"miss\s+more\s+than\s+(\d+)[^.\n]{0,20}?hours?", re.IGNORECASE),
+    # Same but with "hrs" abbreviation: "miss more than 12 hrs"
+    re.compile(r"miss\s+more\s+than\s+(\d+)[^.\n]{0,10}?hrs?\b", re.IGNORECASE),
     # "maximum 12 hours of absence"
-    re.compile(r"maximum\s+(\d+)\s*hour", re.IGNORECASE),
+    re.compile(r"maximum\s+(\d+)\s*hours?", re.IGNORECASE),
     # "absence limit: 12" / "absence limit 12 hours"
     re.compile(r"absence\s+limit[:\s]+(\d+)", re.IGNORECASE),
-    # "(\d+) hours of absence allowed"
+    # "(\d+) hours of absence"
     re.compile(r"(\d+)\s*hours?\s+of\s+absence", re.IGNORECASE),
-    # Turkish: "devamsızlık hakkı 12 saat" / "12 saatlik devamsızlık"
+    # Turkish: "devamsızlık hakkı: 12 saat" / "12 saatlik devamsızlık hakkı"
     re.compile(r"devams[ıi]zl[ıi]k\s+hakk[ıi][:\s]+(\d+)\s*saat", re.IGNORECASE),
     re.compile(r"(\d+)\s*saatlik\s+devams[ıi]zl[ıi]k", re.IGNORECASE),
-    # "12 hrs" near "lecture" (loose match for various phrasings)
-    re.compile(r"(\d+)\s*hrs?\b.*lecture", re.IGNORECASE),
+    # Loose: "12 hrs" anywhere near "lecture" in the same line
+    re.compile(r"(\d+)\s*hrs?[^.\n]{0,30}lecture", re.IGNORECASE),
 ]
 
 
