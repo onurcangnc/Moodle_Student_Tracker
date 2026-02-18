@@ -41,11 +41,13 @@ Students pick a course, ask a question in natural language, and the bot retrieve
 - **Multi-provider LLM** — Gemini, OpenAI, GLM, Claude with task-based model routing
 - **SQLite persistent cache** — background jobs cache emails, grades, assignments; tool handlers read from cache for instant responses
 - **Cache stale fallback** — if a filter (sender, subject) returns empty from cache, the bot falls back to a live IMAP fetch
-- **STARS integration** — grades, attendance, exam schedule
+- **STARS integration** — grades, attendance, exam schedule, full degree transcript (curriculum.php), CGPA/AGPA/cum laude calculation
+- **`calculate_grade` tool** — standalone weighted-grade calculator (no Moodle/STARS lookup needed); supports course weighted assessment, semester GPA, and cumulative CGPA modes with what-if queries
+- **Syllabus attendance limit extraction** — RAG-based parser reads any uploaded syllabus PDF and extracts per-course maximum absence hours; per-course hour-based notifications replace the static 85% threshold
 - **Webmail (DAIS & AIRS)** — read, search, and cross-reference instructor emails
 - **Assignment tracking** — upcoming deadlines with normalized date formatting
 - **Cross-reference queries** — "Do I have homework?" checks both Moodle and email simultaneously
-- **Background notifications** — new assignment, grade change, new mail alerts (9 background jobs)
+- **Background notifications** — new assignment, grade change, new mail alerts; **syllabus-based personalized attendance warnings** (10 background jobs)
 - **Conversation memory** — per-user context window (15 messages, 60-min TTL)
 - **Moodle sync** — auto-fetches and indexes materials from Moodle REST API
 - **Admin document upload** — index PDF / DOCX / PPTX directly via Telegram
@@ -128,7 +130,12 @@ User message
     │   ├─ get_grades         → STARS grade records
     │   ├─ get_attendance     → STARS attendance
     │   ├─ get_schedule       → weekly timetable
-    │   └─ get_source_map     → course file index
+    │   ├─ get_source_map     → course file index
+    │   ├─ get_exam_schedule  → STARS upcoming exams
+    │   ├─ get_assignment_detail → full Moodle assignment detail
+    │   ├─ get_upcoming_events   → Moodle calendar events
+    │   ├─ calculate_grade    → standalone grade/GPA/CGPA calculator (no external lookup)
+    │   └─ get_cgpa           → STARS transcript → CGPA/AGPA/cum laude
     ├─ Tool output sanitized (injection stripped, HTML removed from emails)
     ├─ Results appended to message history
     └─ LLM generates final response when confident
@@ -152,11 +159,12 @@ The `core/cache_db.py` SQLite store decouples data freshness from response laten
 | `email_check` | 5 min | Inbox (latest 20 messages) |
 | `assignment_check` | 10 min | Moodle assignments |
 | `grades_sync` | 30 min | STARS grades |
-| `attendance_sync` | 60 min | STARS attendance |
+| `attendance_sync` | 60 min | STARS attendance + hour-based absence alerts |
 | `schedule_sync` | 6 h | Weekly timetable |
 | `deadline_reminder` | 30 min | Upcoming deadline alerts |
 | `session_refresh` | 60 min | Moodle token renewal |
-| `summary_generation` | 60 min | Weekly digest |
+| `summary_generation` | 60 min | KATMAN 2 summaries |
+| `syllabus_limits_sync` | 24 h | Per-course absence limits extracted from RAG syllabi |
 | `cache_cleanup` | weekly | Delete rows older than 90 days |
 
 Tool handlers first check SQLite. On a cache miss (table is empty — only on fresh install), they fall back to live API calls. For filtered email queries (sender/subject filter returns empty from cache), a live IMAP fetch is triggered automatically.

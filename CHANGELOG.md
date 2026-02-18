@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.5.0] - 2026-02-18
+
+### Added
+
+- **Syllabus-based personalized attendance tracking**: new `_sync_syllabus_limits` background job (daily, first run 5 min after startup) searches every enrolled course's syllabus in the RAG vector store and extracts the per-course maximum absence limit. Results are cached to SQLite and used by `_sync_attendance`.
+- **`_extract_syllabus_attendance_limit(course_name)`**: dynamically queries RAG with `course_filter` for any enrolled course — nothing hardcoded. Extracts limits from 8 regex patterns covering English and Turkish phrasings (`"miss more than 10-class hours"`, `"devamsızlık hakkı 14 saat"`, `"maximum 8 hours"`, etc.).
+- **`_short_course_code()`**: derives the short course code (`"HCIV 201"`) from the full STARS attendance name (`"HCIV 201 Science and Technology in History"`) to fix a `course_filter` substring mismatch.
+- **Hour-based attendance warnings**: when a syllabus limit is found, `_sync_attendance` compares absence count against the extracted hour limit and sends `⚠️` (≤ 3 hrs remaining) or `🚨` (≤ 1 hr remaining) notifications. Fallback to the existing 85% ratio threshold for courses without a syllabus.
+
+### Fixed
+
+- `_sync_attendance` previously used a static 85% threshold for all courses; now only falls back to that for courses without a parsed syllabus limit.
+- Regex pattern for `"miss more than 10-class hours"` (dash + word before "hours") updated from `\s*hr` to `[^.\n]{0,20}?hours?` lazy match.
+
+---
+
+## [1.4.0] - 2026-02-18
+
+### Added
+
+- **`get_transcript()` in `StarsClient`**: fetches the full degree-audit transcript from the confirmed STARS endpoint `GET /srs/ajax/curriculum.php?progString=...`. Handles elective slot rows (empty Course Code cell — actual course in cell 6), `\xa0` non-breaking space in grade text, and `progString` discovery from home.php / setup-dhtml.js.
+- **`get_cgpa` agent tool**: computes CGPA, AGPA (graded courses only), pass/fail status, and cum laude eligibility from the full STARS transcript. Uses the Bilkent 4.0 GPA scale and conditional-pass rules (C-, D+, D require CGPA ≥ 2.00).
+- **`calculate_grade` agent tool** (3 modes):
+  - `mode=course` — weighted assessment calculator with what-if queries ("how much do I need on the final?").
+  - `mode=gpa` — semester GPA from letter grades + credits.
+  - `mode=cgpa` — cumulative CGPA/AGPA, pass/fail, cum laude status.
+- **`get_exam_schedule` agent tool**: retrieves upcoming STARS exam schedule.
+- **`get_assignment_detail` agent tool**: fetches full assignment details including submission status and grading criteria.
+- **`get_upcoming_events` agent tool**: lists upcoming Moodle calendar events.
+- **`_ajax_get()` in `StarsClient`**: GET-based AJAX helper matching the STARS SPA navigation pattern (`paneSplitter.loadContent`).
+- **`_discover_prog_string()` in `StarsClient`**: searches home.php, SRS shell, and setup-dhtml.js for the `progString` curriculum parameter.
+
+### Fixed
+
+- Agent was calling Moodle/STARS enrollment check before `calculate_grade` — blocked with top-priority system prompt rule and `STANDALONE` designation in tool description.
+- `get_transcript()` previously tried AJAX POST endpoints (all returned 404) and srs-v2 direct GET (returns SPA shell). Rewritten to use the confirmed GET endpoint.
+
+---
+
 ## [1.3.0] - 2026-02-17
 
 ### Added

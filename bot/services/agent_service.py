@@ -1,16 +1,18 @@
 """
-Agentic LLM service with OpenAI function calling — v3.
+Agentic LLM service with OpenAI function calling — v4.
 ========================================================
-The bot's brain: 3-Layer Knowledge Architecture + 14 tools.
+The bot's brain: 3-Layer Knowledge Architecture + 19 tools.
 
 KATMAN 1 — Index: metadata aggregation (get_source_map, instant, free)
 KATMAN 2 — Summary: pre-generated teaching overviews (read_source, stored JSON)
 KATMAN 3 — Deep read: chunk-based content (rag_search, study_topic, read_source)
 
-14 tools:
+19 tools:
   get_source_map, read_source, study_topic, rag_search, get_moodle_materials,
   get_schedule, get_grades, get_attendance, get_assignments,
-  get_emails, get_email_detail, list_courses, set_active_course, get_stats
+  get_emails, get_email_detail, list_courses, set_active_course, get_stats,
+  get_exam_schedule, get_assignment_detail, get_upcoming_events,
+  calculate_grade, get_cgpa
 
 Tool loop: user → LLM (with tools) → tool exec → LLM (with results) → reply
 Max iterations: 5, parallel_tool_calls=True
