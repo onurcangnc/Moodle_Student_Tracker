@@ -1,18 +1,19 @@
 """
 Agentic LLM service with OpenAI function calling — v4.
 ========================================================
-The bot's brain: 3-Layer Knowledge Architecture + 20 tools.
+The bot's brain: 3-Layer Knowledge Architecture + 25 tools.
 
 KATMAN 1 — Index: metadata aggregation (get_source_map, instant, free)
 KATMAN 2 — Summary: pre-generated teaching overviews (read_source, stored JSON)
 KATMAN 3 — Deep read: chunk-based content (rag_search, study_topic, read_source)
 
-20 tools:
+25 tools:
   get_source_map, read_source, study_topic, rag_search, get_moodle_materials,
   get_schedule, get_grades, get_attendance, get_syllabus_info, get_assignments,
   get_emails, get_email_detail, list_courses, set_active_course, get_stats,
   get_exam_schedule, get_assignment_detail, get_upcoming_events,
-  calculate_grade, get_cgpa
+  calculate_grade, get_cgpa,
+  get_weekly_digest, study_planner, get_forum_posts, grade_target, absence_budget
 
 Tool loop: user → LLM (with tools) → tool exec → LLM (with results) → reply
 Max iterations: 5, parallel_tool_calls=True
@@ -574,6 +575,130 @@ TOOLS: list[dict[str, Any]] = [
             "name": "get_stats",
             "description": "Bot istatistikleri: chunk, kurs, dosya sayısı, uptime.",
             "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    # ═══ G. Digest & Planner (5 tools) ═══
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weekly_digest",
+            "description": (
+                "Sabah özeti: bugünün ders programı, yaklaşan ödevler (7 gün), yaklaşan sınavlar (14 gün), "
+                "son 3 mail ve devamsızlık uyarıları. 'Bugün ne var', 'günlük özetim', 'sabah özeti', "
+                "'genel durum', 'ne yapmalıyım' gibi geniş kapsamlı isteklerde tek sorguda tüm bilgileri getir."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "study_planner",
+            "description": (
+                "Sınav tarihleri ve ödev son tarihlerine göre günlük çalışma planı oluşturur. "
+                "'Çalışma planı yap', 'bu hafta nasıl çalışmalıyım', 'sınavlara nasıl hazırlanayım' "
+                "gibi isteklerde kullan. Harici API çağrısı yapmaz — yalnızca önbellekteki verilerden hesaplar."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days_ahead": {
+                        "type": "integer",
+                        "description": "Planlama ufku (gün). Varsayılan: 14, max: 30.",
+                    },
+                    "course_filter": {
+                        "type": "string",
+                        "description": "Belirli bir derse odaklan (opsiyonel).",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_forum_posts",
+            "description": (
+                "Moodle forum duyurularını ve tartışmalarını getirir (hoca gönderileri, ders duyuruları). "
+                "'Forum'da ne var', 'hoca ne duyurdu', 'Moodle duyuruları' gibi isteklerde kullan. "
+                "get_emails'dan farkı: Moodle forum içi mesajlar."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "course_filter": {
+                        "type": "string",
+                        "description": "Kurs adı filtresi (opsiyonel).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maksimum gönderi sayısı (varsayılan 5, max 10).",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grade_target",
+            "description": (
+                "Hedef GPA için her dersten minimum kaç almam gerekiyor? "
+                "'3.0 GPA için ne yapmalıyım', 'hedef notum 3.5, bu derslerde ne almam lazım' "
+                "gibi isteklerde kullan. STARS'tan mevcut transcript/CGPA ve ders listesini otomatik çeker."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_gpa": {
+                        "type": "number",
+                        "description": "Hedef GPA (örn: 3.0, 3.5). Zorunlu.",
+                    },
+                    "current_cgpa": {
+                        "type": "number",
+                        "description": "Mevcut CGPA (opsiyonel — verilmezse STARS'tan çekilir).",
+                    },
+                    "planned_courses": {
+                        "type": "array",
+                        "description": (
+                            "Bu dönem alınan dersler (opsiyonel — verilmezse grades önbelleği kullanılır). "
+                            "Örn: [{\"name\":\"CTIS 474\",\"credits\":3}]"
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "credits": {"type": "number"},
+                            },
+                            "required": ["name", "credits"],
+                        },
+                    },
+                },
+                "required": ["target_gpa"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "absence_budget",
+            "description": (
+                "Her ders için kalan devamsızlık hakkını hesaplar (syllabus limiti − mevcut devamsızlık). "
+                "'Kaç daha devamsız olabilirim', 'devamsızlık hakkım ne kadar kaldı' gibi isteklerde kullan. "
+                "get_attendance'dan farkı: syllabus limitine göre kalan hak odaklıdır."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "course_filter": {
+                        "type": "string",
+                        "description": "Belirli bir ders (opsiyonel — boşsa tüm dersler).",
+                    },
+                },
+                "required": [],
+            },
         },
     },
 ]
@@ -2857,6 +2982,511 @@ async def _tool_calculate_grade(args: dict, user_id: int) -> str:
     return f"Bilinmeyen mod: {mode}. 'gpa' veya 'course' kullanın."
 
 
+# ─── Digest & Planner Tools ───────────────────────────────────────────────────
+
+
+async def _tool_get_weekly_digest(args: dict, user_id: int) -> str:
+    """Morning digest: today's schedule + upcoming exams/assignments + emails + attendance alerts."""
+    stars = STATE.stars_client
+    stars_ok = stars is not None and stars.is_authenticated(user_id)
+
+    async def _get_schedule_safe() -> list | None:
+        if not stars_ok:
+            return None
+        return cache_db.get_json("schedule", user_id)
+
+    async def _get_exams_safe() -> list | None:
+        if not stars_ok:
+            return None
+        return cache_db.get_json("exams", user_id)
+
+    async def _get_assignments_safe() -> list | None:
+        return cache_db.get_json("assignments", user_id)
+
+    async def _get_emails_safe() -> list | None:
+        return cache_db.get_emails(3)
+
+    async def _get_attendance_safe() -> list | None:
+        if not stars_ok:
+            return None
+        return cache_db.get_json("attendance", user_id)
+
+    schedule, exams, assignments, emails, attendance = await asyncio.gather(
+        _get_schedule_safe(),
+        _get_exams_safe(),
+        _get_assignments_safe(),
+        _get_emails_safe(),
+        _get_attendance_safe(),
+    )
+
+    now = datetime.now()
+    today_name = _DAY_NAMES_TR.get(now.weekday(), "")
+    sections: list[str] = []
+
+    # ── 📅 Bugün ─────────────────────────────────────────────────────────────
+    if schedule:
+        today_entries = [e for e in schedule if e.get("day", "") == today_name]
+        if today_entries:
+            lines = [f"📅 *Bugün — {today_name}*"]
+            for e in today_entries:
+                room_str = f" ({e.get('room', '')})" if e.get("room") else ""
+                lines.append(f"  • {e.get('time', '')} — {e.get('course', '')}{room_str}")
+            sections.append("\n".join(lines))
+        else:
+            sections.append(f"📅 *Bugün — {today_name}*\n  Bugün ders yok.")
+    elif not stars_ok:
+        sections.append("📅 *Bugün*\n  _(STARS girişi yapılmamış — program gösterilemiyor)_")
+
+    # ── 📝 Yaklaşan Ödevler (next 7 days) ────────────────────────────────────
+    if assignments:
+        now_ts = now.timestamp()
+        cutoff = now_ts + 7 * 86400
+        upcoming_hw = [
+            a for a in assignments
+            if not a.get("submitted", False)
+            and isinstance(a.get("due_date"), (int, float))
+            and now_ts < a["due_date"] <= cutoff
+        ]
+        if upcoming_hw:
+            lines = ["📝 *Yaklaşan Ödevler (7 gün)*"]
+            for a in sorted(upcoming_hw, key=lambda x: x["due_date"]):
+                due = datetime.fromtimestamp(a["due_date"]).strftime("%d/%m %H:%M")
+                lines.append(f"  • {a.get('name', '')} [{a.get('course_name', '')}] — {due}")
+            sections.append("\n".join(lines))
+        else:
+            sections.append("📝 *Yaklaşan Ödevler*\n  Önümüzdeki 7 günde ödev yok.")
+    else:
+        sections.append("📝 *Yaklaşan Ödevler*\n  _(Ödev bilgisi yüklenmemiş)_")
+
+    # ── 🎓 Yaklaşan Sınavlar (next ~14 days) ─────────────────────────────────
+    if exams:
+        upcoming_exams = [
+            e for e in exams
+            if e.get("time_remaining") and any(c.isdigit() for c in e.get("time_remaining", ""))
+        ]
+        if upcoming_exams:
+            lines = ["🎓 *Yaklaşan Sınavlar*"]
+            for e in upcoming_exams[:5]:
+                lines.append(
+                    f"  • {e.get('course', '')} — {e.get('exam_name', '')} "
+                    f"({e.get('date', '')}) Kalan: {e.get('time_remaining', '')}"
+                )
+            sections.append("\n".join(lines))
+        else:
+            sections.append("🎓 *Yaklaşan Sınavlar*\n  Yaklaşan sınav yok.")
+    elif not stars_ok:
+        sections.append("🎓 *Yaklaşan Sınavlar*\n  _(STARS girişi yapılmamış)_")
+
+    # ── 📧 Son Mailler ────────────────────────────────────────────────────────
+    if emails:
+        lines = ["📧 *Son Mailler*"]
+        for m in emails[:3]:
+            subj = m.get("subject", "(konu yok)")
+            sender = m.get("from", "")
+            lines.append(f"  • {subj[:60]} — {sender[:30]}")
+        sections.append("\n".join(lines))
+    else:
+        sections.append("📧 *Son Mailler*\n  _(Mail verisi yüklenmemiş)_")
+
+    # ── ⚠️ Devamsızlık Uyarıları ──────────────────────────────────────────────
+    if attendance:
+        syllabus_limits: dict = cache_db.get_json("syllabus_limits", user_id) or {}
+        warning_lines: list[str] = []
+        for cd in attendance:
+            cname = cd.get("course", "")
+            records = cd.get("records", [])
+            if not records:
+                continue
+            absent = sum(1 for r in records if not r.get("attended", True))
+            total = len(records)
+            limit = syllabus_limits.get(cname)
+            if limit and limit > 0:
+                remaining = limit - absent
+                if remaining <= 0:
+                    warning_lines.append(f"  🚨 {cname}: {absent}/{limit} saat devamsız — limit aşıldı!")
+                elif remaining <= 2:
+                    warning_lines.append(f"  ⚠️ {cname}: {absent}/{limit} saat devamsız — {remaining} saat kaldı")
+            else:
+                if total > 0 and absent / total > 0.30:
+                    warning_lines.append(
+                        f"  ⚠️ {cname}: %{round(absent / total * 100):.0f} devamsızlık (>%30)"
+                    )
+        if warning_lines:
+            sections.append("⚠️ *Devamsızlık Uyarıları*\n" + "\n".join(warning_lines))
+
+    if not sections:
+        return "Haftalık özet için yeterli veri bulunamadı."
+
+    header = f"*Günlük Özet — {now.strftime('%d/%m/%Y')} {today_name}*\n"
+    return header + "\n\n".join(sections)
+
+
+async def _tool_study_planner(args: dict, user_id: int) -> str:
+    """Generate a daily study plan from cached exam/assignment data. Pure algorithmic — no API calls."""
+    import re as _re
+
+    days_ahead = min(int(args.get("days_ahead", 14)), 30)
+    course_filter = args.get("course_filter", "").strip().lower()
+
+    exams = cache_db.get_json("exams", user_id) or []
+    assignments = cache_db.get_json("assignments", user_id) or []
+
+    if not exams and not assignments:
+        return (
+            "Çalışma planı oluşturmak için sınav veya ödev verisi bulunamadı. "
+            "STARS'a giriş yapıp biraz bekleyin veya önce sınav programı ve ödev araçlarını kullanın."
+        )
+
+    now = datetime.now()
+    now_ts = int(now.timestamp())
+
+    deadlines: list[dict] = []
+
+    for e in exams:
+        cname = e.get("course", "")
+        if course_filter and course_filter not in cname.lower():
+            continue
+        time_remaining_str = e.get("time_remaining", "")
+        if not time_remaining_str:
+            continue
+        m = _re.search(r"(\d+)\s*gün", time_remaining_str)
+        if not m:
+            continue
+        days_left = int(m.group(1))
+        if days_left > days_ahead or days_left < 0:
+            continue
+        deadlines.append({
+            "label": f"{cname} — {e.get('exam_name', 'Sınav')}",
+            "type": "exam",
+            "days_left": days_left,
+        })
+
+    horizon_ts = now_ts + days_ahead * 86400
+    for a in assignments:
+        cname = a.get("course_name", "")
+        if course_filter and course_filter not in cname.lower():
+            continue
+        if a.get("submitted", False):
+            continue
+        due = a.get("due_date", 0)
+        if not isinstance(due, (int, float)) or due <= now_ts or due > horizon_ts:
+            continue
+        days_left = int((due - now_ts) / 86400)
+        deadlines.append({
+            "label": f"{cname} — {a.get('name', 'Ödev')}",
+            "type": "assignment",
+            "days_left": days_left,
+        })
+
+    if not deadlines:
+        scope = f"'{args.get('course_filter')}' dersi için " if course_filter else ""
+        return f"Önümüzdeki {days_ahead} günde {scope}yaklaşan sınav veya ödev bulunamadı."
+
+    plan: dict[int, list[str]] = {i: [] for i in range(days_ahead)}
+
+    for d in sorted(deadlines, key=lambda x: x["days_left"]):
+        days_left = d["days_left"]
+        is_exam = d["type"] == "exam"
+        lead_days = min(7 if is_exam else 2, days_left)
+        weight_label = "60%" if is_exam else "40%"
+        start_day = max(0, days_left - lead_days)
+        study_days = list(range(start_day, days_left))
+        if not study_days:
+            study_days = [max(0, days_left - 1)]
+        for day in study_days:
+            if day < days_ahead:
+                plan[day].append(
+                    f"{'📚 Sınav' if is_exam else '📝 Ödev'} ({weight_label} öncelik): {d['label']}"
+                )
+
+    lines = [f"*{days_ahead} Günlük Çalışma Planı*\n"]
+    lines.append("Kural: Sınavlar %60 öncelik (7 gün öncesinden), ödevler %40 (2 gün öncesinden).\n")
+
+    any_tasks = False
+    for day_offset in range(days_ahead):
+        tasks = plan[day_offset]
+        if not tasks:
+            continue
+        any_tasks = True
+        date_str = (now + timedelta(days=day_offset)).strftime("%d/%m %A")
+        lines.append(f"*{date_str}*")
+        for t in tasks:
+            lines.append(f"  • {t}")
+
+    if not any_tasks:
+        lines.append("Planlama için yeterli önceden başlama süresi yok (son güne kaldı).")
+
+    lines.append("\n_Not: Bu plan otomatik hesaplanmıştır. Kişisel öğrenme hızınıza göre ayarlayın._")
+    return "\n".join(lines)
+
+
+async def _tool_get_forum_posts(args: dict, user_id: int) -> str:
+    """Fetch Moodle forum announcements and discussions."""
+    moodle = STATE.moodle
+    if moodle is None:
+        return "Moodle bağlantısı hazır değil."
+
+    limit = min(int(args.get("limit", 5)), 10)
+    course_filter = args.get("course_filter", "").strip().lower()
+
+    cached = cache_db.get_json("forum_posts", user_id)
+
+    if cached is None:
+        try:
+            raw = await asyncio.to_thread(moodle.get_forum_posts, None, limit * 2)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.error("Forum posts fetch failed: %s", exc, exc_info=True)
+            return f"Forum gönderileri alınamadı: {exc}"
+        if raw:
+            cache_db.set_json("forum_posts", user_id, raw)
+        cached = raw or []
+
+    if course_filter:
+        cached = [p for p in cached if course_filter in p.get("course", "").lower()]
+        if not cached:
+            return f"'{args.get('course_filter')}' dersinde forum gönderisi bulunamadı."
+
+    posts = cached[:limit]
+    if not posts:
+        return "Moodle forumlarında gönderi bulunamadı."
+
+    lines = ["💬 *Moodle Forum Gönderileri*\n"]
+    for p in posts:
+        date_str = (
+            datetime.fromtimestamp(p["date"]).strftime("%d/%m/%Y")
+            if isinstance(p.get("date"), (int, float)) and p["date"] > 1_000_000
+            else "Tarih bilinmiyor"
+        )
+        lines.append(f"*{p.get('subject', '(konu yok)')}*")
+        lines.append(f"  [{p.get('course', '')}] {p.get('forum_name', '')} — {p.get('author', '')} ({date_str})")
+        if p.get("preview"):
+            lines.append(f"  _{p['preview'][:150]}_")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+async def _tool_grade_target(args: dict, user_id: int) -> str:
+    """Reverse-calculate per-course minimum grades to hit a target GPA."""
+    target_gpa = float(args.get("target_gpa", 0))
+    if not (0.0 <= target_gpa <= 4.0):
+        return "Geçersiz hedef GPA. 0.0 ile 4.0 arasında bir değer girin (örn: 3.0)."
+
+    stars = STATE.stars_client
+    stars_ok = stars is not None and stars.is_authenticated(user_id)
+
+    current_cgpa = args.get("current_cgpa")
+    current_credits = 0.0
+    current_points = 0.0
+
+    if current_cgpa is None and stars_ok:
+        try:
+            raw_transcript = await asyncio.to_thread(stars.get_transcript, user_id)
+            if raw_transcript:
+                courses_hist = [
+                    {
+                        "name": f"{c.get('code', '')} {c.get('name', '')}".strip(),
+                        "grade": c["grade"],
+                        "credits": c["credits"],
+                        "semester": c.get("semester", ""),
+                    }
+                    for c in raw_transcript
+                    if c.get("grade") and str(c["grade"]).strip()
+                ]
+                if courses_hist:
+                    cgpa_val, cgpa_cred, _, _, _, _ = _bilkent_cgpa(courses_hist)
+                    current_cgpa = cgpa_val
+                    current_credits = cgpa_cred
+                    current_points = cgpa_val * cgpa_cred
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.error("Transcript fetch for grade_target failed: %s", exc, exc_info=True)
+            return (
+                f"Mevcut CGPA alınamadı: {exc}\n"
+                "Lütfen `current_cgpa` parametresiyle mevcut CGPA'nızı girin."
+            )
+    elif current_cgpa is not None:
+        current_credits = 0.0
+        current_points = 0.0
+        # Early check: if explicit cgpa already meets target, tell the user now
+        if float(current_cgpa) >= target_gpa:
+            return (
+                f"*Hedef GPA: {target_gpa:.2f} — Ders Başarı Analizi*\n\n"
+                f"Mevcut CGPA'nız ({current_cgpa:.2f}) zaten hedef {target_gpa:.2f}'a ulaşıyor veya üzerinde. "
+                "Bu dersleri geçmeniz yeterli."
+            )
+
+    if current_cgpa is None:
+        current_cgpa = 0.0
+
+    planned_courses = args.get("planned_courses")
+    if not planned_courses:
+        grades_cache = cache_db.get_json("grades", user_id)
+        if grades_cache:
+            planned_courses = [
+                {"name": g.get("course", ""), "credits": 3}
+                for g in grades_cache
+                if g.get("course")
+            ]
+        if not planned_courses:
+            return (
+                "Bu dönemin ders listesi bulunamadı. "
+                "`planned_courses` parametresiyle ders listesini (ad + kredi) girin.\n"
+                "Örn: [{\"name\": \"CTIS 474\", \"credits\": 3}]"
+            )
+
+    new_total_credits = sum(float(c.get("credits", 3)) for c in planned_courses)
+    if new_total_credits <= 0:
+        return "Toplam kredi sıfır — geçerli kredi değerleri girin."
+
+    total_credits = current_credits + new_total_credits
+    total_target_points = target_gpa * total_credits
+    new_points_needed = total_target_points - current_points
+    per_course_avg_needed = new_points_needed / new_total_credits
+
+    already_achievable = per_course_avg_needed <= 0
+    impossible = per_course_avg_needed > 4.0
+
+    def _gpa_to_letter_desc(pts: float) -> str:
+        if pts <= 0:
+            return "herhangi bir not"
+        if pts >= 4.0:
+            return "A/A+ (4.0 — maksimum)"
+        for letter, point in [
+            ("A/A+", 4.0), ("A-", 3.7), ("B+", 3.3), ("B", 3.0),
+            ("B-", 2.7), ("C+", 2.3), ("C", 2.0), ("C-", 1.7),
+            ("D+", 1.3), ("D", 1.0),
+        ]:
+            if pts >= point:
+                return f"{letter} ({point:.1f})"
+        return "D veya üzeri"
+
+    lines = [f"*Hedef GPA: {target_gpa:.2f} — Ders Başarı Analizi*\n"]
+
+    if current_credits > 0:
+        lines.append(f"Mevcut CGPA: *{current_cgpa:.2f}* ({current_credits:.0f} kredi)")
+    lines.append(f"Bu dönem: {len(planned_courses)} ders, {new_total_credits:.0f} kredi toplam\n")
+
+    if already_achievable:
+        lines.append(
+            f"Mevcut CGPA'nız ({current_cgpa:.2f}) zaten hedef {target_gpa:.2f}'a ulaşıyor veya üzerinde. "
+            "Bu dersleri geçmeniz yeterli."
+        )
+        return "\n".join(lines)
+
+    if impossible:
+        best_possible = round(
+            (current_points + 4.0 * new_total_credits) / total_credits, 2
+        )
+        lines.append(
+            f"Bu dönem tüm derslerden A alınsa bile ulaşılabilecek maksimum GPA: *{best_possible:.2f}*\n"
+            f"Hedef {target_gpa:.2f} bu dönem ulaşılamaz."
+        )
+        return "\n".join(lines)
+
+    lines.append(
+        f"*Ortalama ihtiyaç:* Her dersten ≈ *{per_course_avg_needed:.2f}* puan "
+        f"({_gpa_to_letter_desc(per_course_avg_needed)})\n"
+    )
+    lines.append("*Ders bazlı minimum gereksinim:*")
+
+    for c in planned_courses:
+        cname = c.get("name", "Bilinmeyen")
+        credits = float(c.get("credits", 3))
+        lines.append(
+            f"  • {cname} ({credits:.0f} kr): en az *{_gpa_to_letter_desc(per_course_avg_needed)}* gerekiyor"
+        )
+
+    lines.append(
+        "\n_Not: Bu hesaplama eşit dağılım varsayar. Bazı derslerde daha yüksek, "
+        "bazılarında daha düşük notla aynı hedefe ulaşabilirsiniz._"
+    )
+    return "\n".join(lines)
+
+
+async def _tool_absence_budget(args: dict, user_id: int) -> str:
+    """Per-course remaining absence budget: syllabus_limit − current_absences."""
+    stars = STATE.stars_client
+    if stars is None or not stars.is_authenticated(user_id):
+        return "STARS girişi yapılmamış. Devamsızlık bütçesi için önce /start ile STARS'a giriş yap."
+
+    attendance = cache_db.get_json("attendance", user_id)
+    if attendance is None:
+        try:
+            fresh = await asyncio.to_thread(stars.get_attendance, user_id)
+            if fresh:
+                attendance = fresh
+                cache_db.set_json("attendance", user_id, fresh)
+            else:
+                return "Devamsızlık bilgisi alınamadı. STARS'tan veri gelmiyor."
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.error("Attendance fetch for absence_budget failed: %s", exc, exc_info=True)
+            return f"Devamsızlık bilgisi alınamadı: {exc}"
+
+    if not attendance:
+        return "Devamsızlık bilgisi bulunamadı."
+
+    course_filter = args.get("course_filter", "").strip().lower()
+    if course_filter:
+        attendance = [a for a in attendance if course_filter in a.get("course", "").lower()]
+        if not attendance:
+            return f"'{args.get('course_filter')}' ile eşleşen kurs devamsızlığı bulunamadı."
+
+    syllabus_limits: dict = cache_db.get_json("syllabus_limits", user_id) or {}
+
+    lines = ["*Devamsızlık Bütçesi*\n"]
+    any_data = False
+
+    for cd in attendance:
+        cname = cd.get("course", "Bilinmeyen")
+        records = cd.get("records", [])
+        total = len(records)
+        absent = sum(1 for r in records if not r.get("attended", True))
+
+        limit_hours = syllabus_limits.get(cname)
+
+        if limit_hours and limit_hours > 0:
+            remaining = limit_hours - absent
+            any_data = True
+            if remaining <= 0:
+                status_icon = "🚨"
+                note = " (limit aşıldı — otomatik başarısız riski!)"
+            elif remaining <= 2:
+                status_icon = "⚠️"
+                note = " ⚠️ Az hak kaldı!"
+            else:
+                status_icon = "✅"
+                note = ""
+            lines.append(
+                f"{status_icon} *{cname}*\n"
+                f"  Devamsızlık: {absent} saat / {limit_hours} saat limit\n"
+                f"  Kalan: *{remaining} saat*{note}"
+            )
+        elif total > 0:
+            any_data = True
+            bilkent_limit_sessions = round(total * 0.30)
+            remaining = bilkent_limit_sessions - absent
+            if remaining <= 0:
+                status_icon = "🚨"
+            elif remaining <= 2:
+                status_icon = "⚠️"
+            else:
+                status_icon = "✅"
+            lines.append(
+                f"{status_icon} *{cname}*\n"
+                f"  Devamsızlık: {absent}/{total} ders (%30 limit = {bilkent_limit_sessions} ders)\n"
+                f"  Kalan: *{max(0, remaining)} ders*"
+                f"{' (limit aşıldı!)' if remaining < 0 else ''}\n"
+                f"  _Syllabus limiti bulunamadı — Bilkent %30 standardı uygulandı_"
+            )
+        else:
+            lines.append(f"❓ *{cname}*\n  Devamsızlık kaydı yok.")
+
+    if not any_data:
+        return "Devamsızlık bütçesi hesaplanamadı — kayıt bulunamadı."
+
+    return "\n\n".join(lines)
+
+
 # ─── Tool Dispatcher ─────────────────────────────────────────────────────────
 
 TOOL_HANDLERS = {
@@ -2880,6 +3510,11 @@ TOOL_HANDLERS = {
     "list_courses": _tool_list_courses,
     "set_active_course": _tool_set_active_course,
     "get_stats": _tool_get_stats,
+    "get_weekly_digest": _tool_get_weekly_digest,
+    "study_planner": _tool_study_planner,
+    "get_forum_posts": _tool_get_forum_posts,
+    "grade_target": _tool_grade_target,
+    "absence_budget": _tool_absence_budget,
 }
 
 

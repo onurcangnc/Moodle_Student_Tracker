@@ -56,6 +56,11 @@ Students pick a course, ask a question in natural language, and the bot retrieve
 - **Rate limiting** — per-user request throttling
 - **Health check** — HTTP `/health` endpoint (uptime, chunk count, active users)
 - **Docker & systemd** — production-ready deployment options
+- **Daily digest** (`get_weekly_digest`) — single-query morning overview: today's schedule, upcoming exams (14 days), upcoming assignments (7 days), recent emails, and attendance warnings — all fetched in parallel
+- **Study planner** (`study_planner`) — algorithmic daily study schedule from cached exam/assignment data; no external API; exams weighted 60%, assignments 40%
+- **Forum announcements** (`get_forum_posts`) — Moodle course forum posts (instructor announcements) via `mod_forum` API
+- **Grade target calculator** (`grade_target`) — reverse-GPA tool: given a target GPA, computes per-course minimum grades using STARS transcript
+- **Absence budget** (`absence_budget`) — per-course remaining absence hours (syllabus limit − current absences); Bilkent 30% rule fallback; ≤2h remaining triggers warning
 
 ---
 
@@ -137,7 +142,12 @@ User message
     │   ├─ get_assignment_detail → full Moodle assignment detail
     │   ├─ get_upcoming_events   → Moodle calendar events
     │   ├─ calculate_grade    → standalone grade/GPA/CGPA calculator (no external lookup)
-    │   └─ get_cgpa           → STARS transcript → CGPA/AGPA/cum laude
+    │   ├─ get_cgpa           → STARS transcript → CGPA/AGPA/cum laude
+    │   ├─ get_weekly_digest  → parallel fetch: schedule + exams + assignments + emails + attendance
+    │   ├─ study_planner      → algorithmic study plan from cached deadlines (no API)
+    │   ├─ get_forum_posts    → Moodle forum announcements (mod_forum API)
+    │   ├─ grade_target       → reverse GPA calculator (target GPA → per-course minimum)
+    │   └─ absence_budget     → per-course remaining absence hours (syllabus limit − absences)
     ├─ Tool output sanitized (injection stripped, HTML removed from emails)
     ├─ Results appended to message history
     └─ LLM generates final response when confident
@@ -421,13 +431,11 @@ INFO | Bot started
 | Command | Description | Access |
 |---------|-------------|--------|
 | `/start` | Welcome message and usage guide | Everyone |
-| `/help` | Step-by-step usage instructions | Everyone |
-| `/courses` | List loaded courses | Everyone |
-| `/courses <name>` | Set active course | Everyone |
 | `/upload` | Open document upload mode (next file will be indexed) | Admin |
-| `/stats` | Bot statistics (chunks, courses, files) | Admin |
 
-**Typical workflow:** `/courses` → select course → type your question → get a material-grounded answer.
+**Typical workflow:** `/start` → ask your question in natural language → get a grounded answer.
+
+> **Note:** Course selection, statistics, and all other features are accessed through natural language — just type your request (e.g. *"CTIS 256'yı seç"*, *"istatistikleri göster"*, *"derslerimi listele"*).
 
 ---
 
@@ -489,7 +497,7 @@ Supported models: Gemini 2.5 Flash/Pro, GPT-4.1 nano/mini, GPT-5 mini, GLM 4.5/4
 
 ## Testing
 
-The test suite covers **359 tests** across unit, integration, and end-to-end layers using pytest and pytest-asyncio. All unit tests run without any external dependencies.
+The test suite covers **389 tests** across unit, integration, and end-to-end layers using pytest and pytest-asyncio. All unit tests run without any external dependencies.
 
 ```bash
 # Install dev dependencies
@@ -651,7 +659,7 @@ Tests that filtered email queries fall back to live IMAP when the cache returns 
 
 ## Use Case Status
 
-Complete functional inventory of all 20 tools. Each tool was audited for correct fallback behavior, cache strategy, error handling, and edge cases.
+Complete functional inventory of all 25 tools. Each tool was audited for correct fallback behavior, cache strategy, error handling, and edge cases.
 
 ### Tool Health Matrix
 
@@ -677,6 +685,11 @@ Complete functional inventory of all 20 tools. Each tool was audited for correct
 | 18 | `list_courses` | System | — | — | ✅ OK | All indexed courses |
 | 19 | `set_active_course` | System | — | — | ✅ OK | Fuzzy name match, updates RAG context |
 | 20 | `get_stats` | System | — | — | ✅ OK | Chunk count, uptime, version |
+| 21 | `get_weekly_digest` | Digest | SQLite (all) | — | ✅ OK | Parallel fetch: schedule + exams + assignments + emails + attendance warnings |
+| 22 | `study_planner` | Digest | SQLite | — | ✅ OK | Algorithmic; no API calls; exam 60% / assignment 40% weight |
+| 23 | `get_forum_posts` | Moodle | SQLite | Moodle API | ✅ OK | `mod_forum_get_forums_by_courses` + `mod_forum_get_forum_discussions` |
+| 24 | `grade_target` | GPA | SQLite | STARS API | ✅ OK | Reverse GPA calc; transcript from STARS; early-exit if already met |
+| 25 | `absence_budget` | STARS | SQLite 60m | STARS API | ✅ OK | Syllabus-limit mode; Bilkent 30% fallback; ≤2h remaining → ⚠️ |
 
 ### Known Issues
 
@@ -763,14 +776,14 @@ tests/unit/test_formatters.py                 4 tests
 tests/unit/test_logging_config.py             2 tests
 tests/unit/test_main.py                      28 tests
 tests/unit/test_messages_handler.py           3 tests
-tests/unit/test_new_tools.py                 60 tests
+tests/unit/test_new_tools.py                 90 tests   ← +30 new (5 tools × 6 tests each)
 tests/unit/test_safety_redteam.py           158 tests
 tests/unit/test_state.py                      2 tests
 tests/unit/test_user_service.py              10 tests
 tests/unit/test_validators.py                 4 tests
 tests/unit/test_vector_store.py               3 tests
 ------------------------------------------------------
-TOTAL                                       359 tests collected
+TOTAL                                       389 tests collected
 ```
 
 **Full suite result (production server) — after `53eca00` hardening:**

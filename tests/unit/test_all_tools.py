@@ -56,6 +56,12 @@ from bot.services.agent_service import (
     _tool_set_active_course,
     _tool_study_topic,
     handle_agent_message,
+    # New tools (G. Digest & Planner)
+    _tool_get_weekly_digest,
+    _tool_study_planner,
+    _tool_get_forum_posts,
+    _tool_grade_target,
+    _tool_absence_budget,
 )
 
 USER_ID = 42
@@ -1588,13 +1594,16 @@ class TestToolRagSearch:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestToolHandlerRegistry:
-    def test_all_20_tools_registered(self):
+    def test_all_25_tools_registered(self):
         expected_tools = {
             "get_source_map", "read_source", "study_topic", "rag_search",
             "get_moodle_materials", "get_schedule", "get_grades", "get_attendance",
             "get_syllabus_info", "get_assignments", "get_emails", "get_email_detail",
             "list_courses", "set_active_course", "get_stats", "get_exam_schedule",
             "get_assignment_detail", "get_upcoming_events", "calculate_grade", "get_cgpa",
+            # New G. Digest & Planner tools
+            "get_weekly_digest", "study_planner", "get_forum_posts",
+            "grade_target", "absence_budget",
         }
         assert expected_tools == set(TOOL_HANDLERS.keys())
 
@@ -1604,8 +1613,8 @@ class TestToolHandlerRegistry:
         # Every tool in TOOLS should have a handler
         assert tool_names_in_list == handler_names
 
-    def test_tool_count_is_20(self):
-        assert len(TOOLS) == 20
+    def test_tool_count_is_25(self):
+        assert len(TOOLS) == 25
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2724,3 +2733,443 @@ class TestEdgeCasesInputValidation:
         for name, handler in TOOL_HANDLERS.items():
             assert callable(handler), f"{name} is not callable"
             assert inspect.iscoroutinefunction(handler), f"{name} is not async"
+
+
+# ─── G. Digest & Planner Tests ───────────────────────────────────────────────
+
+
+class TestToolGetWeeklyDigest:
+    """Tests for _tool_get_weekly_digest."""
+
+    @pytest.mark.asyncio
+    async def test_no_stars_returns_partial_digest(self):
+        """No STARS auth → partial digest returned (no crash)."""
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_state.stars_client = None
+            mock_cache.get_json.return_value = None
+            mock_cache.get_emails.return_value = None
+            result = await _tool_get_weekly_digest({}, user_id=1)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    @pytest.mark.asyncio
+    async def test_schedule_section_shows_course(self):
+        """When schedule available, 'Bugün' section contains course name."""
+        from datetime import datetime as _dt
+        day_names = {0: "Pazartesi", 1: "Salı", 2: "Çarşamba",
+                     3: "Perşembe", 4: "Cuma", 5: "Cumartesi", 6: "Pazar"}
+        today = day_names[_dt.now().weekday()]
+        schedule = [{"day": today, "time": "09:40", "course": "CTIS 256", "room": "EA-101"}]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.side_effect = lambda key, uid: (
+                schedule if key == "schedule" else None
+            )
+            mock_cache.get_emails.return_value = None
+            result = await _tool_get_weekly_digest({}, user_id=1)
+        assert "CTIS 256" in result
+        assert "Bugün" in result
+
+    @pytest.mark.asyncio
+    async def test_attendance_warning_flagged(self):
+        """Courses with >30% absence (no syllabus limit) get ⚠️ warning."""
+        records = [{"attended": False}] * 4 + [{"attended": True}] * 6  # 40% absent
+        attendance = [{"course": "EDEB 201", "records": records}]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.side_effect = lambda key, uid: (
+                attendance if key == "attendance"
+                else {} if key == "syllabus_limits"
+                else None
+            )
+            mock_cache.get_emails.return_value = None
+            result = await _tool_get_weekly_digest({}, user_id=1)
+        assert "⚠️" in result or "Devamsızlık" in result
+
+    @pytest.mark.asyncio
+    async def test_upcoming_assignment_in_digest(self):
+        """Assignment due within 7 days appears in digest."""
+        due_ts = int(time.time()) + 3 * 86400
+        assignments = [{"name": "HW1", "course_name": "CTIS 256",
+                        "submitted": False, "due_date": due_ts}]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.side_effect = lambda key, uid: (
+                assignments if key == "assignments" else None
+            )
+            mock_cache.get_emails.return_value = None
+            result = await _tool_get_weekly_digest({}, user_id=1)
+        assert "HW1" in result
+
+    @pytest.mark.asyncio
+    async def test_emails_section_shows_subjects(self):
+        """Recent emails (up to 3) appear in digest."""
+        emails = [
+            {"subject": "CTIS 256 Final", "from": "Erkan Uçar", "body_preview": "..."},
+            {"subject": "Campus Event", "from": "BILKENT", "body_preview": "..."},
+        ]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_state.stars_client = None
+            mock_cache.get_json.return_value = None
+            mock_cache.get_emails.return_value = emails
+            result = await _tool_get_weekly_digest({}, user_id=1)
+        assert "CTIS 256 Final" in result
+
+    @pytest.mark.asyncio
+    async def test_tool_registered_in_handlers(self):
+        """get_weekly_digest is registered in TOOL_HANDLERS."""
+        assert "get_weekly_digest" in TOOL_HANDLERS
+
+
+class TestToolStudyPlanner:
+    """Tests for _tool_study_planner."""
+
+    @pytest.mark.asyncio
+    async def test_no_data_returns_guidance(self):
+        """Empty exams and assignments → user-friendly guidance returned."""
+        with patch("bot.services.agent_service.cache_db") as mock_cache:
+            mock_cache.get_json.return_value = None
+            result = await _tool_study_planner({}, user_id=1)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    @pytest.mark.asyncio
+    async def test_exam_generates_study_sessions(self):
+        """Exam 5 days away → course appears in plan."""
+        exams = [{"course": "CTIS 256", "exam_name": "Final",
+                   "date": "", "time_remaining": "5 gün"}]
+        with patch("bot.services.agent_service.cache_db") as mock_cache:
+            mock_cache.get_json.side_effect = lambda key, uid: (
+                exams if key == "exams" else None
+            )
+            result = await _tool_study_planner({}, user_id=1)
+        assert "CTIS 256" in result
+
+    @pytest.mark.asyncio
+    async def test_assignment_generates_study_sessions(self):
+        """Assignment 3 days away → appears in plan."""
+        due_ts = int(time.time()) + 3 * 86400
+        assignments = [{"name": "HW1", "course_name": "HCIV 102",
+                        "submitted": False, "due_date": due_ts}]
+        with patch("bot.services.agent_service.cache_db") as mock_cache:
+            mock_cache.get_json.side_effect = lambda key, uid: (
+                assignments if key == "assignments" else None
+            )
+            result = await _tool_study_planner({}, user_id=1)
+        assert "HW1" in result or "HCIV 102" in result
+
+    @pytest.mark.asyncio
+    async def test_course_filter_applied(self):
+        """course_filter narrows plan to matching course only."""
+        exams = [
+            {"course": "CTIS 256", "exam_name": "Midterm", "date": "", "time_remaining": "7 gün"},
+            {"course": "HCIV 102", "exam_name": "Final", "date": "", "time_remaining": "7 gün"},
+        ]
+        with patch("bot.services.agent_service.cache_db") as mock_cache:
+            mock_cache.get_json.side_effect = lambda key, uid: (
+                exams if key == "exams" else None
+            )
+            result = await _tool_study_planner({"course_filter": "CTIS"}, user_id=1)
+        assert "CTIS 256" in result
+        assert "HCIV 102" not in result
+
+    @pytest.mark.asyncio
+    async def test_submitted_assignments_excluded(self):
+        """Already submitted assignments do not appear in plan."""
+        due_ts = int(time.time()) + 2 * 86400
+        assignments = [{"name": "HW1", "course_name": "CTIS",
+                        "submitted": True, "due_date": due_ts}]
+        with patch("bot.services.agent_service.cache_db") as mock_cache:
+            mock_cache.get_json.side_effect = lambda key, uid: (
+                assignments if key == "assignments" else None
+            )
+            result = await _tool_study_planner({}, user_id=1)
+        assert "HW1" not in result or "bulunamadı" in result
+
+    @pytest.mark.asyncio
+    async def test_tool_registered_in_handlers(self):
+        """study_planner is registered in TOOL_HANDLERS."""
+        assert "study_planner" in TOOL_HANDLERS
+
+
+class TestToolGetForumPosts:
+    """Tests for _tool_get_forum_posts."""
+
+    @pytest.mark.asyncio
+    async def test_no_moodle_returns_error(self):
+        """STATE.moodle = None → Moodle error message returned."""
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.moodle = None
+            result = await _tool_get_forum_posts({}, user_id=1)
+        assert "Moodle" in result
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_returns_posts(self):
+        """Cached forum posts returned without live API call."""
+        cached_posts = [
+            {"course": "CTIS 256", "forum_name": "Announcements",
+             "subject": "Final date change", "author": "Erkan Uçar",
+             "date": 1_700_000_000, "preview": "The final exam date..."}
+        ]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_state.moodle = MagicMock()
+            mock_cache.get_json.return_value = cached_posts
+            result = await _tool_get_forum_posts({}, user_id=1)
+        assert "Final date change" in result
+        assert "Erkan Uçar" in result
+
+    @pytest.mark.asyncio
+    async def test_course_filter_applied(self):
+        """course_filter narrows results to matching course."""
+        posts = [
+            {"course": "CTIS 256", "forum_name": "News", "subject": "Midterm",
+             "author": "A", "date": 1_700_000_000, "preview": "..."},
+            {"course": "HCIV 102", "forum_name": "News", "subject": "Essay",
+             "author": "B", "date": 1_700_000_001, "preview": "..."},
+        ]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_state.moodle = MagicMock()
+            mock_cache.get_json.return_value = posts
+            result = await _tool_get_forum_posts({"course_filter": "CTIS"}, user_id=1)
+        assert "CTIS 256" in result
+        assert "HCIV 102" not in result
+
+    @pytest.mark.asyncio
+    async def test_empty_posts_returns_message(self):
+        """Empty post list → user-friendly 'bulunamadı' message."""
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_state.moodle = MagicMock()
+            mock_cache.get_json.return_value = []
+            result = await _tool_get_forum_posts({}, user_id=1)
+        assert "bulunamadı" in result
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_calls_moodle(self):
+        """On cache miss, live moodle.get_forum_posts is called."""
+        live_posts = [
+            {"course": "CTIS", "forum_name": "Announcements",
+             "subject": "Live post", "author": "Dr. X",
+             "date": 1_700_000_000, "preview": "Hello class"}
+        ]
+        mock_moodle = MagicMock()
+        mock_moodle.get_forum_posts.return_value = live_posts
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_state.moodle = mock_moodle
+            mock_cache.get_json.return_value = None
+            mock_cache.set_json = MagicMock()
+            result = await _tool_get_forum_posts({}, user_id=1)
+        assert "Live post" in result
+
+    @pytest.mark.asyncio
+    async def test_tool_registered_in_handlers(self):
+        """get_forum_posts is registered in TOOL_HANDLERS."""
+        assert "get_forum_posts" in TOOL_HANDLERS
+
+
+class TestToolGradeTarget:
+    """Tests for _tool_grade_target."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_target_gpa_returns_error(self):
+        """target_gpa > 4.0 → Geçersiz error message."""
+        result = await _tool_grade_target({"target_gpa": 5.0}, user_id=1)
+        assert "Geçersiz" in result
+
+    @pytest.mark.asyncio
+    async def test_target_already_met_returns_confirmation(self):
+        """When current CGPA >= target, user is told target is already achieved."""
+        result = await _tool_grade_target(
+            {
+                "target_gpa": 2.5,
+                "current_cgpa": 3.2,
+                "planned_courses": [{"name": "CTIS 474", "credits": 3}],
+            },
+            user_id=1,
+        )
+        assert "ulaşıyor" in result or "üzerinde" in result or "zaten" in result or "yeterli" in result
+
+    @pytest.mark.asyncio
+    async def test_impossible_target_warns_user(self):
+        """If target requires >4.0 per course, shows maximum achievable instead."""
+        result = await _tool_grade_target(
+            {
+                "target_gpa": 4.0,
+                "current_cgpa": 1.0,
+                "planned_courses": [{"name": "CTIS 474", "credits": 3}],
+            },
+            user_id=1,
+        )
+        assert "maksimum" in result or "ulaşılamaz" in result
+
+    @pytest.mark.asyncio
+    async def test_explicit_params_no_stars_call(self):
+        """When current_cgpa and planned_courses are explicit, no STARS call needed."""
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.stars_client = None
+            result = await _tool_grade_target(
+                {
+                    "target_gpa": 3.0,
+                    "current_cgpa": 2.5,
+                    "planned_courses": [
+                        {"name": "CTIS 474", "credits": 3},
+                        {"name": "HCIV 102", "credits": 3},
+                    ],
+                },
+                user_id=1,
+            )
+        assert "CTIS 474" in result
+        assert "gerekiyor" in result or "minimum" in result
+
+    @pytest.mark.asyncio
+    async def test_stars_error_asks_for_cgpa(self):
+        """STARS transcript fetch error → asks user to provide current_cgpa."""
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_stars.get_transcript.side_effect = RuntimeError("timeout")
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.return_value = None
+            result = await _tool_grade_target({"target_gpa": 3.0}, user_id=1)
+        assert "current_cgpa" in result or "CGPA" in result
+
+    @pytest.mark.asyncio
+    async def test_tool_registered_in_handlers(self):
+        """grade_target is registered in TOOL_HANDLERS."""
+        assert "grade_target" in TOOL_HANDLERS
+
+
+class TestToolAbsenceBudget:
+    """Tests for _tool_absence_budget."""
+
+    @pytest.mark.asyncio
+    async def test_no_stars_returns_error(self):
+        """STATE.stars_client = None → STARS error message."""
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.stars_client = None
+            result = await _tool_absence_budget({}, user_id=1)
+        assert "STARS" in result
+
+    @pytest.mark.asyncio
+    async def test_syllabus_limit_shows_remaining_hours(self):
+        """With syllabus limit known, remaining hours are displayed."""
+        records = [{"attended": False}] * 3 + [{"attended": True}] * 7
+        attendance = [{"course": "CTIS 256", "records": records}]
+        syllabus_limits = {"CTIS 256": 10}
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.side_effect = lambda key, uid: (
+                attendance if key == "attendance"
+                else syllabus_limits if key == "syllabus_limits"
+                else None
+            )
+            result = await _tool_absence_budget({}, user_id=1)
+        assert "7 saat" in result  # 10 - 3 = 7
+        assert "CTIS 256" in result
+
+    @pytest.mark.asyncio
+    async def test_no_syllabus_uses_30pct_fallback(self):
+        """Without syllabus limit, Bilkent 30% rule is applied."""
+        records = [{"attended": False}] * 2 + [{"attended": True}] * 8
+        attendance = [{"course": "HCIV 102", "records": records}]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.side_effect = lambda key, uid: (
+                attendance if key == "attendance" else {}
+            )
+            result = await _tool_absence_budget({}, user_id=1)
+        assert "HCIV 102" in result
+        assert "%30" in result or "30%" in result
+
+    @pytest.mark.asyncio
+    async def test_warning_when_budget_low(self):
+        """≤2 hours remaining → ⚠️ or 🚨 warning in output."""
+        records = [{"attended": False}] * 9 + [{"attended": True}] * 1
+        attendance = [{"course": "EDEB 201", "records": records}]
+        syllabus_limits = {"EDEB 201": 10}
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.side_effect = lambda key, uid: (
+                attendance if key == "attendance"
+                else syllabus_limits if key == "syllabus_limits"
+                else None
+            )
+            result = await _tool_absence_budget({}, user_id=1)
+        assert "⚠️" in result or "🚨" in result
+
+    @pytest.mark.asyncio
+    async def test_course_filter_narrows_results(self):
+        """course_filter arg narrows to matching course only."""
+        records = [{"attended": True}] * 10
+        attendance = [
+            {"course": "CTIS 256", "records": records},
+            {"course": "HCIV 102", "records": records},
+        ]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.side_effect = lambda key, uid: (
+                attendance if key == "attendance" else {}
+            )
+            result = await _tool_absence_budget({"course_filter": "CTIS"}, user_id=1)
+        assert "CTIS 256" in result
+        assert "HCIV 102" not in result
+
+    @pytest.mark.asyncio
+    async def test_tool_registered_in_handlers(self):
+        """absence_budget is registered in TOOL_HANDLERS."""
+        assert "absence_budget" in TOOL_HANDLERS
