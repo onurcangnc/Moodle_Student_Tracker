@@ -1554,7 +1554,7 @@ async def _tool_get_syllabus_info(args: dict, user_id: int) -> str:
         except Exception as exc:
             logger.debug("get_files_for_course failed (%s): %s", name_variant, exc)
 
-    # Fallback: scan ALL indexed files for "syllabus" + course code in filename/course
+    # Fallback 1: scan ALL indexed files for "syllabus" + course code in filename/course
     if not syllabus_files:
         try:
             all_files = await asyncio.to_thread(store.get_files_for_course, None)
@@ -1569,6 +1569,32 @@ async def _tool_get_syllabus_info(args: dict, user_id: int) -> str:
                         syllabus_files.append(fname)
         except Exception as exc:
             logger.debug("get_files_for_course (all) failed: %s", exc)
+
+    # Fallback 2: content-based search — when the syllabus file exists in RAG but its
+    # filename doesn't contain "syllabus" (e.g. "HCIV102_Spring 2026_Durmaz.pdf")
+    if not syllabus_files:
+        try:
+            results = await asyncio.to_thread(
+                store.hybrid_search,
+                "syllabus course outline ders programı devamsızlık attendance limit",
+                10,
+                course_name,
+            )
+            seen: set[str] = set()
+            for r in results or []:
+                fname = r.get("metadata", {}).get("filename", "")
+                if fname and fname not in seen:
+                    seen.add(fname)
+                    syllabus_files.append(fname)
+                    if len(seen) >= 2:
+                        break
+            if syllabus_files:
+                logger.debug(
+                    "Syllabus found via content search for %s: %s",
+                    course_name, syllabus_files,
+                )
+        except Exception as exc:
+            logger.debug("Syllabus hybrid_search fallback failed: %s", exc)
 
     # ── Step 2: Read chunks from found syllabus file(s) ──────────────────────
     if syllabus_files:
@@ -1605,14 +1631,43 @@ async def _tool_get_syllabus_info(args: dict, user_id: int) -> str:
             )
             if target:
                 moodle_files = await asyncio.to_thread(moodle.discover_files, target)
+                # Match by filename OR by Moodle module name (e.g. module is named
+                # "Course Syllabus" but actual file is "CourseCode_Spring2026.pdf")
                 moodle_syllabus = [
-                    mf.filename for mf in (moodle_files or [])
+                    mf for mf in (moodle_files or [])
                     if "syllabus" in mf.filename.lower()
+                    or "syllabus" in mf.module_name.lower()
                 ]
                 if moodle_syllabus:
+                    # If the file is already indexed in RAG, return full content
+                    for mf in moodle_syllabus[:2]:
+                        try:
+                            chunks = await asyncio.to_thread(
+                                store.get_file_chunks, mf.filename, 0
+                            )
+                            if chunks:
+                                all_chunks = [
+                                    c.get("text", "") for c in chunks if c.get("text")
+                                ]
+                                if all_chunks:
+                                    combined = "\n\n---\n\n".join(all_chunks[:20])
+                                    if len(combined) > 3800:
+                                        combined = combined[:3800] + "\n\n[... kısaltıldı ...]"
+                                    header = (
+                                        f"📋 {course_name} — Syllabus "
+                                        f"({mf.filename}):\n\n"
+                                    )
+                                    return header + combined
+                        except Exception as exc:
+                            logger.debug(
+                                "Moodle-RAG syllabus fetch failed (%s): %s",
+                                mf.filename, exc,
+                            )
+                    # File found in Moodle but not yet indexed in RAG
+                    names = ", ".join(mf.filename for mf in moodle_syllabus[:3])
                     return (
                         f"📋 {course_name} dersi için Moodle'da syllabus dosyası bulundu: "
-                        f"{', '.join(moodle_syllabus[:3])}\n\n"
+                        f"{names}\n\n"
                         "⚠️ Bu dosya henüz RAG'a indexlenmemiş. "
                         "Admin /upload ile indexlediğinde burada görünecek."
                     )

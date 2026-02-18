@@ -578,6 +578,7 @@ class TestToolGetSyllabusInfo:
     async def test_not_found_returns_helpful_message(self):
         mock_store = MagicMock()
         mock_store.get_files_for_course.return_value = []
+        mock_store.hybrid_search.return_value = []
 
         with patch("bot.services.agent_service.STATE") as mock_state:
             mock_state.vector_store = mock_store
@@ -592,6 +593,7 @@ class TestToolGetSyllabusInfo:
         """get_files_for_course should be called with short code 'HCIV 201'."""
         mock_store = MagicMock()
         mock_store.get_files_for_course.return_value = []
+        mock_store.hybrid_search.return_value = []
 
         with patch("bot.services.agent_service.STATE") as mock_state:
             mock_state.vector_store = mock_store
@@ -603,6 +605,62 @@ class TestToolGetSyllabusInfo:
         # At least one call should use "HCIV 201" as the arg
         all_calls = [str(call) for call in mock_store.get_files_for_course.call_args_list]
         assert any("HCIV 201" in c for c in all_calls)
+
+    @pytest.mark.asyncio
+    async def test_content_search_fallback_finds_unnamed_syllabus(self):
+        """RAG has syllabus content in a file whose filename doesn't say 'syllabus'."""
+        mock_store = MagicMock()
+        mock_store.get_files_for_course.return_value = []  # no filename match
+        mock_store.hybrid_search.return_value = [
+            {
+                "metadata": {"filename": "HCIV102_Spring 2026_Durmaz.pdf", "course": "HCIV 102"},
+                "text": "Attendance: max 10 hours absence. Midterm 30%, Final 40%.",
+                "distance": 0.05,
+            }
+        ]
+        mock_store.get_file_chunks.return_value = [
+            {"text": "Attendance policy: max 10 hours absence."},
+            {"text": "Midterm: 30%, Final: 40%, Assignments: 30%."},
+        ]
+
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.vector_store = mock_store
+            mock_state.moodle = None
+            result = await _tool_get_syllabus_info({"course_name": "HCIV 102"}, USER_ID)
+
+        # Should have found via content search and returned chunks
+        assert "HCIV 102" in result
+        assert "Midterm" in result or "30%" in result
+
+    @pytest.mark.asyncio
+    async def test_moodle_module_name_match_returns_content(self):
+        """Moodle module named 'Course Syllabus' → actual file found in RAG."""
+        mock_store = MagicMock()
+        mock_store.get_files_for_course.return_value = []
+        mock_store.hybrid_search.return_value = []  # content fallback empty too
+        mock_store.get_file_chunks.return_value = [
+            {"text": "Attendance: no more than 10 hours absence allowed."},
+        ]
+
+        mf = MagicMock()
+        mf.filename = "HCIV102_Spring 2026_Durmaz (Updated Version).pdf"
+        mf.module_name = "Course Syllabus (Spring 2026)"  # ← "syllabus" here
+
+        mock_moodle = MagicMock()
+        c = MagicMock()
+        c.shortname = "HCIV 102 (T. Durmaz)"
+        c.fullname = "HCIV 102 (T. Durmaz) History of Civilization II"
+        mock_moodle.get_courses.return_value = [c]
+        mock_moodle.discover_files.return_value = [mf]
+
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.vector_store = mock_store
+            mock_state.moodle = mock_moodle
+            result = await _tool_get_syllabus_info({"course_name": "HCIV 102"}, USER_ID)
+
+        # Should have matched via module_name and returned content from RAG
+        assert "HCIV102_Spring 2026_Durmaz (Updated Version).pdf" in result
+        assert "Attendance" in result
 
     @pytest.mark.asyncio
     async def test_output_truncated_at_4000_chars(self):
