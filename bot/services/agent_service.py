@@ -1443,15 +1443,29 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
         return "STARS girişi yapılmamış. Devamsızlık bilgisi için önce /start ile STARS'a giriş yap."
 
     attendance = cache_db.get_json("attendance", user_id)
-    if attendance is None:
+    _stale_note = ""
+    if attendance is None or any(not cd.get("records") for cd in (attendance or [])):
+        # Fetch fresh if cache is missing OR any course has empty records (stale sync)
         try:
-            attendance = await asyncio.to_thread(stars.get_attendance, user_id)
+            fresh = await asyncio.to_thread(stars.get_attendance, user_id)
+            if fresh:
+                attendance = fresh
+                cache_db.set_json("attendance", user_id, fresh)
+                logger.debug("Attendance fetched fresh for user %s", user_id)
+            elif attendance is None:
+                return "Devamsızlık bilgisi alınamadı. STARS'tan veri gelmiyor."
+            else:
+                # Fresh fetch failed but we have stale cache — use it with a warning
+                _stale_note = (
+                    "\n\n⚠️ Not: Bazı dersler için veriler güncellenmemiş olabilir. "
+                    "Taze veri için /start ile STARS oturumunu yenile."
+                )
+                logger.warning("Attendance re-fetch failed for user %s; serving stale cache", user_id)
         except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
             logger.error("Attendance fetch failed: %s", exc, exc_info=True)
-            return f"Devamsızlık bilgisi alınamadı: {exc}"
-        if attendance:
-            cache_db.set_json("attendance", user_id, attendance)
-            logger.debug("Attendance cached for user %s", user_id)
+            if attendance is None:
+                return f"Devamsızlık bilgisi alınamadı: {exc}"
+            _stale_note = "\n\n⚠️ Not: Veriler güncel olmayabilir. /start ile STARS oturumunu yenile."
     else:
         logger.debug("Attendance cache hit for user %s", user_id)
 
@@ -1490,13 +1504,21 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
                 line += "\n  ⚠️ Dikkat: Az devamsızlık hakkın kaldı."
         else:
             # No syllabus limit found — compute % from records and show as info
-            pct = round(attended / total * 100, 1) if total > 0 else 0.0
-            line = f"📚 {cname}: {attended}/{total} derse girdin (%{pct} devam, {absent} devamsız)"
+            if total == 0:
+                # No session records — fall back to STARS ratio if available
+                ratio_raw = cd.get("ratio", "")
+                if ratio_raw:
+                    line = f"📚 {cname}: Devam oranı {ratio_raw} (STARS kayıtlarından — detay yok)"
+                else:
+                    line = f"📚 {cname}: Devamsızlık kaydı bulunamadı."
+            else:
+                pct = round(attended / total * 100, 1)
+                line = f"📚 {cname}: {attended}/{total} derse girdin (%{pct} devam, {absent} devamsız)"
             line += "\n  ℹ️ Syllabus'ta devamsızlık limiti bulunamadı."
 
         lines.append(line)
 
-    return "\n".join(lines)
+    return "\n".join(lines) + _stale_note
 
 
 _SYLLABUS_CODE_RE = re.compile(r"^([A-Z]{2,}\s*\d{3}[A-Z]?)\b")
