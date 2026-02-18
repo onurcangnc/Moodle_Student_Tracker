@@ -14,15 +14,16 @@ Students pick a course, ask a question in natural language, and the bot retrieve
 2. [Architecture](#architecture)
 3. [Design Patterns](#design-patterns)
 4. [How It Works](#how-it-works)
-5. [Quick Start](#quick-start)
-6. [Bot Commands](#bot-commands)
-7. [Configuration](#configuration)
-8. [Testing](#testing)
-9. [Use Case Status](#use-case-status)
-10. [AI Safety](#ai-safety)
-11. [Deployment](#deployment)
-12. [Tech Stack](#tech-stack)
-13. [License](#license)
+5. [Usage Instructions](#usage-instructions)
+6. [Quick Start](#quick-start)
+7. [Bot Commands](#bot-commands)
+8. [Configuration](#configuration)
+9. [Testing](#testing)
+10. [Use Case Status](#use-case-status)
+11. [AI Safety](#ai-safety)
+12. [Deployment](#deployment)
+13. [Tech Stack](#tech-stack)
+14. [License](#license)
 
 ---
 
@@ -220,21 +221,133 @@ If the critic detects a grounding problem, it appends a ⚠️ disclaimer rather
 
 ## Screenshots
 
+### Teaching & RAG
+
+| Study Topic (CTIS 465 Microservices) | Ethics Study (CTIS 363) |
+|:---:|:---:|
+| ![Microservice study](images/usecase-rag-microservice-study.png) | ![Ethics themes](images/usecase-rag-ctis363-ethics.png) |
+
+| EDEB Novel Themes Comparison | HCIV Ottoman Social Stratification |
+|:---:|:---:|
+| ![EDEB themes](images/usecase-rag-edeb-themes.png) | ![HCIV Ottoman](images/usecase-rag-hciv-ottoman.png) |
+
+| Source Map (HCIV 102) | PDF Reader (Ottoman Columbus) |
+|:---:|:---:|
+| ![Source map](images/usecase-rag-source-map.png) | ![PDF reader](images/usecase-rag-pdf-reader.png) |
+
 | Teaching Mode | Material Selection |
 |:---:|:---:|
 | ![Step-by-step teaching](images/rag-ottoman-social.png) | ![Source selection](images/rag-multi-source-session.png) |
 
-| RAG-grounded Answer | Upcoming Exams |
-|:---:|:---:|
-| ![RAG answer](images/rag-hciv-weekly-summary.png) | ![Exam schedule](images/exam-schedule-courses.png) |
+### Schedule, Exams & Attendance
 
-| Attendance | Grades |
+| Weekly Overview (Multi-tool) | Exams + Schedule + Materials |
 |:---:|:---:|
-| ![Attendance](images/attendance-hciv-edeb.png) | ![Grades](images/grades-overview.jpeg) |
+| ![Academic overview](images/usecase-academic-overview.png) | ![Weekly plan](images/usecase-weekly-schedule-exams-materials.png) |
+
+| Attendance Rules + Multi-tool | Attendance & Absence Budget |
+|:---:|:---:|
+| ![Attendance multitool](images/usecase-attendance-rules-multitool.png) | ![Absence budget](images/usecase-attendance-absence-budget.png) |
+
+| Attendance | Upcoming Exams |
+|:---:|:---:|
+| ![Attendance](images/attendance-hciv-edeb.png) | ![Exam schedule](images/exam-schedule-courses.png) |
+
+### Grades & GPA
+
+| Grade Calculation + CGPA | Syllabus & Grading Breakdown |
+|:---:|:---:|
+| ![Grade calc CGPA](images/usecase-grade-calc-cgpa.png) | ![Syllabus grading](images/usecase-syllabus-grading.png) |
+
+| Probation Check + Assignments | Grades Overview |
+|:---:|:---:|
+| ![Probation assignments](images/usecase-probation-assignments.png) | ![Grades](images/grades-overview.jpeg) |
+
+### Email
+
+| Email — Instructor Filter | Email — Cancelled Class Detection |
+|:---:|:---:|
+| ![Email instructor](images/usecase-email-instructor-filter.png) | ![Email cancelled](images/usecase-email-cancelled-class.png) |
 
 | Email Summaries | Literature Course Teaching |
 |:---:|:---:|
 | ![Email summary](images/email-instructor-filter.jpeg) | ![Literature](images/study-topic-literary.png) |
+
+### Security
+
+| PLINY + end_conversation_tool blocked | SENIORGPT voting (before fix) |
+|:---:|:---:|
+| ![Safety blocked](images/usecase-safety-pliny-endtool-blocked.png) | ![SENIORGPT bypass](images/redteam-seniorgpt-voting-bypass.png) |
+
+---
+
+## Usage Instructions
+
+The bot understands natural language in both Turkish and English. It responds in the same language as the input — Turkish queries get Turkish answers, English queries get English answers.
+
+### Teaching & Study
+
+| What to ask | Example |
+|---|---|
+| Study a topic from course materials | `Study topic: microservice design patterns for CTIS 465` |
+| Compare themes across a course | `Edeb dersinde işlediğimiz romanların ana temalarını karşılaştır` |
+| Explain a concept from notes | `Explain the concept of Ottoman social stratification from my course materials` |
+| List what was covered this week | `What did we cover this week in HCIV 102?` |
+| List all sources for a course | `What sources do I have for HCIV 102? List them with their sizes` |
+| Read a specific document section | `Read the first section of Ottoman Columbus PDF` |
+| Quick concept lookup | `CTIS 363'te etik teorileri neler? Ders notlarımdan özetle` |
+
+### Schedule & Exams
+
+| What to ask | Example |
+|---|---|
+| Today's classes | `What classes do I have today?` |
+| Weekly schedule | `Bu hafta hangi derslerim var?` |
+| Upcoming exams with countdown | `When are my upcoming exams and how many days are left?` |
+| Multi-tool overview | `I have exams next week. Show my schedule, upcoming exams, and list study materials for each course` |
+
+### Grades & GPA
+
+| What to ask | Example |
+|---|---|
+| Current grades | `What are my latest grades?` / `Güncel notlarım neler?` |
+| Calculate final grade needed | `HCIV 102'den geçmek için finalden kaç almam lazım? Midterm 68, quiz ortalaması 75, final %40 ağırlıklı` |
+| Hypothetical GPA | `Calculate my GPA if I get A in CTIS 465, B+ in EDEB 201, A- in HCIV 102` |
+| CGPA + honor status | `What is my current CGPA and am I on the honor roll?` |
+| Probation risk | `If I fail CTIS 456 this semester, will I be on probation?` |
+
+### Attendance
+
+| What to ask | Example |
+|---|---|
+| Absence summary | `How many classes have I missed?` / `Devamsızlık durumum nedir?` |
+| Remaining absence budget | `Can I still miss classes in EDEB 201?` |
+| Attendance rules from syllabus | `What are the attendance rules for EDEB 201?` |
+
+### Email
+
+| What to ask | Example |
+|---|---|
+| Check instructor emails | `Maillerimi kontrol et, hocalardan gelenler var mı?` |
+| Find email from a specific person | `Find the latest email from Erkan hoca` |
+| Cancelled class announcements | `Do I have any cancelled class announcements?` |
+| Full email content | `Show me the full content of the CTIS 465 lecture project email` |
+
+### Syllabus & Assignments
+
+| What to ask | Example |
+|---|---|
+| Grading breakdown | `What's the grading breakdown for HCIV 102?` |
+| Attendance rules | `CTIS 363 syllabus nedir? Değerlendirme ağırlıkları?` |
+| Due this week | `What assignments do I have due this week?` |
+| Assignment details | `Give me full details on the CTIS 465 homework` |
+
+### Multi-tool Overview
+
+| What to ask | Example |
+|---|---|
+| Academic situation summary | `What's my overall academic situation? Grades, attendance, upcoming deadlines` |
+| Full Turkish summary | `Genel akademik durumum nedir? Notlar, devamsızlık, yaklaşan son tarihler — hepsini özetle` |
 
 ---
 
