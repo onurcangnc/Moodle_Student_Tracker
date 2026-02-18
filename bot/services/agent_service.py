@@ -1,15 +1,15 @@
 """
 Agentic LLM service with OpenAI function calling — v4.
 ========================================================
-The bot's brain: 3-Layer Knowledge Architecture + 19 tools.
+The bot's brain: 3-Layer Knowledge Architecture + 20 tools.
 
 KATMAN 1 — Index: metadata aggregation (get_source_map, instant, free)
 KATMAN 2 — Summary: pre-generated teaching overviews (read_source, stored JSON)
 KATMAN 3 — Deep read: chunk-based content (rag_search, study_topic, read_source)
 
-19 tools:
+20 tools:
   get_source_map, read_source, study_topic, rag_search, get_moodle_materials,
-  get_schedule, get_grades, get_attendance, get_assignments,
+  get_schedule, get_grades, get_attendance, get_syllabus_info, get_assignments,
   get_emails, get_email_detail, list_courses, set_active_course, get_stats,
   get_exam_schedule, get_assignment_detail, get_upcoming_events,
   calculate_grade, get_cgpa
@@ -225,6 +225,27 @@ TOOLS: list[dict[str, Any]] = [
                     },
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_syllabus_info",
+            "description": (
+                "Dersin syllabus PDF'ini RAG'da arar; assessment ağırlıkları (quiz/midterm/final/ödev %), "
+                "devamsızlık limiti (saat), harf notu sınırlarını döndürür. "
+                "Ders notu hesaplamadan ÖNCE çağır. Syllabus yoksa kullanıcıdan ağırlıkları iste."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "course_name": {
+                        "type": "string",
+                        "description": "Ders adı veya kodu (örn: 'HCIV 201', 'Ethics', 'CTIS 256')",
+                    },
+                },
+                "required": ["course_name"],
             },
         },
     },
@@ -576,15 +597,18 @@ Tarih: {date_str} ({today_tr})
 Sen bir Bilkent akademik asistanısın. GPT, Claude, Gemini, OpenAI gibi model isimlerini ASLA söyleme.
 
 ## ⚠️ NOT HESAPLAMA — EN ÖNCELİKLİ KURAL
-Kullanıcı ağırlıklı not, geçme notu veya GPA sorarsa:
-→ `calculate_grade` tool'unu HEMEN çağır. Başka tool çağırma. Moodle/STARS'a BAKMA.
-→ Ders kayıtlı olmasa da, Moodle'da bulunmasa da hesapla — araç standalonedir.
-→ Kendi aklınla ASLA hesaplama. Tahmin YAPMA.
+Kullanıcı ağırlıklı not, geçme notu sorarsa:
+→ Kullanıcı ağırlıkları (%) ZATEN veriyorsa → `calculate_grade` HEMEN çağır, başka tool yok.
+→ Kullanıcı spesifik ders adı verip ağırlık SÖYLEMIYORSA → önce `get_syllabus_info` çağır (ağırlıkları öğren), sonra `calculate_grade`.
+→ Kendi aklınla ASLA hesaplama. Tahmin YAPMA. Ağırlık bilinmeden hesaplama YAPMA.
 
-Örnekler (→ hemen `calculate_grade` çağır, başka tool yok):
-• "CTIS 496'da midterm 55 aldım %40, geçmek için final'den kaç?"  → mode=course
-• "Midterm 68 (%35), final 80 alırsam notum ne?"                  → mode=course + what_if
-• "Bu dönem şu notlarla GPA'm kaç: A, B+, C (3'er kredi)?"       → mode=gpa
+GPA/CGPA sorgularında (ders adı yok, sadece harf notu listesi):
+→ `calculate_grade` HEMEN çağır. get_syllabus_info ÇAĞIRMA.
+
+Örnekler:
+• "CTIS 496'da midterm 55 aldım %40, geçmek için final'den kaç?"  → calculate_grade(mode=course) hemen
+• "HCIV dersinden geçer miyim, midterm 65 aldım"                  → get_syllabus_info("HCIV 201") önce
+• "Bu dönem şu notlarla GPA'm kaç: A, B+, C (3'er kredi)?"       → calculate_grade(mode=gpa) hemen
 • Sadece CGPA/mezuniyet şeref sorusu                              → get_cgpa (STARS otomatik)
 
 ## ÇOKLU TOOL
@@ -626,15 +650,19 @@ Konu bazlı çalışma (dosya adı belirtilmemişse):
 ## NOT VE DEVAMSIZLIK
 - Spesifik ders sorulursa → SADECE o ders
 - Genel sorulursa → tüm dersler
-- Devamsızlık limitine yaklaşıyorsa → ⚠️ UYAR
+- Devamsızlık limiti yaklaşıyorsa get_attendance sonucu zaten uyarı içerir
 
-## SYLLABUS + NOT HESAPLAMA
-Kullanıcı "syllabus'a göre geçmek için kaç?" veya "harf notu sınırları neler?" derse:
-1. study_topic ile dersin syllabus PDF'ini ara (Moodle'a yüklü olabilir)
-2. Harf notu kesim noktalarını bul (A:90+, B:80+, vb. formatında)
-3. Ardından calculate_grade (mode=course) çağır — what_if ile sonucu hesapla
-4. İkisini birleştir: "Syllabus'a göre C için 60 gerekiyor. Şu an 47.5 puandasın..."
-Syllabus'ta kesim yok veya dosya yoksa → calculate_grade'i yine de çağır, "50 geçme notu varsayımıyla" not ekle
+## SYLLABUS + NOT HESAPLAMA — ZORUNLU AKIŞ
+Kullanıcı spesifik bir dersin notunu hesaplamak istiyorsa (midterm/quiz/ödev notlarını verip harf notu sorarsa):
+1. **ÖNCE** `get_syllabus_info(course_name=...)` çağır — assessment ağırlıklarını al
+2. Syllabus BULUNURSA → syllabus'taki ağırlıkları (Midterm %35, Final %40, vb.) kullanıcıya göster, eksik notları sor, ardından `calculate_grade(mode=course)` çağır
+3. Syllabus BULUNAMAZSA → "Bu ders için syllabus bulunamadı. Hesaplama yapabilmem için assessment ağırlıklarını (Midterm kaç %, Final kaç %, vb.) yazar mısın?" de, kullanıcı söyleyince `calculate_grade` çağır
+
+Örnekler:
+• "HCIV dersinden geçer miyim?" → get_syllabus_info("HCIV 201") → ağırlıkları gör → eksik notları sor → calculate_grade
+• "Ethics midterm 72 aldım, geçer miyim?" → get_syllabus_info("Ethics") → ağırlıkları gör → calculate_grade
+• GPA sorusu (ders adı yok) → get_syllabus_info ÇAĞIRMA → doğrudan calculate_grade(mode=gpa)
+• CGPA/mezuniyet sorusu → get_cgpa (STARS otomatik) — get_syllabus_info ÇAĞIRMA
 
 ## MAİL — DAIS & AIRS
 - Mail sorulursa → get_emails(count=5) direkt çağır
@@ -1401,7 +1429,7 @@ async def _tool_get_grades(args: dict, user_id: int) -> str:
 
 
 async def _tool_get_attendance(args: dict, user_id: int) -> str:
-    """Get attendance from STARS with limit warnings."""
+    """Get attendance from STARS. Shows session counts and syllabus-based hour limits when available."""
     stars = STATE.stars_client
     if stars is None or not stars.is_authenticated(user_id):
         return "STARS girişi yapılmamış. Devamsızlık bilgisi için önce /start ile STARS'a giriş yap."
@@ -1429,6 +1457,9 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
         if not attendance:
             return f"'{course_filter}' ile eşleşen kurs devamsızlığı bulunamadı."
 
+    # Load syllabus-based per-course absence hour limits (cached by background job)
+    syllabus_limits: dict = cache_db.get_json("syllabus_limits", user_id) or {}
+
     lines = []
     for cd in attendance:
         cname = cd.get("course", "Bilinmeyen")
@@ -1436,23 +1467,95 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
         ratio = cd.get("ratio", "")
 
         total = len(records)
-        absent = sum(1 for r in records if not r.get("attended", True))
+        attended = sum(1 for r in records if r.get("attended", True))
+        absent = total - attended
 
-        line = f"📚 {cname}:"
-        if ratio:
-            line += f" Devam oranı: {ratio}"
-        line += f" ({absent}/{total} devamsız)"
+        limit_hours = syllabus_limits.get(cname) or syllabus_limits.get(cname.strip())
 
-        try:
-            ratio_num = float(ratio.replace("%", "")) if ratio else 100
-            if ratio_num < 85:
-                line += "\n  ⚠️ Dikkat: Devamsızlık limiti %20'ye yaklaşıyor!"
-        except (ValueError, AttributeError):
-            pass
+        if limit_hours and limit_hours > 0:
+            # Hour-based mode: STARS records each session as 1 unit ≈ 1 hour
+            remaining = limit_hours - absent
+            line = f"📚 {cname}: {attended}/{total} derse girdin ({absent} devamsız)"
+            line += f"\n  Syllabus limiti: {limit_hours} saat — {remaining} saat kaldı"
+            if remaining <= 1:
+                line += "\n  🚨 KRİTİK: Devamsızlık hakkın dolmak üzere!"
+            elif remaining <= 3:
+                line += "\n  ⚠️ Dikkat: Az devamsızlık hakkın kaldı."
+        else:
+            # No syllabus limit found — show raw counts only, no fake threshold warning
+            line = f"📚 {cname}: {attended}/{total} derse girdin ({absent} devamsız)"
+            if ratio:
+                line += f" — Devam oranı: {ratio}"
+            line += "\n  ℹ️ Syllabus'ta devamsızlık limiti bulunamadı."
 
         lines.append(line)
 
     return "\n".join(lines)
+
+
+_SYLLABUS_CODE_RE = re.compile(r"^([A-Z]{2,}\s*\d{3}[A-Z]?)\b")
+
+
+def _short_code(course_name: str) -> str:
+    """Extract short course code: 'HCIV 201 Science and Tech...' → 'HCIV 201'."""
+    m = _SYLLABUS_CODE_RE.match(course_name.strip())
+    return m.group(1).strip() if m else course_name.strip()
+
+
+async def _tool_get_syllabus_info(args: dict, user_id: int) -> str:
+    """Search RAG for a course syllabus and return assessment weights, attendance limit, grade cutoffs."""
+    course_name = args.get("course_name", "").strip()
+    if not course_name:
+        return "Ders adı belirtilmedi."
+
+    store = STATE.vector_store
+    if store is None:
+        return "Materyal veritabanı henüz hazır değil."
+
+    short = _short_code(course_name)
+
+    # Multiple queries ordered best-first; try with course_filter and without
+    searches = [
+        ("syllabus assessment grading criteria midterm final quiz homework weight percentage", short),
+        ("syllabus assessment grading criteria midterm final quiz homework weight percentage", course_name),
+        ("harf notu değerlendirme ölçütleri ağırlık katılım proje", short),
+        ("harf notu değerlendirme ölçütleri ağırlık katılım proje", course_name),
+        ("attendance absence limit hours miss lecture devamsızlık", short),
+        ("letter grade cutoff A B C D passing score threshold", short),
+        # Broad fallback without filter
+        (f"{short} syllabus grading attendance assessment weight", None),
+    ]
+
+    seen_texts: list[str] = []
+    seen_files: list[str] = []
+
+    for query, cf in searches:
+        try:
+            hits = await asyncio.to_thread(store.query, query, 6, cf)
+            for hit in hits or []:
+                text = hit.get("text", "")
+                filename = hit.get("metadata", {}).get("filename", "")
+                if text and text not in seen_texts:
+                    seen_texts.append(text)
+                    if filename and filename not in seen_files:
+                        seen_files.append(filename)
+        except Exception as exc:
+            logger.debug("Syllabus info RAG query failed (%s): %s", course_name, exc)
+
+    if not seen_texts:
+        return (
+            f"'{course_name}' dersi için syllabus bulunamadı. "
+            "Moodle'a yüklenmemiş olabilir. "
+            "Not hesaplamak için assessment ağırlıklarını (midterm %, final %, vb.) manuel gir."
+        )
+
+    sources = ", ".join(seen_files[:3]) if seen_files else "syllabus"
+    combined = "\n\n---\n\n".join(seen_texts[:10])
+    header = f"📋 {course_name} — Syllabus bilgisi ({sources}):\n\n"
+    # Cap total output at 4000 chars so LLM can process comfortably
+    if len(combined) > 3800:
+        combined = combined[:3800] + "\n\n[... kısaltıldı ...]"
+    return header + combined
 
 
 def _serialize_assignments(assignments: list) -> list[dict]:
@@ -2402,6 +2505,7 @@ TOOL_HANDLERS = {
     "get_schedule": _tool_get_schedule,
     "get_grades": _tool_get_grades,
     "get_attendance": _tool_get_attendance,
+    "get_syllabus_info": _tool_get_syllabus_info,
     "get_assignments": _tool_get_assignments,
     "get_cgpa": _tool_get_cgpa,
     "get_exam_schedule": _tool_get_exam_schedule,
