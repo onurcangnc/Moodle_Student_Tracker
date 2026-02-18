@@ -5,6 +5,7 @@ Run: pytest tests/unit/test_all_tools.py -v
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -37,10 +38,20 @@ from bot.services.agent_service import (
     _tool_get_emails,
     _tool_get_exam_schedule,
     _tool_get_grades,
+    _tool_get_moodle_materials,
+    _tool_get_schedule,
+    _tool_get_source_map,
+    _tool_get_stats,
     _tool_get_syllabus_info,
     _tool_get_upcoming_events,
     _tool_list_courses,
     _tool_rag_search,
+    _tool_set_active_course,
+    _tool_study_topic,
+    # Agentic components
+    _critic_agent,
+    _plan_agent,
+    handle_agent_message,
 )
 
 USER_ID = 42
@@ -1446,3 +1457,699 @@ class TestComplexityScoring:
     def test_proof_term_raises_complexity(self):
         q = "Bu teoremi ispat et"
         assert _score_complexity(q) > 0.25
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# E. MISSING TOOL HANDLERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestToolGetSourceMap:
+    @pytest.mark.asyncio
+    async def test_no_active_course_returns_error(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+        ):
+            mock_state.vector_store = MagicMock()
+            mock_us.get_active_course.return_value = None
+            result = await _tool_get_source_map({}, USER_ID)
+        assert "Aktif kurs" in result
+
+    @pytest.mark.asyncio
+    async def test_no_vector_store_returns_error(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+        ):
+            active = MagicMock()
+            active.course_id = "CTIS 256"
+            mock_us.get_active_course.return_value = active
+            mock_state.vector_store = None
+            result = await _tool_get_source_map({}, USER_ID)
+        assert "hazır değil" in result
+
+    @pytest.mark.asyncio
+    async def test_no_files_returns_not_found(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+        ):
+            active = MagicMock()
+            active.course_id = "CTIS 256"
+            mock_us.get_active_course.return_value = active
+            mock_store = MagicMock()
+            mock_store.get_files_for_course.return_value = []
+            mock_state.vector_store = mock_store
+            result = await _tool_get_source_map({}, USER_ID)
+        assert "bulunamadı" in result
+
+    @pytest.mark.asyncio
+    async def test_files_returned_with_metadata(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.summary_service.load_source_summary", return_value=None),
+        ):
+            active = MagicMock()
+            active.course_id = "CTIS 256"
+            mock_us.get_active_course.return_value = active
+            mock_store = MagicMock()
+            mock_store.get_files_for_course.return_value = [
+                {"filename": "week1.pdf", "chunk_count": 5, "section": "Week 1"},
+                {"filename": "week2.pdf", "chunk_count": 3, "section": ""},
+            ]
+            mock_state.vector_store = mock_store
+            result = await _tool_get_source_map({}, USER_ID)
+        assert "week1.pdf" in result
+        assert "week2.pdf" in result
+        assert "CTIS 256" in result
+
+    @pytest.mark.asyncio
+    async def test_course_filter_from_args_overrides_active(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.summary_service.load_source_summary", return_value=None),
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_store = MagicMock()
+            mock_store.get_files_for_course.return_value = [
+                {"filename": "lec1.pdf", "chunk_count": 2, "section": ""}
+            ]
+            mock_state.vector_store = mock_store
+            result = await _tool_get_source_map({"course_filter": "HCIV 201"}, USER_ID)
+        assert "lec1.pdf" in result
+        mock_store.get_files_for_course.assert_called_once_with("HCIV 201")
+
+
+class TestToolStudyTopic:
+    @pytest.mark.asyncio
+    async def test_no_topic_returns_error(self):
+        result = await _tool_study_topic({}, USER_ID)
+        assert "belirtilmedi" in result
+
+    @pytest.mark.asyncio
+    async def test_no_vector_store_returns_error(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.vector_store = None
+            result = await _tool_study_topic({"topic": "sorting algorithms"}, USER_ID)
+        assert "hazır değil" in result
+
+    @pytest.mark.asyncio
+    async def test_no_results_returns_not_found(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_store = MagicMock()
+            mock_store.hybrid_search.return_value = []
+            mock_state.vector_store = mock_store
+            result = await _tool_study_topic({"topic": "quantum physics"}, USER_ID)
+        assert "bulunamadı" in result
+
+    @pytest.mark.asyncio
+    async def test_results_rendered_with_filename_and_score(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_store = MagicMock()
+            mock_store.hybrid_search.return_value = [
+                {
+                    "metadata": {"filename": "algo.pdf", "course": "CTIS 256"},
+                    "text": "Merge sort is a divide and conquer algorithm that splits the array.",
+                    "distance": 0.1,
+                }
+            ]
+            mock_state.vector_store = mock_store
+            result = await _tool_study_topic({"topic": "sorting"}, USER_ID)
+        assert "algo.pdf" in result
+        assert "Skor:" in result
+
+    @pytest.mark.asyncio
+    async def test_depth_overview_uses_top_k_10(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_store = MagicMock()
+            mock_store.hybrid_search.return_value = []
+            mock_state.vector_store = mock_store
+            await _tool_study_topic({"topic": "trees", "depth": "overview"}, USER_ID)
+        # First call with overview depth → top_k=10
+        first_call_args = mock_store.hybrid_search.call_args_list[0]
+        assert first_call_args[0][1] == 10
+
+    @pytest.mark.asyncio
+    async def test_short_chunks_filtered_out(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_store = MagicMock()
+            mock_store.hybrid_search.return_value = [
+                {
+                    "metadata": {"filename": "short.pdf", "course": "X"},
+                    "text": "Too short",  # < 50 chars
+                    "distance": 0.05,
+                }
+            ]
+            mock_state.vector_store = mock_store
+            result = await _tool_study_topic({"topic": "data"}, USER_ID)
+        # Short chunk should be filtered → fallback "bulunamadı" message
+        assert "short.pdf" not in result
+
+
+class TestToolGetSchedule:
+    @pytest.mark.asyncio
+    async def test_not_authenticated_returns_error(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = False
+            mock_state.stars_client = mock_stars
+            result = await _tool_get_schedule({}, USER_ID)
+        assert "giriş" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_no_stars_client_returns_error(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.stars_client = None
+            result = await _tool_get_schedule({}, USER_ID)
+        assert "giriş" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_schedule_from_cache(self):
+        schedule_data = [
+            {"day": "Pazartesi", "time": "08:30-09:20", "course": "CTIS 256", "room": "SA-Z01"},
+            {"day": "Çarşamba", "time": "10:30-11:20", "course": "HCIV 201", "room": ""},
+        ]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.return_value = schedule_data
+            result = await _tool_get_schedule({"period": "all"}, USER_ID)
+        assert "CTIS 256" in result
+        assert "HCIV 201" in result
+        assert "SA-Z01" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_schedule_returns_empty_message(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.return_value = None
+            mock_stars.get_schedule.return_value = []
+            result = await _tool_get_schedule({}, USER_ID)
+        assert "bulunamadı" in result
+
+    @pytest.mark.asyncio
+    async def test_today_filter_applies_day_name(self):
+        # Build schedule with all days including today
+        now = datetime.now()
+        today_idx = now.weekday()
+        day_map = {0: "Pazartesi", 1: "Salı", 2: "Çarşamba", 3: "Perşembe", 4: "Cuma", 5: "Cumartesi", 6: "Pazar"}
+        today_name = day_map.get(today_idx, "Pazartesi")
+        schedule_data = [
+            {"day": today_name, "time": "09:00-10:00", "course": "TEST 101", "room": "R1"},
+            {"day": "Pazar", "time": "09:00", "course": "OTHER 202", "room": ""},
+        ]
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.cache_db") as mock_cache,
+        ):
+            mock_stars = MagicMock()
+            mock_stars.is_authenticated.return_value = True
+            mock_state.stars_client = mock_stars
+            mock_cache.get_json.return_value = schedule_data
+            result = await _tool_get_schedule({"period": "today"}, USER_ID)
+        if today_idx < 5:  # Weekday: should find TEST 101
+            assert "TEST 101" in result
+        # "OTHER 202" is on Pazar, should not appear if today is not Pazar
+        if today_idx != 6:
+            assert "OTHER 202" not in result
+
+
+class TestToolSetActiveCourse:
+    @pytest.mark.asyncio
+    async def test_no_course_name_returns_error(self):
+        result = await _tool_set_active_course({}, USER_ID)
+        assert "belirtilmedi" in result
+
+    @pytest.mark.asyncio
+    async def test_course_not_found_lists_available(self):
+        with patch("bot.services.agent_service.user_service") as mock_us:
+            mock_us.find_course.return_value = None
+            c1 = MagicMock()
+            c1.short_name = "CTIS 256"
+            c2 = MagicMock()
+            c2.short_name = "HCIV 201"
+            mock_us.list_courses.return_value = [c1, c2]
+            result = await _tool_set_active_course({"course_name": "NONEXISTENT 999"}, USER_ID)
+        assert "bulunamadı" in result
+        assert "CTIS 256" in result
+
+    @pytest.mark.asyncio
+    async def test_course_found_sets_active_and_returns_name(self):
+        with (
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.agent_service.STATE") as mock_state,
+        ):
+            match = MagicMock()
+            match.course_id = "CTIS 256"
+            match.display_name = "CTIS 256 - Advanced Programming"
+            mock_us.find_course.return_value = match
+            mock_state.llm = None
+            result = await _tool_set_active_course({"course_name": "CTIS"}, USER_ID)
+        assert "CTIS 256 - Advanced Programming" in result
+        mock_us.set_active_course.assert_called_once_with(USER_ID, "CTIS 256")
+
+    @pytest.mark.asyncio
+    async def test_llm_active_course_updated_when_llm_present(self):
+        with (
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.agent_service.STATE") as mock_state,
+        ):
+            match = MagicMock()
+            match.course_id = "HCIV 201"
+            match.display_name = "HCIV 201 - Civilization"
+            mock_us.find_course.return_value = match
+            mock_llm = MagicMock()
+            mock_state.llm = mock_llm
+            await _tool_set_active_course({"course_name": "HCIV"}, USER_ID)
+        mock_llm.set_active_course.assert_called_once_with("HCIV 201")
+
+
+class TestToolGetStats:
+    @pytest.mark.asyncio
+    async def test_no_vector_store_returns_error(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.vector_store = None
+            result = await _tool_get_stats({}, USER_ID)
+        assert "hazır değil" in result
+
+    @pytest.mark.asyncio
+    async def test_stats_output_includes_all_fields(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.time") as mock_time,
+            patch("bot.services.summary_service.list_summaries", return_value=["a.json", "b.json"]),
+        ):
+            mock_store = MagicMock()
+            mock_store.get_stats.return_value = {
+                "total_chunks": 500,
+                "unique_courses": 4,
+                "unique_files": 20,
+            }
+            mock_state.vector_store = mock_store
+            mock_state.started_at_monotonic = 0.0
+            mock_state.startup_version = "1.2.3"
+            mock_state.active_courses = {"u1": "CTIS 256", "u2": "HCIV 201"}
+            mock_time.monotonic.return_value = 3661.0  # 1h 1m 1s
+            result = await _tool_get_stats({}, USER_ID)
+        assert "500" in result
+        assert "4" in result
+        assert "20" in result
+        assert "2" in result  # 2 summaries
+        assert "1.2.3" in result
+
+    @pytest.mark.asyncio
+    async def test_uptime_formatted_correctly(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.time") as mock_time,
+            patch("bot.services.summary_service.list_summaries", return_value=[]),
+        ):
+            mock_store = MagicMock()
+            mock_store.get_stats.return_value = {
+                "total_chunks": 0,
+                "unique_courses": 0,
+                "unique_files": 0,
+            }
+            mock_state.vector_store = mock_store
+            mock_state.started_at_monotonic = 1000.0
+            mock_state.startup_version = "0.0.1"
+            mock_state.active_courses = {}
+            mock_time.monotonic.return_value = 1000.0 + 90.0  # 1 minute 30 seconds
+            result = await _tool_get_stats({}, USER_ID)
+        assert "1dk" in result or "dk" in result
+
+
+class TestToolGetMoodleMaterials:
+    @pytest.mark.asyncio
+    async def test_no_moodle_returns_error(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.moodle = None
+            result = await _tool_get_moodle_materials({}, USER_ID)
+        assert "hazır değil" in result
+
+    @pytest.mark.asyncio
+    async def test_no_courses_returns_not_found(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_moodle = MagicMock()
+            mock_moodle.get_courses.return_value = []
+            mock_state.moodle = mock_moodle
+            result = await _tool_get_moodle_materials({}, USER_ID)
+        assert "bulunamadı" in result
+
+    @pytest.mark.asyncio
+    async def test_returns_course_topics_text(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_moodle = MagicMock()
+            course = MagicMock()
+            course.fullname = "CTIS 256 Advanced Programming"
+            course.shortname = "CTIS256"
+            mock_moodle.get_courses.return_value = [course]
+            mock_moodle.get_course_topics_text.return_value = "Week 1: Introduction\nWeek 2: Data Structures"
+            mock_state.moodle = mock_moodle
+            result = await _tool_get_moodle_materials({}, USER_ID)
+        assert "Week 1" in result
+        assert "Introduction" in result
+
+    @pytest.mark.asyncio
+    async def test_text_truncated_at_3000_chars(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_moodle = MagicMock()
+            course = MagicMock()
+            course.fullname = "Big Course"
+            course.shortname = "BIG"
+            mock_moodle.get_courses.return_value = [course]
+            mock_moodle.get_course_topics_text.return_value = "X" * 5000
+            mock_state.moodle = mock_moodle
+            result = await _tool_get_moodle_materials({}, USER_ID)
+        assert "kısaltıldı" in result
+
+    @pytest.mark.asyncio
+    async def test_course_filter_matches_by_name(self):
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+        ):
+            mock_us.get_active_course.return_value = None
+            mock_moodle = MagicMock()
+            c1 = MagicMock()
+            c1.fullname = "CTIS 256 Advanced Programming"
+            c1.shortname = "CTIS256"
+            c2 = MagicMock()
+            c2.fullname = "HCIV 201 Civilization"
+            c2.shortname = "HCIV201"
+            mock_moodle.get_courses.return_value = [c1, c2]
+            mock_moodle.get_course_topics_text.return_value = "HCIV content"
+            mock_state.moodle = mock_moodle
+            result = await _tool_get_moodle_materials({"course_filter": "hciv"}, USER_ID)
+        # Should have called get_course_topics_text with c2
+        mock_moodle.get_course_topics_text.assert_called_once_with(c2)
+        assert "HCIV content" in result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# F. AGENTIC COMPONENTS: PLANNER + CRITIC
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestPlannerAgent:
+    @pytest.mark.asyncio
+    async def test_returns_empty_string_when_llm_none(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.llm = None
+            result = await _plan_agent("devamsızlık?", [], ["get_attendance"])
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_returns_formatted_plan_on_success(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_llm = MagicMock()
+            mock_llm.engine.complete.return_value = '{"plan": ["Fetch attendance", "Summarize results"]}'
+            mock_state.llm = mock_llm
+            result = await _plan_agent("devamsızlık?", [], ["get_attendance", "get_grades"])
+        assert "Execution plan:" in result
+        assert "1. Fetch attendance" in result
+        assert "2. Summarize results" in result
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_json_parse_error(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_llm = MagicMock()
+            mock_llm.engine.complete.return_value = "not valid json"
+            mock_state.llm = mock_llm
+            result = await _plan_agent("test", [], ["get_grades"])
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_plan_capped_at_4_steps(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_llm = MagicMock()
+            mock_llm.engine.complete.return_value = json.dumps({
+                "plan": ["Step 1", "Step 2", "Step 3", "Step 4", "Step 5", "Step 6"]
+            })
+            mock_state.llm = mock_llm
+            result = await _plan_agent("complex query", [], ["get_grades"])
+        lines = [l for l in result.split("\n") if l.strip().startswith(("1.", "2.", "3.", "4.", "5.", "6."))]
+        assert len(lines) <= 4
+
+    @pytest.mark.asyncio
+    async def test_includes_recent_history_in_prompt(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_llm = MagicMock()
+            mock_llm.engine.complete.return_value = '{"plan": ["Check schedule"]}'
+            mock_state.llm = mock_llm
+            history = [{"role": "user", "content": "CTIS 256 hangi gün?"}]
+            await _plan_agent("yarın dersim var mı?", history, ["get_schedule"])
+        # Verify the engine.complete was called
+        mock_llm.engine.complete.assert_called_once()
+        call_args = mock_llm.engine.complete.call_args
+        # The messages param should include context from history
+        messages = call_args[0][2]
+        assert any("CTIS 256" in str(m) for m in messages)
+
+
+class TestCriticAgent:
+    @pytest.mark.asyncio
+    async def test_returns_true_when_llm_none(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.llm = None
+            result = await _critic_agent("soru?", "yanıt", ["veri"])
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_no_tool_results(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.llm = MagicMock()
+            result = await _critic_agent("soru?", "yanıt", [])
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_true_for_grounded_response(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_llm = MagicMock()
+            mock_llm.engine.complete.return_value = '{"ok": true}'
+            mock_state.llm = mock_llm
+            result = await _critic_agent(
+                "Devamsızlığım kaç?",
+                "2 devamsızlığın var.",
+                ["EDEB 201: 2 devamsızlık, oran: %66.67"],
+            )
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_for_hallucinated_date(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_llm = MagicMock()
+            mock_llm.engine.complete.return_value = '{"ok": false, "issue": "Date not in data"}'
+            mock_state.llm = mock_llm
+            result = await _critic_agent(
+                "Ödev ne zaman?",
+                "Ödev 25 Şubat'ta teslim edilmeli.",
+                ["Ödev bilgisi: deadline yok."],
+            )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_true_on_json_parse_error(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_llm = MagicMock()
+            mock_llm.engine.complete.return_value = "garbled output"
+            mock_state.llm = mock_llm
+            result = await _critic_agent("soru", "yanıt", ["veri"])
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_tool_results_capped_at_6_and_3000_chars(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_llm = MagicMock()
+            mock_llm.engine.complete.return_value = '{"ok": true}'
+            mock_state.llm = mock_llm
+            # 8 results, each >500 chars
+            tool_results = [f"Result {i}: " + "data" * 200 for i in range(8)]
+            await _critic_agent("q", "a", tool_results)
+        call_args = mock_llm.engine.complete.call_args
+        messages = call_args[0][2]
+        prompt_content = messages[0]["content"]
+        # Only first 6 results, truncated to 3000 chars
+        data_portion = prompt_content.split("DATA SOURCES USED:")[-1]
+        assert len(data_portion) <= 3100  # 3000 + small overhead
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# G. FULL handle_agent_message INTEGRATION TESTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestHandleAgentMessage:
+    @pytest.mark.asyncio
+    async def test_returns_system_not_ready_when_llm_none(self):
+        with patch("bot.services.agent_service.STATE") as mock_state:
+            mock_state.llm = None
+            result = await handle_agent_message(USER_ID, "merhaba")
+        assert "hazır değil" in result
+
+    @pytest.mark.asyncio
+    async def test_direct_text_response_no_tools(self):
+        """LLM returns plain text on first iteration (no tool calls)."""
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.agent_service._plan_agent", return_value=""),
+            patch("bot.services.agent_service._critic_agent", return_value=True),
+            patch("bot.services.agent_service._call_llm_with_tools") as mock_llm_call,
+        ):
+            mock_state.llm = MagicMock()
+            mock_us.get_conversation_history.return_value = []
+            mock_us.get_active_course.return_value = None
+            # LLM responds directly without tool calls
+            response_msg = MagicMock()
+            response_msg.tool_calls = None
+            response_msg.content = "Merhaba! Size nasıl yardımcı olabilirim?"
+            mock_llm_call.return_value = response_msg
+            result = await handle_agent_message(USER_ID, "merhaba")
+        assert "Merhaba" in result
+        mock_us.add_conversation_turn.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_tool_call_executed_and_result_injected(self):
+        """LLM requests one tool call, then responds with text."""
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.agent_service._plan_agent", return_value=""),
+            patch("bot.services.agent_service._critic_agent", return_value=True),
+            patch("bot.services.agent_service._call_llm_with_tools") as mock_llm_call,
+            patch("bot.services.agent_service._execute_tool_call") as mock_exec,
+        ):
+            mock_state.llm = MagicMock()
+            mock_us.get_conversation_history.return_value = []
+            mock_us.get_active_course.return_value = None
+
+            # First call: LLM requests a tool
+            tool_call = MagicMock()
+            tool_call.id = "call_001"
+            tool_call.function.name = "get_attendance"
+            tool_call.function.arguments = "{}"
+            first_response = MagicMock()
+            first_response.tool_calls = [tool_call]
+            first_response.content = ""
+
+            # Second call: LLM responds with text
+            second_response = MagicMock()
+            second_response.tool_calls = None
+            second_response.content = "2 devamsızlığın var."
+
+            mock_llm_call.side_effect = [first_response, second_response]
+            mock_exec.return_value = {
+                "role": "tool",
+                "tool_call_id": "call_001",
+                "content": "EDEB 201: 2 devamsızlık",
+            }
+
+            result = await handle_agent_message(USER_ID, "devamsızlığım nedir?")
+        assert "devamsızlığın var" in result
+
+    @pytest.mark.asyncio
+    async def test_critic_flags_hallucination_appends_warning(self):
+        """Critic returns False → warning appended to final response."""
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.agent_service._plan_agent", return_value=""),
+            patch("bot.services.agent_service._critic_agent", return_value=False),
+            patch("bot.services.agent_service._call_llm_with_tools") as mock_llm_call,
+            patch("bot.services.agent_service._execute_tool_call") as mock_exec,
+        ):
+            mock_state.llm = MagicMock()
+            mock_us.get_conversation_history.return_value = []
+            mock_us.get_active_course.return_value = None
+
+            # First call: tool requested
+            tool_call = MagicMock()
+            tool_call.id = "call_002"
+            tool_call.function.name = "get_grades"
+            tool_call.function.arguments = "{}"
+            first_response = MagicMock()
+            first_response.tool_calls = [tool_call]
+            first_response.content = ""
+
+            # Second call: LLM responds
+            second_response = MagicMock()
+            second_response.tool_calls = None
+            second_response.content = "AA aldın."
+
+            mock_llm_call.side_effect = [first_response, second_response]
+            mock_exec.return_value = {
+                "role": "tool",
+                "tool_call_id": "call_002",
+                "content": "Not bilgisi: BB",
+            }
+
+            result = await handle_agent_message(USER_ID, "notlarım ne?")
+        # Critic flagged → warning note appended
+        assert "⚠️" in result or "doğrulamak" in result
+
+    @pytest.mark.asyncio
+    async def test_planner_hint_injected_into_system_prompt(self):
+        """Planner returns a plan → it should be appended to system prompt."""
+        with (
+            patch("bot.services.agent_service.STATE") as mock_state,
+            patch("bot.services.agent_service.user_service") as mock_us,
+            patch("bot.services.agent_service._plan_agent", return_value="Execution plan:\n1. Get grades"),
+            patch("bot.services.agent_service._critic_agent", return_value=True),
+            patch("bot.services.agent_service._call_llm_with_tools") as mock_llm_call,
+        ):
+            mock_state.llm = MagicMock()
+            mock_us.get_conversation_history.return_value = []
+            mock_us.get_active_course.return_value = None
+
+            response_msg = MagicMock()
+            response_msg.tool_calls = None
+            response_msg.content = "Notların hazır."
+            mock_llm_call.return_value = response_msg
+
+            await handle_agent_message(USER_ID, "notlarım?")
+
+        # Verify _call_llm_with_tools received a system prompt containing the plan
+        call_args = mock_llm_call.call_args
+        system_prompt_used = call_args[0][1]
+        assert "Execution plan" in system_prompt_used
