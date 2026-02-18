@@ -1464,7 +1464,6 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
     for cd in attendance:
         cname = cd.get("course", "Bilinmeyen")
         records = cd.get("records", [])
-        ratio = cd.get("ratio", "")
 
         total = len(records)
         attended = sum(1 for r in records if r.get("attended", True))
@@ -1482,10 +1481,9 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
             elif remaining <= 3:
                 line += "\n  ⚠️ Dikkat: Az devamsızlık hakkın kaldı."
         else:
-            # No syllabus limit found — show raw counts only, no fake threshold warning
-            line = f"📚 {cname}: {attended}/{total} derse girdin ({absent} devamsız)"
-            if ratio:
-                line += f" — Devam oranı: {ratio}"
+            # No syllabus limit found — compute % from records and show as info
+            pct = round(attended / total * 100, 1) if total > 0 else 0.0
+            line = f"📚 {cname}: {attended}/{total} derse girdin (%{pct} devam, {absent} devamsız)"
             line += "\n  ℹ️ Syllabus'ta devamsızlık limiti bulunamadı."
 
         lines.append(line)
