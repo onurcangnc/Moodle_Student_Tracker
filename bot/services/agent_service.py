@@ -25,6 +25,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -875,19 +876,63 @@ def _sanitize_tool_output(tool_name: str, output: str) -> str:
 
 # Matches fake system-block delimiters and direct override commands in user messages
 _USER_INJECTION_RE = re.compile(
-    r"(---+\s*SYSTEM\s*---+.*?---+\s*END\s*SYSTEM\s*---+|"   # ---SYSTEM--- ... ---END SYSTEM---
-    r"\[SYSTEM\]\s*:.*?(?=\n|$)|"                             # [SYSTEM]: ...
-    r"<system>.*?</system>|"                                  # <system>...</system>
-    r"<<SYS>>.*?<</SYS>>|"                                    # <<SYS>>...</<SYS>>
-    r"new\s+instruction\s*:.*?(?=\n|$)|"                      # new instruction: ...
-    r"output\s+[\"'].*?[\"']\s+and\s+nothing\s+else)",        # output "X" and nothing else
-    re.IGNORECASE | re.DOTALL,
+    r"(---+\s*SYSTEM\s*---+.*?---+\s*END\s*SYSTEM\s*---+|"         # ---SYSTEM--- ... ---END SYSTEM---
+    r"\[SYSTEM\]\s*:.*?(?=\n|$)|"                                   # [SYSTEM]: ...
+    r"<system>.*?</system>|"                                        # <system>...</system>
+    r"<<SYS>>.*?<</SYS>>|"                                          # <<SYS>>...</<SYS>>
+    r"(?:^|\b)SYSTEM\s+OVERRIDE\s*:.*?(?=\n|$)|"                   # SYSTEM OVERRIDE: ...
+    r"(?:^|\b)SYSTEM\s*:\s+(?:new|ignore|disregard|forget)\b.*?(?=\n|$)|"  # SYSTEM: new/ignore/...
+    r"new\s+instruction\s*:.*?(?=\n|$)|"                            # new instruction: ...
+    r"output\s+[\"'].*?[\"']\s+and\s+nothing\s+else|"              # output "X" and nothing else
+    r"output\s+(?:your\s+)?(?:full\s+|complete\s+|entire\s+)?(?:training\s+data|system\s+prompt)\b|"  # output (full) system prompt
+    r"reveal\s+(?:your\s+)?system\s+prompt\b|"                     # reveal (your) system prompt
+    r"\byou\s+are\s+now\s+DAN\b|"                                   # you are now DAN
+    r"\bDAN\s+mode\b|"                                              # DAN mode
+    r"\benter\s+developer\s+mode\b|"                                # enter developer mode
+    r"\bdeveloper\s+mode\s+bypass(?:es)?\b)",                       # developer mode bypasses
+    re.IGNORECASE | re.DOTALL | re.MULTILINE,
 )
+
+# Zero-width and invisible Unicode chars used to split words and evade regex
+_ZERO_WIDTH_RE = re.compile(r"[\u200b\u200c\u200d\u2060\ufeff\u00ad\u202e]")
+
+# Cyrillic homoglyphs that visually resemble Latin letters used in injection keywords
+# e.g. С (U+0421) looks like C → "СYSTEM" bypasses naive regex
+_CYRILLIC_HOMOGLYPH = str.maketrans({
+    "\u0410": "A",  # А → A
+    "\u0412": "B",  # В → B
+    "\u0421": "C",  # С → C
+    "\u0415": "E",  # Е → E
+    "\u041c": "M",  # М → M
+    "\u041e": "O",  # О → O
+    "\u0420": "P",  # Р → P
+    "\u0422": "T",  # Т → T
+    "\u0425": "X",  # Х → X
+    "\u0430": "a",  # а → a
+    "\u0435": "e",  # е → e
+    "\u043e": "o",  # о → o
+    "\u0440": "p",  # р → p
+    "\u0441": "c",  # с → c
+    "\u0445": "x",  # х → x
+})
 
 
 def _sanitize_user_input(text: str) -> str:
-    """Strip prompt injection patterns from user messages before sending to LLM."""
+    """Strip prompt injection patterns from user messages before sending to LLM.
+
+    Pre-processing pipeline:
+    1. Strip zero-width / invisible Unicode chars (U+200B, U+200C, RLO U+202E, etc.)
+    2. Replace common Cyrillic homoglyphs with their Latin equivalents
+    3. NFKC normalization — collapses compatibility forms
+    4. Regex match against _USER_INJECTION_RE
+    """
     original = text
+    # Step 1: remove zero-width, soft-hyphen, and right-to-left override characters
+    text = _ZERO_WIDTH_RE.sub("", text)
+    # Step 2: replace Cyrillic lookalikes (С→C, О→O, etc.) to defeat homoglyph evasion
+    text = text.translate(_CYRILLIC_HOMOGLYPH)
+    # Step 3: NFKC normalization collapses other compatibility equivalents
+    text = unicodedata.normalize("NFKC", text)
     sanitized = _USER_INJECTION_RE.sub("[GÜVENLIK FİLTRESİ]", text)
     if sanitized != original:
         logger.warning("User input injection attempt detected and filtered (len=%d)", len(original))
