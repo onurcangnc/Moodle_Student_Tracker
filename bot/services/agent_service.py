@@ -647,23 +647,21 @@ KURAL 1 — Kullanıcı ağırlıkları kendisi söylediyse:
 KURAL 2 — Kullanıcı ders adı söyledi ama ağırlık vermedi:
 → ADIM 1: `get_syllabus_info(course_name=...)` çağır.
 → Syllabus BULUNURSA:
-  ADIM 2: Değerlendirme bileşenlerini şu formatta göster ve eksik SKORLARI iste:
+  ⚡ SENARYO A — Kullanıcı ilk mesajında SKOR da verdi (örn: "mt 20, proje 100, essay 60"):
+    Soru SORMA. Hemen calculate_grade(mode=course) çağır:
+    - Verilen her skoru eşleştir: "mt/midterm→Midterm", "proje→Grup projesi", "essay→Essay", "final→Final", "devam/attendance→Devam"
+    - weight: syllabus'tan, grade: kullanıcının verdiği skor
+    - "Finalden kaç almam lazım?" + final skoru verilmediyse → final grade=null + target_grade="pass"
+    - "Geçer miyim?" + tüm skorlar varsa → hesapla ve sonucu göster
+  ⚡ SENARYO B — Kullanıcı yalnızca ders adı verdi, skor YOK:
+    Değerlendirme bileşenlerini göster ve SKORLARI iste:
     "📊 HCIV 102 değerlendirme kriterleri:
-    • Essay: %20
-    • Grup projesi: %20
-    • Midterm: %20
-    • Final: %30
-    • Devam & Katılım: %10
-    Bu bileşenlerden kaçar aldığını yaz (100 üzerinden PUAN, örn: Midterm 65, Essay 80):"
-  ADIM 3: Kullanıcı puanları verince → calculate_grade(mode=course, assessments=[...]) çağır.
+    • Essay: %20  • Grup projesi: %20  • Midterm: %20  • Final: %30  • Devam: %10
+    Hangi bileşenlerden kaçar aldığını yaz (100 üzerinden):"
   ⚠️⚠️ KRİTİK KURAL — SKOR vs AĞIRLIK:
     - Kullanıcının verdiği sayı (örn: "Midterm 65") = grade=65 (SKOR, 100 üzerinden)
-    - Ağırlık (weight) her zaman SYLLABUS'tan gelir, kullanıcıdan değil
-    - "Midterm 65" → assessments'ta: {{name:"Midterm", weight:20, grade:65}}   ← weight=syllabus, grade=kullanıcı
-    - ASLA kullanıcının verdiği sayıyı weight olarak kullanma
-  Kullanıcı "finalden kaç almam lazım?" diyorsa:
-    - Final bileşeni için grade=null bırak, target_grade="pass" ekle
-    - Diğer bileşenler için kullanıcının verdiği skorları grade olarak koy
+    - weight her zaman SYLLABUS'tan gelir, ASLA kullanıcının sayısını weight sanma
+    - "mt 20" → {{name:"Midterm", weight:20(syllabus), grade:20(kullanıcı skoru)}}
 → Syllabus BULUNAMAZSA → "Syllabus bulunamadı, lütfen sınav ağırlıklarını yazar mısın?" de.
    ASLA varsayılan ağırlık kullanma. Ağırlık belli değilse hesaplama YAPMA.
 
@@ -671,19 +669,15 @@ KURAL 3 — GPA/CGPA (ders adı yok, harf notu listesi var):
 → `calculate_grade(mode=gpa)` HEMEN çağır. get_syllabus_info ÇAĞIRMA.
 
 KURAL 4 — HİPOTETİK SENARYO ("X alsam ne olur?"):
-→ Kullanıcı birden fazla bileşen için varsayımsal skor veriyorsa:
-  Syllabus ağırlıklarıyla calculate_grade(mode=course) çağır — belirtilmeyen bileşenler grade=null.
-  Örnek: "Midterm 70, Final 80 alsam ne olur?" →
-    assessments: [{{name:"Midterm", weight:20, grade:70}}, {{name:"Essay", weight:20, grade:null}}, ..., {{name:"Final", weight:30, grade:80}}]
-→ what_if parametresi yalnızca TEK bir ek bileşen için kullan.
+→ Syllabus ağırlıklarıyla calculate_grade(mode=course) çağır — belirtilmeyen bileşenler grade=null.
 
 Örnekler:
-• "CTIS 496'da midterm 55 aldım %40, geçmek için final'den kaç?"  → calculate_grade hemen (ağırlık verildi)
-• "Ethics midterm 72 aldım, geçer miyim?"                          → get_syllabus_info("Ethics") ÖNCE → sonra calculate_grade
-• "HCIV dersinden geçer miyim, midterm 65 aldım"                  → get_syllabus_info("HCIV") ÖNCE
-• "Bu dönem A-, B+, C (3'er kredi) alsam GPA'm kaç?"             → calculate_grade(mode=gpa) hemen
-• CGPA/mezuniyet şeref sorusu                                     → get_cgpa (STARS otomatik)
-• "Midterm 70 aldım" (HCIV, syllabus ağırlığı %20)               → grade=70, weight=20 (AĞIRLIK KULLANICI VERMEDİ)
+• "CTIS 496'da midterm 55 aldım %40, geçmek için final'den kaç?"   → calculate_grade hemen (ağırlık verildi)
+• "HCIV 102'den geçmek için finalden kaç? mt 20, essay 60, proje 100, devam 8"
+                                                                   → get_syllabus_info + hemen calculate_grade (skor verildi!)
+• "Ethics midterm 72 aldım, geçer miyim?"                          → get_syllabus_info("Ethics") ÖNCE → soru SOR (skor eksik)
+• "Bu dönem A-, B+, C (3'er kredi) alsam GPA'm kaç?"              → calculate_grade(mode=gpa) hemen
+• CGPA/mezuniyet şeref sorusu                                      → get_cgpa (STARS otomatik)
 
 ## ÇOKLU TOOL
 Birden fazla bilgi gerekiyorsa tool'ları paralel çağır.
