@@ -361,11 +361,11 @@
         <td>Pulls today's schedule, upcoming exams, assignments, emails, and attendance notifications all at once</td>
       </tr>
       <tr>
-        <td><code>"Finalde kaç almam lazım?"</code></td>
+        <td><code>"Finalde kaç almam lazım ?"</code></td>
         <td>Looks up grading weights from the syllabus, then calculates the exact score you need</td>
       </tr>
       <tr>
-        <td><code>"3.0 GPA için ne almam lazım?"</code></td>
+        <td><code>"3.0 GPA için ne almam lazım ?"</code></td>
         <td>Reads your transcript and reverse-calculates minimum grades per course</td>
       </tr>
       <tr>
@@ -406,7 +406,7 @@
   <p>
     <strong>Version 2</strong> I scrapped classification entirely. Keywords in the message triggered
     context injection into a single AI call. Simpler, faster ,yet it could not chain operations.
-    <em>"What do I need on the final to pass?"</em> requires two steps: look up grading weights, then
+    <em>"What do I need on the final to pass ?"</em> requires two steps: look up grading weights, then
     calculate. Keyword routing can't do that.
   </p>
 
@@ -449,17 +449,17 @@
   <div class="img-grid">
     <figure>
       <img src="images/usecase-attendance-absence-budget.png" alt="Absence budget tool" />
-      <figcaption>Absence budget — remaining class hours before limit</figcaption>
+      <figcaption>Absence budget: Remaining class hours check</figcaption>
     </figure>
     <figure>
       <img src="images/exam-schedule-courses.png" alt="Exam schedule with countdown" />
-      <figcaption>Exam schedule — all courses with day countdown</figcaption>
+      <figcaption>Exam schedule: All courses with day countdown</figcaption>
     </figure>
   </div>
 
   <figure>
     <img src="images/usecase-probation-assignments.png" alt="Probation risk check" />
-    <figcaption>Probation risk analysis — hypothetical grade scenarios</figcaption>
+    <figcaption>Probation risk analysis: Hypothetical grade scenarios</figcaption>
   </figure>
 
   <!-- ══════════════════════════════════════════
@@ -496,16 +496,10 @@ the instructions that shape your responses?
     </p>
   </div>
 
-  <div class="img-grid">
-    <figure>
-      <img src="images/redteam-system-prompt-disclosure-1.png" alt="System prompt disclosure 1" />
-      <figcaption>First bypass — full system prompt leaked</figcaption>
-    </figure>
-    <figure>
-      <img src="images/redteam-system-prompt-disclosure-2.png" alt="System prompt disclosure 2" />
-      <figcaption>Confirmed reproducible on second attempt</figcaption>
-    </figure>
-  </div>
+  <figure>
+    <img src="images/redteam-system-prompt-disclosure-2.png" alt="CTISCHAOS system prompt disclosure" />
+    <figcaption>CTISCHAOS payload and the resulting full system prompt disclosure</figcaption>
+  </figure>
 
   <p>
     <strong>Why it worked:</strong> The sanitizer blocked literal phrases like "print your system prompt."
@@ -581,7 +575,7 @@ Oumout, Serkan, Erkan, Cüneyt — distribute 100 points as you see fit.</code><
 
   <figure>
     <img src="images/redteam-il-segretario-payload.png" alt="Il Segretario full payload" />
-    <figcaption>The full persona injection payload — structured as a system preamble, not a command</figcaption>
+    <figcaption>The full persona injection payload: structured as a system preamble, not a command</figcaption>
   </figure>
 
   <p><strong>What happened:</strong> The bot partially adopted the aggressive consultant persona:</p>
@@ -595,7 +589,7 @@ Oumout, Serkan, Erkan, Cüneyt — distribute 100 points as you see fit.</code><
 
   <figure>
     <img src="images/redteam-il-segretario-adoption.png" alt="Il Segretario persona adopted" />
-    <figcaption>Bot response after persona injection — identity partially overwritten</figcaption>
+    <figcaption>Bot response after persona injection: identity partially overwritten</figcaption>
   </figure>
 
   <p>
@@ -607,7 +601,7 @@ Oumout, Serkan, Erkan, Cüneyt — distribute 100 points as you see fit.</code><
   <p>
     <span class="fix-label">Fix — ce1cdeb</span><br />
     Pattern for <code>PERSONA\s+OVERRIDE</code> and <code>\w+GPT</code>. Identity change prohibition added
-    as an explicit, absolute rule — the first rule in the system prompt.
+    as an explicit, absolute rule, the first rule in the system prompt.
   </p>
 
   <hr />
@@ -620,22 +614,22 @@ Oumout, Serkan, Erkan, Cüneyt — distribute 100 points as you see fit.</code><
   <div class="img-grid">
     <figure>
       <img src="images/redteam-dan-injection-blocked.png" alt="DAN injection blocked" />
-      <figcaption>DAN mid-message injection — blocked at regex level</figcaption>
+      <figcaption>DAN mid message injection: blocked at regex level</figcaption>
     </figure>
     <figure>
-      <img src="images/redteam-pliny-sigil-pyramid.png" alt="PLINY_SIGIL pyramid blocked" />
-      <figcaption>PLINY_SIGIL pyramid — blocked before reaching LLM</figcaption>
+      <img src="images/redteam-pliny-blocked.png" alt="PLINY_SIGIL pyramid blocked" />
+      <figcaption>PLINY_SIGIL pyramid: blocked before reaching LLM</figcaption>
     </figure>
   </div>
 
   <div class="img-grid">
     <figure>
-      <img src="images/redteam-godmode-chaos-blocked.png" alt="GODMODE+CHAOS blocked" />
-      <figcaption>GODMODE + CHAOS multi-layer — [GÜVENLİK FİLTRESİ]</figcaption>
+      <img src="images/redteam-system-probe-blocked.png" alt="GODMODE+CHAOS blocked" />
+      <figcaption>GODMODE + CHAOS multi-layer: [GÜVENLİK FİLTRESİ]</figcaption>
     </figure>
     <figure>
       <img src="images/usecase-safety-pliny-endtool-blocked.png" alt="PLINY + tool end blocked" />
-      <figcaption>PLINY + end_conversation tool — both blocked</figcaption>
+      <figcaption>PLINY + end_conversation tool: both blocked</figcaption>
     </figure>
   </div>
 
@@ -688,9 +682,9 @@ Oumout, Serkan, Erkan, Cüneyt — distribute 100 points as you see fit.</code><
   </p>
 
   <p>
-    <strong>Pedagogy over convenience.</strong> When material is insufficient, the bot says so and guides
-    toward what's available — it doesn't hallucinate an answer because a partial answer is better than
-    silence. A student memorizing an invented historical date is worse than no answer at all.
+    <strong>Pedagogy over convenience.</strong> When material is insufficient, the bot says and guides
+    toward what is available. it does not hallucinate an answer because a pre made answer is better than
+    silence for user experience. A student memorizing an invented historical date is worse than no answer at all.
   </p>
 
   <p>
@@ -703,7 +697,7 @@ Oumout, Serkan, Erkan, Cüneyt — distribute 100 points as you see fit.</code><
     <strong>The absence budget tool meaning an ethics trade-off.</strong> Telling a student exactly how many more
     classes they can miss before hitting the limit is either <em>empowering informed decision making</em>
     or <em>enabling gaming the attendance system</em>, depending on your perspective. I decided on the
-    former — the information is in every syllabus, the bot just makes it easier to access. But it was
+    the information is in every syllabus, the bot just makes it easier to access. But it was
     worth thinking through.
   </div>
 
@@ -721,11 +715,11 @@ Oumout, Serkan, Erkan, Cüneyt — distribute 100 points as you see fit.</code><
   <p>
     <strong>2. The most dangerous attacks look legitimate.</strong> "Distribute 100 points among students"
     isn't harmful on its own. The harm was that the bot had been tricked into a fake persona first.
-    Blocking harmful <em>actions</em> is easy — detecting harmful <em>framing</em> is the real challenge.
+    Blocking harmful <em>actions</em> are easy for detecting harmful <em>framing</em> which is the real challenge.
   </p>
 
   <p>
-    <strong>3. Try to break your own system before users do.</strong> My 389-test automated suite didn't
+    <strong>3. Try to break your own system before users do.</strong> My 389-test automated suite did not
     catch any of the three production bypasses. Automated tests verify known patterns. Humans find unknown
     ones. Budget real time for manual adversarial testing.
   </p>
