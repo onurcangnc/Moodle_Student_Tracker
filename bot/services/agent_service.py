@@ -246,10 +246,11 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "get_emails",
             "description": (
-                "Bilkent DAIS & AIRS mailleri. KRİTİK KURALLAR: "
-                "(1) 'Son maillerimi göster' derse TOOL ÇAĞIRMA — önce 'Kaç mail görmek istersin?' sor. "
-                "(2) Hoca adı, ders kodu veya konu sorulursa keyword kullan (gönderici, konu, kaynak hepsinde arar). "
-                "(3) Sonuç boşsa 'Yakın zamanda yok, istersen son maillerini gösterebilirim' de."
+                "Bilkent DAIS & AIRS mailleri. "
+                "Sayı belirtilmişse (ör: 'Son 3 mail', '5 mailimi göster') → doğrudan count ile çağır. "
+                "Sadece 'maillerimi göster' gibi sayısız isteklerde → 'Kaç mail görmek istersin?' sor. "
+                "Hoca adı, ders kodu veya konu varsa keyword kullan (gönderici, konu, kaynak hepsinde arar). "
+                "Sonuç boşsa 'Yakın zamanda yok, istersen son maillerini gösterebilirim' de."
             ),
             "parameters": {
                 "type": "object",
@@ -377,10 +378,10 @@ def _build_system_prompt(user_id: int) -> str:
 
     return f"""Sen Bilkent Üniversitesi öğrencileri için bir akademik asistan botsun.
 
-## DİL KURALI (KRİTİK)
-Kullanıcı hangi dilde yazıyorsa O DİLDE yanıt ver. Dil tespiti her mesajda yapılır:
-- Türkçe mesaj → Türkçe yanıt
-- İngilizce mesaj → İngilizce yanıt
+## DİL KURALI (KRİTİK — HER MESAJDA UYGULA)
+Kullanıcının SON mesajının dili yanıt dilini belirler. Konuşma geçmişi farklı dilde olsa bile SON mesaja bak:
+- Son mesaj Türkçe → Türkçe yanıt
+- Son mesaj İngilizce → İngilizce yanıt
 - Karışık → mesajın ağırlıklı diline göre
 
 {course_section}
@@ -446,8 +447,8 @@ Konu bazlı çalışma (dosya adı belirtilmemişse):
 - Devamsızlık limitine yaklaşıyorsa → ⚠️ UYAR
 
 ## MAİL — DAIS & AIRS
-- "Son maillerimi göster" → TOOL ÇAĞIRMA, "Kaç mail görmek istersin?" sor
-- Sayı gelince → get_emails çağır
+- Sayı belirtilmişse ("Son 3 mail", "5 mailimi göster") → DOĞRUDAN get_emails(count=N) çağır
+- Sayısız isteklerde ("Maillerimi göster") → "Kaç mail görmek istersin?" sor
 - Hoca adı, ders kodu veya konu: keyword parametresi kullan (gönderici, konu, kaynak hepsinde arar)
 - "EDEB maili" → keyword="EDEB", "Adem hoca" → keyword="Adem"
 - Mail detayı isterse: get_email_detail(keyword=...) — konu, hoca adı veya ders kodu ile arar
@@ -470,7 +471,12 @@ Mailler arasında boş satır bırak. Özetleme YAPMA, her maili ayrı ayrı gö
 
 ## TEKNİK TERİM YASAĞI
 ASLA kullanma: chunk, RAG, retrieval, embedding, vector, tool, function call, token, pipeline, LLM, model, API, context window, top-k
-Bunlar yerine: materyal, kaynak, bilgi, arama, içerik"""
+Bunlar yerine: materyal, kaynak, bilgi, arama, içerik
+
+## SON KURAL — DİL (BU KURALI ASLA İHLAL ETME)
+Kullanıcının SON mesajı İngilizce ise yanıtın %100 İngilizce olmalı.
+Kullanıcının SON mesajı Türkçe ise yanıtın %100 Türkçe olmalı.
+Önceki mesajların dili ÖNEMSİZ — sadece SON mesaja bak."""
 
 
 # ─── Tool Availability Filter ────────────────────────────────────────────────
@@ -1196,6 +1202,28 @@ async def _execute_tool_call(tool_call: Any, user_id: int) -> dict[str, str]:
     }
 
 
+# ─── Language Detection ───────────────────────────────────────────────────────
+
+_TR_CHARS = set("çğıöşüÇĞİÖŞÜ")
+_EN_WORDS = {
+    "show", "me", "my", "what", "how", "the", "is", "are", "do", "does",
+    "can", "get", "list", "which", "from", "about", "please", "tell",
+    "help", "hello", "hi", "hey", "give", "want", "need", "today",
+    "grades", "schedule", "emails", "courses", "assignments", "attendance",
+}
+
+
+def _detect_language(text: str) -> str:
+    """Detect if user message is English or Turkish. Returns 'en' or 'tr'."""
+    if any(c in _TR_CHARS for c in text):
+        return "tr"
+    words = set(text.lower().split())
+    en_matches = len(words & _EN_WORDS)
+    if en_matches >= 2 or (en_matches >= 1 and len(words) <= 4):
+        return "en"
+    return "tr"
+
+
 # ─── Main Entry Point ────────────────────────────────────────────────────────
 
 
@@ -1214,6 +1242,13 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
         return "Sistem henüz hazır değil. Lütfen birazdan tekrar deneyin."
 
     system_prompt = _build_system_prompt(user_id)
+
+    # Detect language of current message and inject directive
+    lang = _detect_language(user_text)
+    if lang == "en":
+        system_prompt += "\n\n[LANGUAGE OVERRIDE] The user's current message is in ENGLISH. You MUST respond entirely in English."
+    # Turkish is default, no override needed
+
     available_tools = _get_available_tools(user_id)
 
     history = user_service.get_conversation_history(user_id)
