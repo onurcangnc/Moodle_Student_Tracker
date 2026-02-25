@@ -133,6 +133,14 @@ def _get_presets() -> dict[str, ModelConfig]:
             output_cost_per_mtok=2.0,
             description="Great balance of cost/performance",
         ),
+        "gpt-5-nano": ModelConfig(
+            provider=Provider.OPENAI,
+            model_id="gpt-5-nano",
+            api_key=openai_key,
+            input_cost_per_mtok=0.10,
+            output_cost_per_mtok=0.40,
+            description="Fastest, cheapest GPT-5 for simple tasks",
+        ),
         "gpt-4.1-nano": ModelConfig(
             provider=Provider.OPENAI,
             model_id="gpt-4.1-nano",
@@ -208,13 +216,13 @@ class TaskRouter:
     User configures which model handles which task.
     """
 
-    # Task → model key mapping (defaults: Gemini Flash + OpenAI nano/mini)
-    chat: str = "gemini-2.5-flash"  # Main conversation (RAG)
-    study: str = "gemini-2.5-flash"  # Study mode (strict grounding, deep teaching)
-    extraction: str = "gpt-4.1-nano"  # Memory extraction (cheapest)
-    intent: str = "gpt-4.1-mini"  # Intent classification (needs Turkish understanding)
-    topic_detect: str = "gpt-4.1-nano"  # Topic detection (cheapest)
-    summary: str = "gemini-2.5-flash"  # Weekly summaries
+    # Task → model key mapping (defaults: GPT-5 mini + nano)
+    chat: str = "gpt-5-mini"  # Main conversation + agentic tool calling
+    study: str = "gpt-5-mini"  # Study mode (strict grounding, deep teaching)
+    extraction: str = "gpt-5-nano"  # Memory extraction (cheapest)
+    intent: str = "gpt-5-mini"  # Intent classification (needs Turkish understanding)
+    topic_detect: str = "gpt-5-nano"  # Topic detection (cheapest)
+    summary: str = "gpt-5-mini"  # Weekly summaries
     questions: str = "gemini-2.5-flash"  # Practice questions
     overview: str = "gemini-2.5-flash"  # Course overview
 
@@ -222,12 +230,12 @@ class TaskRouter:
     def from_env(cls) -> "TaskRouter":
         """Load task routing from environment variables."""
         return cls(
-            chat=os.getenv("MODEL_CHAT", "gemini-2.5-flash"),
-            study=os.getenv("MODEL_STUDY", "gemini-2.5-flash"),
-            extraction=os.getenv("MODEL_EXTRACTION", "gpt-4.1-nano"),
-            intent=os.getenv("MODEL_INTENT", "gpt-4.1-mini"),
-            topic_detect=os.getenv("MODEL_TOPIC_DETECT", "gpt-4.1-nano"),
-            summary=os.getenv("MODEL_SUMMARY", "gemini-2.5-flash"),
+            chat=os.getenv("MODEL_CHAT", "gpt-5-mini"),
+            study=os.getenv("MODEL_STUDY", "gpt-5-mini"),
+            extraction=os.getenv("MODEL_EXTRACTION", "gpt-5-nano"),
+            intent=os.getenv("MODEL_INTENT", "gpt-5-mini"),
+            topic_detect=os.getenv("MODEL_TOPIC_DETECT", "gpt-5-nano"),
+            summary=os.getenv("MODEL_SUMMARY", "gpt-5-mini"),
             questions=os.getenv("MODEL_QUESTIONS", "gemini-2.5-flash"),
             overview=os.getenv("MODEL_OVERVIEW", "gemini-2.5-flash"),
         )
@@ -320,10 +328,12 @@ class OpenAIAdapter(LLMAdapter):
 
     def complete(self, system: str, messages: list[dict], max_tokens: int = 4096) -> str:
         full_messages = [{"role": "system", "content": system}] + messages
+        # GPT-5 family uses max_completion_tokens instead of max_tokens
+        token_key = "max_completion_tokens" if "gpt-5" in self.model else "max_tokens"
         response = self.client.chat.completions.create(
             model=self.model,
             messages=full_messages,
-            max_tokens=max_tokens,
+            **{token_key: max_tokens},
         )
         return response.choices[0].message.content
 
@@ -433,7 +443,7 @@ class MultiProviderEngine:
     def _fallback_complete(self, task: str, system: str, messages: list[dict], max_tokens: int, failed: str) -> str:
         """Try alternative models if the primary fails."""
         # Fallback priority: glm → openai → anthropic (if available)
-        fallback_chain = ["gemini-2.5-flash", "glm-4.7", "gpt-4.1-mini", "gpt-5-mini", "claude-haiku", "claude-sonnet"]
+        fallback_chain = ["gpt-5-mini", "gemini-2.5-flash", "gpt-5-nano", "gpt-4.1-mini", "claude-haiku", "claude-sonnet"]
 
         for model_key in fallback_chain:
             if model_key == failed:
