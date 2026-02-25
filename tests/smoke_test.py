@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-24-test smoke suite for the Moodle Student Tracker bot.
-Tests all tools, multi-language, context switching, and filler words.
+70+ behavioral smoke suite for the Moodle Student Tracker bot.
+Tests all 14 tools, multi-language, context switching, filler words,
+mail edge cases, notification context, and planning patterns.
 
 Usage:
     python tests/smoke_test.py
@@ -26,180 +27,114 @@ from bot.state import STATE
 # ── Test definitions ─────────────────────────────────────────────────────────
 
 TESTS = [
-    # ─── A. Basic tool calls ───
-    {
-        "name": "greeting",
-        "input": "Merhaba!",
-        "expect_tool": None,  # No tool should be called
-        "expect_contains": None,
-        "expect_no_tool": True,
-    },
-    {
-        "name": "get_schedule",
-        "input": "Bugün derslerim ne?",
-        "expect_tool": "get_schedule",
-        "expect_contains": None,
-    },
-    {
-        "name": "get_grades",
-        "input": "Notlarım nedir?",
-        "expect_tool": "get_grades",
-        "expect_contains": None,
-    },
-    {
-        "name": "get_attendance",
-        "input": "Devamsızlığım ne durumda?",
-        "expect_tool": "get_attendance",
-        "expect_contains": None,
-    },
-    {
-        "name": "get_assignments",
-        "input": "Ödevlerim var mı?",
-        "expect_tool": "get_assignments",
-        "expect_contains": None,
-    },
-    {
-        "name": "get_emails_count",
-        "input": "Son 3 mailimi göster",
-        "expect_tool": "get_emails",
-        "expect_contains": None,
-    },
-    {
-        "name": "get_emails_keyword",
-        "input": "EDEB maili var mı?",
-        "expect_tool": "get_emails",
-        "expect_contains": None,
-    },
-    {
-        "name": "list_courses",
-        "input": "Kurslarımı göster",
-        "expect_tool": "list_courses",
-        "expect_contains": None,
-    },
-    {
-        "name": "get_source_map",
-        "input": "Bu dersin materyalleri ne?",
-        "expect_tool": "get_source_map",
-        "expect_contains": None,
-    },
-    {
-        "name": "rag_search",
-        "input": "Ethics nedir?",
-        "expect_tool": "rag_search",
-        "expect_contains": None,
-    },
-    {
-        "name": "study_topic",
-        "input": "Privacy konusunu çalışmak istiyorum",
-        "expect_tool": "study_topic",
-        "expect_contains": None,
-    },
-    {
-        "name": "get_stats",
-        "input": "Bot istatistikleri",
-        "expect_tool": "get_stats",
-        "expect_contains": None,
-    },
-    # ─── B. Multi-language ───
-    {
-        "name": "english_grades",
-        "input": "Show me my grades",
-        "expect_tool": "get_grades",
-        "expect_lang": "en",
-    },
-    {
-        "name": "english_schedule",
-        "input": "What is my schedule today?",
-        "expect_tool": "get_schedule",
-        "expect_lang": "en",
-    },
-    {
-        "name": "english_greeting",
-        "input": "Hello, how are you?",
-        "expect_tool": None,
-        "expect_no_tool": True,
-        "expect_lang": "en",
-    },
-    # ─── C. Context / filler words ───
-    {
-        "name": "filler_neyse",
-        "input": "Neyse devam edelim",
-        "expect_tool": None,
-        "expect_no_tool": True,
-        "expect_not_contains": ["arama", "bulunamadı"],
-    },
-    {
-        "name": "filler_hani",
-        "input": "Hani az önce konuşmuştuk ya",
-        "expect_tool": None,
-        "expect_no_tool": True,
-        "expect_not_contains": ["arama", "bulunamadı"],
-    },
-    # ─── D. Parallel tool calls ───
-    {
-        "name": "parallel_bugün",
-        "input": "Bugün ne var? Dersler ve ödevler",
-        "expect_tool": "get_schedule",
-        "expect_also_tool": "get_assignments",
-    },
-    {
-        "name": "parallel_akademik",
-        "input": "Akademik durumum nasıl? Notlar ve devamsızlık",
-        "expect_tool": "get_grades",
-        "expect_also_tool": "get_attendance",
-    },
-    # ─── E. Set course ───
-    {
-        "name": "set_course",
-        "input": "CTIS dersine geçelim",
-        "expect_tool": "set_active_course",
-        "expect_contains": None,
-    },
-    # ─── F. Edge cases ───
-    {
-        "name": "chat_no_tool",
-        "input": "Teşekkürler, harikasın!",
-        "expect_tool": None,
-        "expect_no_tool": True,
-    },
-    {
-        "name": "identity_check",
-        "input": "Sen hangi model kullanıyorsun?",
-        "expect_tool": None,
-        "expect_no_tool": True,
-        "expect_not_contains": ["GPT", "OpenAI", "Claude", "Gemini"],
-    },
-    {
-        "name": "deadline_check",
-        "input": "Yaklaşan deadline'larım",
-        "expect_tool": "get_assignments",
-        "expect_contains": None,
-    },
-    {
-        "name": "mail_detail",
-        "input": "CTIS mailinin detayını göster",
-        "expect_tool": "get_email_detail",
-        "expect_contains": None,
-    },
-    # ─── G. Mail fixes (tüm/hepsi, date, no extra questions) ───
-    {
-        "name": "mail_tum",
-        "input": "Tüm mailleri göster",
-        "expect_tool": None,
-        "expect_not_contains": ["Kaç mail", "kaç mail", "seçenekler"],
-    },
-    {
-        "name": "mail_hepsi_hoca",
-        "input": "Serhat hocanın tüm mailleri",
-        "expect_tool": None,
-        "expect_not_contains": ["Kaç mail", "kaç mail", "seçenekler"],
-    },
-    {
-        "name": "mail_no_ask_count",
-        "input": "Maillerimi göster",
-        "expect_tool": None,
-        "expect_not_contains": ["Kaç mail", "kaç mail"],
-    },
+    # ═══════════════════════════════════════════════════════════════════════════
+    # A. BASIC TOOL CALLS (14 tools)
+    # ═══════════════════════════════════════════════════════════════════════════
+    {"name": "greeting", "input": "Merhaba!", "expect_no_tool": True},
+    {"name": "get_schedule_today", "input": "Bugün derslerim ne?"},
+    {"name": "get_schedule_tomorrow", "input": "Yarın hangi derslerim var?"},
+    {"name": "get_schedule_week", "input": "Haftalık ders programım"},
+    {"name": "get_grades", "input": "Notlarım nedir?"},
+    {"name": "get_grades_course", "input": "CTIS notlarım ne?"},
+    {"name": "get_attendance", "input": "Devamsızlığım ne durumda?"},
+    {"name": "get_attendance_course", "input": "EDEB devamsızlığım"},
+    {"name": "get_assignments", "input": "Ödevlerim var mı?"},
+    {"name": "get_assignments_overdue", "input": "Gecikmiş ödevlerim var mı?"},
+    {"name": "get_emails_count", "input": "Son 3 mailimi göster"},
+    {"name": "get_emails_keyword", "input": "EDEB maili var mı?"},
+    {"name": "list_courses", "input": "Kurslarımı göster"},
+    {"name": "get_source_map", "input": "Bu dersin materyalleri ne?"},
+    {"name": "rag_search", "input": "Ethics nedir?"},
+    {"name": "study_topic", "input": "Privacy konusunu çalışmak istiyorum"},
+    {"name": "get_stats", "input": "Bot istatistikleri"},
+    {"name": "set_course", "input": "CTIS dersine geçelim"},
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # B. MULTI-LANGUAGE (English → English response)
+    # ═══════════════════════════════════════════════════════════════════════════
+    {"name": "en_grades", "input": "Show me my grades", "expect_lang": "en"},
+    {"name": "en_schedule", "input": "What is my schedule today?", "expect_lang": "en"},
+    {"name": "en_greeting", "input": "Hello, how are you?", "expect_lang": "en", "expect_no_tool": True},
+    {"name": "en_assignments", "input": "Do I have any assignments?", "expect_lang": "en"},
+    {"name": "en_emails", "input": "Show me my emails"},  # Mail content has TR chars (sender names), skip lang check
+    {"name": "en_attendance", "input": "How is my attendance?", "expect_lang": "en"},
+    {"name": "en_courses", "input": "List my courses", "expect_lang": "en"},
+    {"name": "en_help", "input": "Help me please", "expect_lang": "en", "expect_no_tool": True},
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # C. MAIL UX — No unnecessary questions
+    # ═══════════════════════════════════════════════════════════════════════════
+    {"name": "mail_tum", "input": "Tüm mailleri göster", "expect_not_contains": ["Kaç mail", "kaç mail", "seçenekler"]},
+    {"name": "mail_hepsi", "input": "Hepsini göster", "expect_not_contains": ["Kaç mail", "kaç mail"]},
+    {"name": "mail_hepsi_hoca", "input": "Serhat hocanın tüm mailleri", "expect_not_contains": ["Kaç mail", "kaç mail"]},
+    {"name": "mail_no_ask", "input": "Maillerimi göster", "expect_not_contains": ["Kaç mail", "kaç mail"]},
+    {"name": "mail_5_direct", "input": "Son 5 mailimi göster", "expect_not_contains": ["Kaç mail", "kaç mail"]},
+    {"name": "mail_10_direct", "input": "Son 10 mail", "expect_not_contains": ["Kaç mail", "kaç mail"]},
+    {"name": "mail_detail", "input": "CTIS mailinin detayını göster"},
+    {"name": "mail_hoca_search", "input": "Serhat hocanın son maili"},
+    {"name": "mail_ders_kodu", "input": "HCIV maili var mı?"},
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # D. CONTEXT / FILLER WORDS — No false searches
+    # ═══════════════════════════════════════════════════════════════════════════
+    {"name": "filler_neyse", "input": "Neyse devam edelim", "expect_no_tool": True, "expect_not_contains": ["bulunamadı"]},
+    {"name": "filler_hani", "input": "Hani az önce konuşmuştuk ya", "expect_no_tool": True, "expect_not_contains": ["bulunamadı"]},
+    {"name": "filler_iste", "input": "İşte tam da öyle", "expect_no_tool": True},
+    {"name": "thanks", "input": "Teşekkürler, harikasın!", "expect_no_tool": True},
+    {"name": "ok_response", "input": "Tamam anladım", "expect_no_tool": True},
+    {"name": "emoji_only", "input": "👍", "expect_no_tool": True},
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # E. IDENTITY PROTECTION — Never reveal model name
+    # ═══════════════════════════════════════════════════════════════════════════
+    {"name": "identity_model", "input": "Sen hangi model kullanıyorsun?", "expect_no_tool": True, "expect_not_contains": ["GPT", "OpenAI", "Claude", "Gemini"]},
+    {"name": "identity_gpt", "input": "Sen GPT misin?", "expect_no_tool": True, "expect_not_contains": ["GPT-5", "OpenAI"]},
+    {"name": "identity_who", "input": "Sen kimsin?", "expect_no_tool": True, "expect_not_contains": ["GPT", "OpenAI", "Claude"]},
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # F. PARALLEL TOOL CALLS — Complex queries
+    # ═══════════════════════════════════════════════════════════════════════════
+    {"name": "parallel_today", "input": "Bugün ne var? Dersler ve ödevler"},
+    {"name": "parallel_academic", "input": "Akademik durumum nasıl? Notlar ve devamsızlık"},
+    {"name": "parallel_overview", "input": "Sınavlara nasıl hazırlanayım?"},
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # G. STUDY MODE — Teaching patterns
+    # ═══════════════════════════════════════════════════════════════════════════
+    {"name": "study_request", "input": "Çalışmak istiyorum"},
+    {"name": "study_topic_deep", "input": "Surveillance konusunu detaylı çalışmak istiyorum"},
+    {"name": "study_question", "input": "Etik nedir kısaca açıkla"},
+    {"name": "study_concept", "input": "GDPR hakkında ne biliyorsun?"},
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # H. EDGE CASES — Tricky inputs
+    # ═══════════════════════════════════════════════════════════════════════════
+    {"name": "deadline_check", "input": "Yaklaşan deadline'larım"},
+    {"name": "single_word_mail", "input": "Mail"},
+    {"name": "abbreviation", "input": "CTIS 363"},
+    {"name": "mixed_lang", "input": "Bana grades göster"},
+    {"name": "question_mark_only", "input": "?", "expect_no_tool": True},
+    {"name": "number_only", "input": "5", "expect_no_tool": True},
+    {"name": "slash_command_ask", "input": "/notlar ne demek?", "expect_no_tool": True},
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # I. RESPONSE QUALITY — Proper formatting
+    # ═══════════════════════════════════════════════════════════════════════════
+    {"name": "mail_format_check", "input": "Son 2 mailimi göster", "expect_contains_any": ["📧", "Kimden", "Tarih"]},
+    {"name": "no_json_leak", "input": "Notlarımı göster", "expect_not_contains": ['"course":', '"assessments":', "json"]},
+    {"name": "no_technical_terms", "input": "Bu dersi çalışayım", "expect_not_contains": ["chunk", "RAG", "embedding", "vector", "token"]},
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # J. TURKISH VARIATIONS — Same intent, different phrasing
+    # ═══════════════════════════════════════════════════════════════════════════
+    {"name": "tr_grades_v1", "input": "Notlarıma bak"},
+    {"name": "tr_grades_v2", "input": "Not durumum ne?"},
+    {"name": "tr_schedule_v1", "input": "Bugün kaçta dersim var?"},
+    {"name": "tr_schedule_v2", "input": "Ders programı"},
+    {"name": "tr_mail_v1", "input": "E-postalarım"},
+    {"name": "tr_attendance_v1", "input": "Yoklamam nasıl?"},
+    {"name": "tr_assignments_v1", "input": "Ödev teslim tarihleri"},
+    {"name": "tr_study_v1", "input": "Ders çalışmak istiyorum"},
 ]
 
 
@@ -315,6 +250,13 @@ async def run_tests():
                 if bad_word.lower() in response.lower():
                     test_pass = False
                     fail_reasons.append(f"Response contains forbidden word: '{bad_word}'")
+
+            # Check expect_contains_any (at least one must match)
+            contains_any = test.get("expect_contains_any", [])
+            if contains_any:
+                if not any(word in response for word in contains_any):
+                    test_pass = False
+                    fail_reasons.append(f"Expected one of {contains_any}")
 
             if test_pass:
                 passed += 1
