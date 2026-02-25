@@ -248,8 +248,10 @@ TOOLS: list[dict[str, Any]] = [
             "description": (
                 "Bilkent DAIS & AIRS mailleri. "
                 "Sayı belirtilmişse (ör: 'Son 3 mail', '5 mailimi göster') → doğrudan count ile çağır. "
-                "Sadece 'maillerimi göster' gibi sayısız isteklerde → 'Kaç mail görmek istersin?' sor. "
-                "Hoca adı, ders kodu veya konu varsa keyword kullan (gönderici, konu, kaynak hepsinde arar). "
+                "'Tüm mailleri göster', 'hepsi', 'bütün' → count=20 ile çağır (SORU SORMA). "
+                "Sadece 'maillerimi göster' gibi belirsiz isteklerde → count=5 kullan. "
+                "Hoca adı, ders kodu, konu veya tarih varsa keyword kullan (gönderici, konu, kaynak, tarih hepsinde arar). "
+                "Tarih araması: '11 şubat' → keyword='11 Şub', 'ocak mailleri' → keyword='Oca'. "
                 "Sonuç boşsa 'Yakın zamanda yok, istersen son maillerini gösterebilirim' de."
             ),
             "parameters": {
@@ -261,7 +263,7 @@ TOOLS: list[dict[str, Any]] = [
                     },
                     "keyword": {
                         "type": "string",
-                        "description": "Arama filtresi — gönderici adı, ders kodu (EDEB, CTIS vb.) veya konu kelimesi",
+                        "description": "Arama filtresi — gönderici adı, ders kodu (EDEB, CTIS vb.), konu kelimesi veya tarih (ör: '11 Şub', 'Ocak')",
                     },
                     "scope": {
                         "type": "string",
@@ -278,15 +280,17 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "get_email_detail",
             "description": (
-                "Mailin tam içeriğini getirir. Konu, gönderici adı veya ders kodu ile arar. "
-                "'Şu mailin detayını göster' dediğinde kullan."
+                "Mailin tam içeriğini getirir. Konu, gönderici adı, ders kodu veya tarih ile arar. "
+                "'Şu mailin detayını göster' dediğinde kullan. "
+                "Bildirimden sonra 'detayını göster' denirse → bildirimdeki konu/göndericiyi keyword olarak kullan. "
+                "Seminerin saati/detayı sorulursa → ilgili maili bu tool ile aç."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "keyword": {
                         "type": "string",
-                        "description": "Arama terimi — konu, gönderici adı veya ders kodu (kısmi eşleşme yeterli)",
+                        "description": "Arama terimi — konu, gönderici adı, ders kodu veya tarih (kısmi eşleşme yeterli)",
                     },
                 },
                 "required": ["keyword"],
@@ -419,6 +423,11 @@ Karmaşık sorularda tool'ları paralel çağır:
 Basit sorularda TEK tool yeterli — fazla tool çağırma.
 Sohbet/selamlama → HİÇ tool çağırma, doğrudan cevap ver.
 
+Bildirim sonrası sorularda:
+- "Detayını ver" → bildirimdeki konu/göndericiyi bul → get_email_detail(keyword=...)
+- "Seminer kaçta?" → bildirimdeki seminer mailini aç → get_email_detail(keyword="Seminar")
+- ASLA kullanıcıya "hangi mail?" diye sorma — konuşma geçmişini OKU
+
 ## DERS ÇALIŞMA — ÖĞRETİM YAKLAŞIMI
 
 Sen bir ÖĞRETMENSİN, arama motoru değilsin. Materyali OKUYUP ÖĞRETİYORSUN.
@@ -458,11 +467,21 @@ Konu bazlı çalışma (dosya adı belirtilmemişse):
 
 ## MAİL — DAIS & AIRS
 - Sayı belirtilmişse ("Son 3 mail", "5 mailimi göster") → DOĞRUDAN get_emails(count=N) çağır
-- Sayısız isteklerde ("Maillerimi göster") → "Kaç mail görmek istersin?" sor
-- Hoca adı, ders kodu veya konu: keyword parametresi kullan (gönderici, konu, kaynak hepsinde arar)
+- "Tüm mailleri göster", "hepsi", "bütün" → get_emails(count=20) çağır (SORU SORMA, hemen getir)
+- Sayısız isteklerde ("Maillerimi göster") → count=5 varsayılan kullan, soru SORMA
+- Hoca adı, ders kodu, konu VEYA TARİH: keyword parametresi kullan (gönderici, konu, kaynak, tarih hepsinde arar)
 - "EDEB maili" → keyword="EDEB", "Adem hoca" → keyword="Adem"
-- Mail detayı isterse: get_email_detail(keyword=...) — konu, hoca adı veya ders kodu ile arar
+- "11 şubat maili" → keyword="11 Şub" (tarih formatı: "GG Ay_kısaltma", ör: "25 Şub", "11 Oca")
+- "Serhat hoca 11 şubat" → İKİ keyword birleşemez, ÖNCE keyword="Serhat" ile çek, sonra tarih sonuçlardan filtrele
+- Mail detayı isterse: get_email_detail(keyword=...) — konu, hoca adı, ders kodu veya tarih ile arar
 - Sonuç boşsa: "Yakın zamanda yok, istersen son maillerini gösterebilirim"
+
+## BİLDİRİM BAĞLAMI (KRİTİK)
+Bot bildirim gönderdiğinde (📧 Yeni Mail, ⚠️ Devamsızlık vb.) bu bildirim konuşma geçmişinde kalır.
+- "Mailin detayını ver/göster" → son bildirimdeki konu/göndericiyi keyword olarak kullan
+- "Seminer kaçta?" → son bildirimde seminer maili varsa get_email_detail ile aç (get_schedule DEĞİL)
+- "Bu ne?" → son bildirimin içeriğini açıkla
+- ASLA "hangi mail?" diye sorma — konuşma geçmişinde bildirim varsa onu kullan
 
 Mail sonuçlarını AŞAĞIDAKİ FORMATTA göster (her mail için):
 📧 *Konu başlığı*
@@ -1050,6 +1069,7 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
             if kw in m.get("from", "").lower()
             or kw in m.get("subject", "").lower()
             or kw in m.get("source", "").lower()
+            or kw in m.get("date", "").lower()
         ]
 
     mails = mails[:count]
@@ -1095,7 +1115,8 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
     for m in mails:
         if (kw in m.get("subject", "").lower()
                 or kw in m.get("from", "").lower()
-                or kw in m.get("source", "").lower()):
+                or kw in m.get("source", "").lower()
+                or kw in m.get("date", "").lower()):
             match = m
             break
 

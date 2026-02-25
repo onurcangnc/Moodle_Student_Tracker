@@ -181,6 +181,25 @@ TESTS = [
         "expect_tool": "get_email_detail",
         "expect_contains": None,
     },
+    # ─── G. Mail fixes (tüm/hepsi, date, no extra questions) ───
+    {
+        "name": "mail_tum",
+        "input": "Tüm mailleri göster",
+        "expect_tool": None,
+        "expect_not_contains": ["Kaç mail", "kaç mail", "seçenekler"],
+    },
+    {
+        "name": "mail_hepsi_hoca",
+        "input": "Serhat hocanın tüm mailleri",
+        "expect_tool": None,
+        "expect_not_contains": ["Kaç mail", "kaç mail", "seçenekler"],
+    },
+    {
+        "name": "mail_no_ask_count",
+        "input": "Maillerimi göster",
+        "expect_tool": None,
+        "expect_not_contains": ["Kaç mail", "kaç mail"],
+    },
 ]
 
 
