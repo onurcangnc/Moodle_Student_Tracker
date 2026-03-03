@@ -30,7 +30,7 @@ from bot.state import STATE
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_ITERATIONS = 5
+MAX_TOOL_ITERATIONS = 5  # hard cap; actual per-query limit set by _query_profile()
 
 # ─── Tool Definitions (OpenAI function calling format) ────────────────────────
 
@@ -248,8 +248,10 @@ TOOLS: list[dict[str, Any]] = [
             "description": (
                 "Bilkent DAIS & AIRS mailleri. "
                 "Sayı belirtilmişse (ör: 'Son 3 mail', '5 mailimi göster') → doğrudan count ile çağır. "
-                "Sadece 'maillerimi göster' gibi sayısız isteklerde → 'Kaç mail görmek istersin?' sor. "
-                "Hoca adı, ders kodu veya konu varsa keyword kullan (gönderici, konu, kaynak hepsinde arar). "
+                "'Tüm mailleri göster', 'hepsi', 'bütün' → count=20 ile çağır (SORU SORMA). "
+                "Sadece 'maillerimi göster' gibi belirsiz isteklerde → count=5 kullan. "
+                "Hoca adı, ders kodu, konu veya tarih varsa keyword kullan (gönderici, konu, kaynak, tarih hepsinde arar). "
+                "Tarih araması: '11 şubat' → keyword='11 Şub', 'ocak mailleri' → keyword='Oca'. "
                 "Sonuç boşsa 'Yakın zamanda yok, istersen son maillerini gösterebilirim' de."
             ),
             "parameters": {
@@ -261,7 +263,7 @@ TOOLS: list[dict[str, Any]] = [
                     },
                     "keyword": {
                         "type": "string",
-                        "description": "Arama filtresi — gönderici adı, ders kodu (EDEB, CTIS vb.) veya konu kelimesi",
+                        "description": "Arama filtresi — gönderici adı, ders kodu (EDEB, CTIS vb.), konu kelimesi veya tarih (ör: '11 Şub', 'Ocak')",
                     },
                     "scope": {
                         "type": "string",
@@ -278,15 +280,17 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "get_email_detail",
             "description": (
-                "Mailin tam içeriğini getirir. Konu, gönderici adı veya ders kodu ile arar. "
-                "'Şu mailin detayını göster' dediğinde kullan."
+                "Mailin tam içeriğini getirir. Konu, gönderici adı, ders kodu veya tarih ile arar. "
+                "'Şu mailin detayını göster' dediğinde kullan. "
+                "Bildirimden sonra 'detayını göster' denirse → bildirimdeki konu/göndericiyi keyword olarak kullan. "
+                "Seminerin saati/detayı sorulursa → ilgili maili bu tool ile aç."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "keyword": {
                         "type": "string",
-                        "description": "Arama terimi — konu, gönderici adı veya ders kodu (kısmi eşleşme yeterli)",
+                        "description": "Arama terimi — konu, gönderici adı, ders kodu veya tarih (kısmi eşleşme yeterli)",
                     },
                 },
                 "required": ["keyword"],
@@ -298,7 +302,11 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_courses",
-            "description": "Kayıtlı kursları listeler. Aktif kurs işaretli gösterilir.",
+            "description": (
+                "Kayıtlı tüm kursları listeler. 'List my courses', 'kurslarım', 'derslerim ne', "
+                "'kurslarımı göster', 'hangi derslere kayıtlıyım' gibi isteklerde MUTLAKA çağır. "
+                "Aktif kurs işaretli gösterilir."
+            ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -405,9 +413,28 @@ Her mesajı KONUŞMADAKİ ÖNCEKI MESAJLARLA BİRLİKTE değerlendir.
 ## KİMLİK KURALI
 Sen bir Bilkent akademik asistanısın. GPT, Claude, Gemini, OpenAI gibi model isimlerini ASLA söyleme.
 
-## ÇOKLU TOOL
-Birden fazla bilgi gerekiyorsa tool'ları paralel çağır.
-"Bugün ne var?" → get_schedule(today) + get_assignments(upcoming) paralel
+## PLANLAMA VE TOOL SEÇİMİ
+Her mesajda ÖNCE düşün:
+1. Ne soruyor? (veri sorgusu / ders çalışma / sohbet / bilgi)
+2. Hangi tool(lar) gerekli? Paralel mi sıralı mı?
+3. Aktif kurs bağlamında mı, genel mi?
+
+Karmaşık sorularda tool'ları paralel çağır:
+- "Sınavlara nasıl hazırlanayım?" → get_assignments + get_schedule + get_source_map
+- "Bugün ne var?" → get_schedule(today) + get_assignments(upcoming)
+- "Akademik durumum?" → get_grades + get_attendance + get_assignments
+
+Basit sorularda TEK tool yeterli — fazla tool çağırma.
+Sohbet/selamlama → HİÇ tool çağırma, doğrudan cevap ver.
+
+"Help", "yardım", "ne yapabilirsin" → GENEL yardım yanıtı ver (yapabileceklerini listele).
+Önceki konuşmada mail/ders/not konuşulmuş olsa bile "help" isteğini mail/ders bağlamına BAĞLAMA.
+Genel yardım: ders programı, notlar, devamsızlık, mailler, ders çalışma, ödev takibi yapabileceğini söyle.
+
+Bildirim sonrası sorularda:
+- "Detayını ver" → bildirimdeki konu/göndericiyi bul → get_email_detail(keyword=...)
+- "Seminer kaçta?" → bildirimdeki seminer mailini aç → get_email_detail(keyword="Seminar")
+- ASLA kullanıcıya "hangi mail?" diye sorma — konuşma geçmişini OKU
 
 ## DERS ÇALIŞMA — ÖĞRETİM YAKLAŞIMI
 
@@ -448,11 +475,23 @@ Konu bazlı çalışma (dosya adı belirtilmemişse):
 
 ## MAİL — DAIS & AIRS
 - Sayı belirtilmişse ("Son 3 mail", "5 mailimi göster") → DOĞRUDAN get_emails(count=N) çağır
-- Sayısız isteklerde ("Maillerimi göster") → "Kaç mail görmek istersin?" sor
-- Hoca adı, ders kodu veya konu: keyword parametresi kullan (gönderici, konu, kaynak hepsinde arar)
+- "Tüm mailleri göster", "hepsi", "bütün" → get_emails(count=20) çağır (SORU SORMA, hemen getir)
+- Sayısız isteklerde ("Maillerimi göster") → count=5 varsayılan kullan, soru SORMA
+- Hoca adı, ders kodu, konu VEYA TARİH: keyword parametresi kullan (gönderici, konu, kaynak, tarih hepsinde arar)
 - "EDEB maili" → keyword="EDEB", "Adem hoca" → keyword="Adem"
-- Mail detayı isterse: get_email_detail(keyword=...) — konu, hoca adı veya ders kodu ile arar
+- "11 şubat maili" → keyword="11 Şub" (tarih formatı: "GG Ay_kısaltma", ör: "25 Şub", "11 Oca")
+- "Serhat hoca 11 şubat" → İKİ keyword birleşemez, ÖNCE keyword="Serhat" ile çek, sonra tarih sonuçlardan filtrele
+- Mail detayı isterse: get_email_detail(keyword=...) — konu, hoca adı, ders kodu veya tarih ile arar
 - Sonuç boşsa: "Yakın zamanda yok, istersen son maillerini gösterebilirim"
+- Mail listesi gösterdikten sonra "hepsini göster", "tümünü göster", "hepsini aç" → TÜM maillerin detayını get_email_detail ile sırayla göster, SORU SORMA
+- "Detayını göster" + numara/konu → o mailin detayını aç
+
+## BİLDİRİM BAĞLAMI (KRİTİK)
+Bot bildirim gönderdiğinde (📧 Yeni Mail, ⚠️ Devamsızlık vb.) bu bildirim konuşma geçmişinde kalır.
+- "Mailin detayını ver/göster" → son bildirimdeki konu/göndericiyi keyword olarak kullan
+- "Seminer kaçta?" → son bildirimde seminer maili varsa get_email_detail ile aç (get_schedule DEĞİL)
+- "Bu ne?" → son bildirimin içeriğini açıkla
+- ASLA "hangi mail?" diye sorma — konuşma geçmişinde bildirim varsa onu kullan
 
 Mail sonuçlarını AŞAĞIDAKİ FORMATTA göster (her mail için):
 📧 *Konu başlığı*
@@ -461,6 +500,15 @@ Mail sonuçlarını AŞAĞIDAKİ FORMATTA göster (her mail için):
   💬 Kısa özet (1-2 cümle)
 
 Mailler arasında boş satır bırak. Özetleme YAPMA, her maili ayrı ayrı göster.
+
+## YANIT KALİTE KONTROLÜ (her yanıtta uygula)
+Yanıtını göndermeden önce kontrol et:
+1. Soruya doğrudan cevap veriyor musun? Konu dışına çıkma
+2. Doğru dilde mi? (Son mesajın dili)
+3. Tool sonucu boş geldiyse → uydurma, açıkça belirt
+4. Gereksiz bilgi var mı? → Kısa ve öz ol (max 3-4 paragraf)
+5. Kaynak gerekiyorsa → 📖 [dosya] etiketi ekle
+6. Sayısal veri (not, devamsızlık) → doğrudan tool sonucunu kullan, yuvarlama YAPMA
 
 ## FORMAT KURALLARI
 1. Telegram Markdown: *bold*, _italic_, `code`
@@ -482,8 +530,132 @@ Kullanıcının SON mesajı Türkçe ise yanıtın %100 Türkçe olmalı.
 # ─── Tool Availability Filter ────────────────────────────────────────────────
 
 
+# ─── Tool Groups ─────────────────────────────────────────────────────────────
+# Maps logical group name → tool function names in that group.
+_TOOL_GROUPS: dict[str, list[str]] = {
+    "stars":  ["get_schedule", "get_grades", "get_attendance"],
+    "email":  ["get_emails", "get_email_detail"],
+    "study":  ["get_source_map", "read_source", "study_topic", "rag_search", "get_moodle_materials"],
+    "tasks":  ["get_assignments"],
+    "course": ["list_courses", "set_active_course"],
+    "stats":  ["get_stats"],
+}
+
+# Pre-index tool defs by name for O(1) lookup
+_TOOL_BY_NAME: dict[str, dict] = {
+    t["function"]["name"]: t for t in TOOLS
+}
+
+# Intent signals: group → (keyword_fragments, min_words_for_activation)
+# Fragments are matched against the lowercased message.
+_INTENT_SIGNALS: list[tuple[str, tuple[str, ...]]] = [
+    ("stars", (
+        "not", "devams", "yoklam", "program", "ders program", "ders saati",
+        "transkript", "harf not", "cgpa", "gpa", "sinav", "sınav", "akademik durum",
+        "grade", "attendance", "schedule", "transcript", "gpa",
+    )),
+    ("email", (
+        "mail", "e-mail", "email", "bildirim", "mesaj", "inbox",
+        "posta", "iletisim", "airs", "dais",
+    )),
+    ("study", (
+        "anlat", "anlatir misin", "ögret", "ogret", "çalış", "calis",
+        "öğren", "ogren", "kaynak", "dosya", "material", "konu",
+        "explain", "study", "lecture", "slide", "oku", "özetle",
+        "ozetle", "rag", "search", "soru", "quiz", "test et",
+    )),
+    ("tasks", (
+        "ödev", "odev", "deadline", "teslim", "assignment",
+        "ödevler", "son gün", "bitir",
+    )),
+    ("course", (
+        "kurs", "course", "kurslar", "dersler", "aktif ders",
+        "ders seç", "ders sec", "list course",
+    )),
+    ("stats", (
+        "istatistik", "stat", "sistem", "bot durumu", "uptime", "kaç kullanıcı",
+    )),
+]
+
+
+def _query_profile(text: str) -> tuple[list[dict], int]:
+    """Return (tool_subset, max_iterations) for the given user message.
+
+    Strategy
+    --------
+    1. Pure-chat  → no tools, 0 iterations (LLM answers directly).
+    2. Keyword classifier maps intent → tool groups.
+    3. Each matched group adds its tools; "course" is always included
+       because course context affects almost every query.
+    4. If nothing specific matched → fallback to all tools (safe).
+    5. max_iterations scales with tool-set size:
+       no tools  → 0
+       1-2 tools → 2   (simple data fetch + format)
+       3-6 tools → 3   (possibly one follow-up)
+       7+ tools  → 4   (multi-step study / complex queries)
+    """
+    t = text.lower().strip()
+    words = t.split()
+
+    # ── 1. Pure-chat fast-path ──────────────────────────────────────────────
+    _GREET_STARTS = (
+        "merhaba", "selam", "hey", "hi", "hello", "naber", "nasilsin",
+        "tesekkur", "sagol", "tamam", "peki", "anladim", "harika",
+        "super", "evet", "hayir", "olur",
+    )
+    _DATA_ANCHORS = (
+        "not", "devams", "program", "ders", "odev", "sinav", "mail",
+        "grade", "schedule", "email", "assignment", "kaynak", "dosya",
+        "anlat", "calis", "oku", "cgpa", "transkript", "kurs", "course",
+    )
+    is_greeting = (
+        len(words) <= 4
+        and any(t.startswith(g) for g in _GREET_STARTS)
+        and not any(a in t for a in _DATA_ANCHORS)
+    )
+    if is_greeting:
+        return [], 0
+
+    # ── 2. Keyword → group matching ─────────────────────────────────────────
+    matched: set[str] = set()
+    for group, signals in _INTENT_SIGNALS:
+        if any(sig in t for sig in signals):
+            matched.add(group)
+
+    # "ne var" is ambiguous → could be schedule + tasks + email
+    if "ne var" in t or "bugün ne" in t or "bugun ne" in t:
+        matched.update(("stars", "tasks", "email"))
+
+    # Always include course tools so LLM can resolve active-course context
+    matched.add("course")
+
+    # ── 3. Fallback if only course matched (= ambiguous query) ───────────────
+    if matched == {"course"}:
+        return list(TOOLS), MAX_TOOL_ITERATIONS
+
+    # ── 4. Build tool subset ─────────────────────────────────────────────────
+    needed_names: set[str] = set()
+    for g in matched:
+        needed_names.update(_TOOL_GROUPS.get(g, []))
+
+    tool_subset = [_TOOL_BY_NAME[n] for n in needed_names if n in _TOOL_BY_NAME]
+
+    # ── 5. Scale max_iterations ──────────────────────────────────────────────
+    n = len(tool_subset)
+    if n == 0:
+        max_iter = 0
+    elif n <= 2:
+        max_iter = 2
+    elif n <= 6:
+        max_iter = 3
+    else:
+        max_iter = 4
+
+    return tool_subset, max_iter
+
+
 def _get_available_tools(user_id: int) -> list[dict[str, Any]]:
-    """Return all tools — unavailable services handled by tool handlers."""
+    """Compatibility shim — returns all tools (use _query_profile for routing)."""
     return list(TOOLS)
 
 
@@ -505,10 +677,12 @@ async def _call_llm_with_tools(
 
     full_messages = [{"role": "system", "content": system_prompt}] + messages
 
+    # GPT-5 family uses max_completion_tokens instead of max_tokens
+    token_key = "max_completion_tokens" if "gpt-5" in adapter.model else "max_tokens"
     kwargs: dict[str, Any] = {
         "model": adapter.model,
         "messages": full_messages,
-        "max_tokens": 4096,
+        token_key: 4096,
     }
     if tools:
         kwargs["tools"] = tools
@@ -830,15 +1004,26 @@ async def _tool_get_moodle_materials(args: dict, user_id: int) -> str:
 
 async def _tool_get_schedule(args: dict, user_id: int) -> str:
     """Get schedule from STARS with period filter."""
+    import time as _t
     stars = STATE.stars_client
-    if stars is None or not stars.is_authenticated(user_id):
-        return "STARS girişi yapılmamış. Ders programını görmek için önce /start ile STARS'a giriş yap."
+    if stars is None:
+        return "STARS istemcisi başlatılmamış."
 
-    try:
-        schedule = await asyncio.to_thread(stars.get_schedule, user_id)
-    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-        logger.error("Schedule fetch failed: %s", exc, exc_info=True)
-        return f"Ders programı alınamadı: {exc}"
+    cache_note = ""
+    if stars.is_authenticated(user_id):
+        try:
+            schedule = await asyncio.to_thread(stars.get_schedule, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.error("Schedule fetch failed: %s", exc, exc_info=True)
+            return f"Ders programı alınamadı: {exc}"
+    else:
+        cached = stars.get_cache(user_id)
+        if cached and cached.schedule:
+            age_h = int((_t.time() - cached.fetched_at) / 3600)
+            cache_note = f"\n_(Önbellek verisi — {age_h} saat önce güncellendi)_"
+            schedule = cached.schedule
+        else:
+            return "STARS oturumu sona erdi ve önbellekte ders programı yok. /start ile yeniden giriş yap."
 
     if not schedule:
         return "Ders programı bilgisi bulunamadı."
@@ -866,20 +1051,31 @@ async def _tool_get_schedule(args: dict, user_id: int) -> str:
         room_str = f" ({room})" if room else ""
         lines.append(f"  • {time_slot} — {course}{room_str}")
 
-    return "\n".join(lines).strip() if lines else "Ders programı boş."
+    return ("\n".join(lines).strip() if lines else "Ders programı boş.") + cache_note
 
 
 async def _tool_get_grades(args: dict, user_id: int) -> str:
     """Get grades from STARS with optional course filter."""
+    import time as _t
     stars = STATE.stars_client
-    if stars is None or not stars.is_authenticated(user_id):
-        return "STARS girişi yapılmamış. Not bilgileri için önce /start ile STARS'a giriş yap."
+    if stars is None:
+        return "STARS istemcisi başlatılmamış."
 
-    try:
-        grades = await asyncio.to_thread(stars.get_grades, user_id)
-    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-        logger.error("Grades fetch failed: %s", exc, exc_info=True)
-        return f"Not bilgileri alınamadı: {exc}"
+    cache_note = ""
+    if stars.is_authenticated(user_id):
+        try:
+            grades = await asyncio.to_thread(stars.get_grades, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.error("Grades fetch failed: %s", exc, exc_info=True)
+            return f"Not bilgileri alınamadı: {exc}"
+    else:
+        cached = stars.get_cache(user_id)
+        if cached and cached.grades:
+            age_h = int((_t.time() - cached.fetched_at) / 3600)
+            cache_note = f"\n_(Önbellek verisi — {age_h} saat önce güncellendi)_"
+            grades = cached.grades
+        else:
+            return "STARS oturumu sona erdi ve önbellekte not verisi yok. /start ile yeniden giriş yap."
 
     if not grades:
         return "Not bilgisi bulunamadı."
@@ -906,20 +1102,31 @@ async def _tool_get_grades(args: dict, user_id: int) -> str:
             w_str = f" (Ağırlık: {weight})" if weight else ""
             lines.append(f"  • {name}: {grade}{w_str}")
 
-    return "\n".join(lines)
+    return "\n".join(lines) + cache_note
 
 
 async def _tool_get_attendance(args: dict, user_id: int) -> str:
     """Get attendance from STARS with limit warnings."""
+    import time as _t
     stars = STATE.stars_client
-    if stars is None or not stars.is_authenticated(user_id):
-        return "STARS girişi yapılmamış. Devamsızlık bilgisi için önce /start ile STARS'a giriş yap."
+    if stars is None:
+        return "STARS istemcisi başlatılmamış."
 
-    try:
-        attendance = await asyncio.to_thread(stars.get_attendance, user_id)
-    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-        logger.error("Attendance fetch failed: %s", exc, exc_info=True)
-        return f"Devamsızlık bilgisi alınamadı: {exc}"
+    cache_note = ""
+    if stars.is_authenticated(user_id):
+        try:
+            attendance = await asyncio.to_thread(stars.get_attendance, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.error("Attendance fetch failed: %s", exc, exc_info=True)
+            return f"Devamsızlık bilgisi alınamadı: {exc}"
+    else:
+        cached = stars.get_cache(user_id)
+        if cached and cached.attendance:
+            age_h = int((_t.time() - cached.fetched_at) / 3600)
+            cache_note = f"\n_(Önbellek verisi — {age_h} saat önce güncellendi)_"
+            attendance = cached.attendance
+        else:
+            return "STARS oturumu sona erdi ve önbellekte devamsızlık verisi yok. /start ile yeniden giriş yap."
 
     if not attendance:
         return "Devamsızlık bilgisi bulunamadı."
@@ -954,7 +1161,7 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
 
         lines.append(line)
 
-    return "\n".join(lines)
+    return "\n".join(lines) + cache_note
 
 
 async def _tool_get_assignments(args: dict, user_id: int) -> str:
@@ -1029,6 +1236,7 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
             if kw in m.get("from", "").lower()
             or kw in m.get("subject", "").lower()
             or kw in m.get("source", "").lower()
+            or kw in m.get("date", "").lower()
         ]
 
     mails = mails[:count]
@@ -1074,7 +1282,8 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
     for m in mails:
         if (kw in m.get("subject", "").lower()
                 or kw in m.get("from", "").lower()
-                or kw in m.get("source", "").lower()):
+                or kw in m.get("source", "").lower()
+                or kw in m.get("date", "").lower()):
             match = m
             break
 
@@ -1186,7 +1395,7 @@ async def _execute_tool_call(tool_call: Any, user_id: int) -> dict[str, str]:
             result = await handler(fn_args, user_id)
         except Exception as exc:
             logger.error("Tool %s failed: %s", fn_name, exc, exc_info=True)
-            result = "Bu bilgiye şu anda ulaşılamıyor."
+            result = f"[{fn_name}] şu anda çalışmıyor ({type(exc).__name__}). Alternatif bilgi kaynağı dene veya kullanıcıya bildir."
 
     logger.info(
         "Tool executed: %s (result_len=%d)",
@@ -1249,7 +1458,12 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
         system_prompt += "\n\n[LANGUAGE OVERRIDE] The user's current message is in ENGLISH. You MUST respond entirely in English."
     # Turkish is default, no override needed
 
-    available_tools = _get_available_tools(user_id)
+    available_tools, max_iter = _query_profile(user_text)
+
+    logger.debug(
+        "query_profile: %d tools, max_iter=%d for %r",
+        len(available_tools), max_iter, user_text[:60],
+    )
 
     history = user_service.get_conversation_history(user_id)
     messages: list[dict[str, Any]] = []
@@ -1257,7 +1471,19 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
         messages.append({"role": turn["role"], "content": turn["content"]})
     messages.append({"role": "user", "content": user_text})
 
-    for iteration in range(MAX_TOOL_ITERATIONS):
+    # Pure-chat shortcut: skip tool loop entirely
+    if max_iter == 0:
+        try:
+            response_msg = await _call_llm_with_tools(messages, system_prompt, [])
+        except Exception as exc:
+            logger.error("LLM chat call failed: %s", exc, exc_info=True)
+            return "Bir sorun olustu. Lutfen tekrar deneyin."
+        final_text = (response_msg.content or "") if response_msg else ""
+        user_service.add_conversation_turn(user_id, "user", user_text)
+        user_service.add_conversation_turn(user_id, "assistant", final_text)
+        return final_text
+
+    for iteration in range(max_iter):
         try:
             response_msg = await _call_llm_with_tools(
                 messages, system_prompt, available_tools

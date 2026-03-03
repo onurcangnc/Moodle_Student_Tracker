@@ -12,7 +12,7 @@ Job schedule:
   attendance_sync    — 60 min  (low attendance alert + cache refresh)
   schedule_sync      — 6 h     (cache refresh only, no notification)
   deadline_reminder  — 30 min  (upcoming deadline alerts)
-  session_refresh    — 60 min  (re-login webmail + STARS)
+  session_refresh    — 24 h   (re-login webmail + STARS once per day)
   summary_generation — 60 min  (KATMAN 2 source summaries)
 """
 
@@ -552,8 +552,8 @@ def register_notification_jobs(app: Application) -> None:
     )
     jq.run_repeating(
         _refresh_sessions,
-        interval=timedelta(minutes=60),
-        first=timedelta(minutes=60),
+        interval=timedelta(hours=24),
+        first=timedelta(hours=23),
         name="session_refresh",
     )
     jq.run_repeating(
@@ -577,6 +577,6 @@ def register_notification_jobs(app: Application) -> None:
 
     logger.info(
         "Notification jobs registered: assignments=10m, emails=5m, grades=30m, "
-        "attendance=60m, schedule=6h, deadlines=30m, session=60m, summaries=60m, "
+        "attendance=60m, schedule=6h, deadlines=30m, session=24h, summaries=60m, "
         "cache_cleanup=weekly, syllabus_limits=24h"
     )

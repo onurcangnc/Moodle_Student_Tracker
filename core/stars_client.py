@@ -304,6 +304,38 @@ class StarsClient:
         if ss:
             ss.session.close()
 
+    def keep_alive(self, user_id: int) -> bool:
+        """Ping STARS to extend the server-side session without triggering 2FA.
+
+        Makes a lightweight GET to /srs/ and checks we stay authenticated
+        (no redirect to login page). If successful, resets the client-side
+        auth_time so the session is not flagged as expired. Returns True if
+        the session is still live.
+        """
+        ss = self._sessions.get(user_id)
+        if not ss or not ss.authenticated:
+            return False
+        try:
+            r = ss.session.get(f"{BASE}/srs/", allow_redirects=True, timeout=10)
+            if (
+                r.status_code == 200
+                and "/srs" in r.url
+                and "login" not in r.url
+                and "accounts" not in r.url
+            ):
+                ss.auth_time = time.time()  # Reset client-side expiry timer
+                logger.info("STARS keep-alive OK for user %s (session extended)", user_id)
+                return True
+            logger.info(
+                "STARS keep-alive: session expired for user %s (redirected to %s)",
+                user_id, r.url,
+            )
+            ss.authenticated = False
+            return False
+        except requests.RequestException as exc:
+            logger.warning("STARS keep-alive error for user %s: %s", user_id, exc)
+            return False
+
     # ── AJAX Data Methods ─────────────────────────────────────────────────
 
     def _ajax_post(self, user_id: int, endpoint: str) -> BeautifulSoup | None:

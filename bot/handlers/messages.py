@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from telegram import Message, Update
+from telegram.constants import ChatAction
 from telegram.error import TelegramError
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
@@ -56,15 +57,26 @@ async def _reply_message(message: Message, text: str) -> None:
                 await message.reply_text("Yanıt gönderilirken hata oluştu.")
 
 
+async def _typing_keepalive(message: Message, stop_event: asyncio.Event) -> None:
+    """Re-send typing action every 4 seconds until stop_event is set."""
+    try:
+        while not stop_event.is_set():
+            await message.reply_chat_action(ChatAction.TYPING)
+            await asyncio.sleep(4)
+    except Exception:
+        pass
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle all text messages via agentic LLM with function calling.
 
     Flow:
     1) rate limit check
-    2) route to agent_service.handle_agent_message()
-    3) agent decides which tools to call (RAG, assignments, grades, etc.)
-    4) send response
+    2) show typing indicator immediately (perceived latency fix)
+    3) route to agent_service.handle_agent_message()
+    4) agent decides which tools to call (RAG, assignments, grades, etc.)
+    5) send response
     """
     message = update.effective_message
     user = update.effective_user
@@ -73,14 +85,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     user_service.record_user_activity(user.id)
     if not user_service.check_rate_limit(user.id):
-        await message.reply_text("Çok hızlı mesaj gönderdiniz. Lütfen bir dakika sonra tekrar deneyin.")
+        await message.reply_text("\xc7ok h\u0131zl\u0131 mesaj g\xf6nderdiniz. L\xfctfen bir dakika sonra tekrar deneyin.")
         return
 
     query = message.text.strip()
     if not query:
         return
 
-    response = await handle_agent_message(user_id=user.id, user_text=query)
+    # Show typing indicator immediately, keep it alive during processing
+    stop_typing = asyncio.Event()
+    typing_task = asyncio.create_task(_typing_keepalive(message, stop_typing))
+
+    try:
+        response = await handle_agent_message(user_id=user.id, user_text=query)
+    finally:
+        stop_typing.set()
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
+
     await _reply_message(message, response)
 
 
