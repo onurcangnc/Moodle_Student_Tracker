@@ -45,6 +45,7 @@ class StarsCache:
     exams: list = field(default_factory=list)
     letter_grades: list = field(default_factory=list)
     schedule: list = field(default_factory=list)
+    transcript: list = field(default_factory=list)
     fetched_at: float = 0
 
 
@@ -493,16 +494,44 @@ class StarsClient:
             table = h4.find_next("table")
             if table:
                 rows = table.find_all("tr")
+                # Detect column mapping from header row
+                col_map = {"name": 0, "grade": 1, "weight": None, "type": None, "date": None}
+                if rows:
+                    headers = [th.get_text(strip=True).lower() for th in rows[0].find_all(["th", "td"])]
+                    for idx, hdr in enumerate(headers):
+                        if hdr in ("title", "name", "başlık"):
+                            col_map["name"] = idx
+                        elif hdr in ("grade", "not", "puan"):
+                            col_map["grade"] = idx
+                        elif hdr in ("weight", "ağırlık"):
+                            col_map["weight"] = idx
+                        elif hdr in ("type", "tür", "tip"):
+                            col_map["type"] = idx
+                        elif hdr in ("date", "tarih"):
+                            col_map["date"] = idx
+
                 for row in rows[1:]:  # skip header
                     cells = row.find_all("td")
-                    if len(cells) >= 2:
-                        assessment = {
-                            "name": cells[0].get_text(strip=True),
-                            "grade": cells[1].get_text(strip=True),
-                        }
-                        if len(cells) >= 3:
-                            assessment["weight"] = cells[2].get_text(strip=True)
-                        course_data["assessments"].append(assessment)
+                    if len(cells) < 2:
+                        continue
+                    # Skip category/separator rows (single cell spanning all columns)
+                    if len(cells) == 1:
+                        continue
+                    name_idx = col_map["name"]
+                    grade_idx = col_map["grade"]
+                    if grade_idx >= len(cells) or name_idx >= len(cells):
+                        continue
+                    assessment = {
+                        "name": cells[name_idx].get_text(strip=True),
+                        "grade": cells[grade_idx].get_text(strip=True),
+                    }
+                    if col_map["type"] is not None and col_map["type"] < len(cells):
+                        assessment["type"] = cells[col_map["type"]].get_text(strip=True)
+                    if col_map["date"] is not None and col_map["date"] < len(cells):
+                        assessment["date"] = cells[col_map["date"]].get_text(strip=True)
+                    if col_map["weight"] is not None and col_map["weight"] < len(cells):
+                        assessment["weight"] = cells[col_map["weight"]].get_text(strip=True)
+                    course_data["assessments"].append(assessment)
 
             courses.append(course_data)
 
@@ -737,13 +766,15 @@ class StarsClient:
         cache.exams = self.get_exams(user_id) or []
         cache.letter_grades = self.get_letter_grades(user_id) or []
         cache.schedule = self.get_schedule(user_id) or []
+        cache.transcript = self.get_transcript(user_id) or []
 
         self._cache[user_id] = cache
         logger.info(
             f"STARS cache built: {len(cache.exams)} exams, "
             f"{len(cache.grades)} course grades, "
             f"{len(cache.attendance)} attendance records, "
-            f"{len(cache.schedule)} schedule entries"
+            f"{len(cache.schedule)} schedule entries, "
+            f"{len(cache.transcript)} transcript entries"
         )
         return cache
 

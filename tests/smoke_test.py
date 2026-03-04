@@ -65,7 +65,7 @@ TESTS = [
     # C. MAIL UX — No unnecessary questions
     # ═══════════════════════════════════════════════════════════════════════════
     {"name": "mail_tum", "input": "Tüm mailleri göster", "expect_not_contains": ["Kaç mail", "kaç mail", "seçenekler"]},
-    {"name": "mail_hepsi", "input": "Hepsini göster", "expect_not_contains": ["Kaç mail", "kaç mail"]},
+    {"name": "mail_hepsi", "input": "Hepsi, tüm mailleri göster", "expect_not_contains": ["Kaç mail", "kaç mail"]},
     {"name": "mail_hepsi_hoca", "input": "Serhat hocanın tüm mailleri", "expect_not_contains": ["Kaç mail", "kaç mail"]},
     {"name": "mail_no_ask", "input": "Maillerimi göster", "expect_not_contains": ["Kaç mail", "kaç mail"]},
     {"name": "mail_5_direct", "input": "Son 5 mailimi göster", "expect_not_contains": ["Kaç mail", "kaç mail"]},

@@ -26,6 +26,7 @@ import pytest
 
 from bot.services import agent_service
 from bot.state import STATE
+from core import cache_db
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -598,14 +599,24 @@ class TestToolGetSchedule:
         assert "CTIS 363" in result
 
     @pytest.mark.asyncio
-    async def test_connection_error(self, monkeypatch):
+    async def test_connection_error_with_cache_fallback(self, monkeypatch):
         stars = SimpleNamespace(
             is_authenticated=MagicMock(return_value=True),
             get_schedule=MagicMock(side_effect=ConnectionError("timeout")),
         )
         monkeypatch.setattr(STATE, "stars_client", stars)
+        monkeypatch.setattr(cache_db, "get_json", MagicMock(return_value=None))
         result = await agent_service._tool_get_schedule({"period": "today"}, user_id=1)
-        assert "alınamadı" in result.lower()
+        assert "bulunamadı" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_cache_fallback_when_not_authenticated(self, monkeypatch):
+        stars = SimpleNamespace(is_authenticated=MagicMock(return_value=False))
+        monkeypatch.setattr(STATE, "stars_client", stars)
+        cached = [{"day": "Pazartesi", "time": "10:30", "course": "CTIS 363", "room": "B-101"}]
+        monkeypatch.setattr(cache_db, "get_json", MagicMock(return_value=cached))
+        result = await agent_service._tool_get_schedule({"period": "week"}, user_id=1)
+        assert "CTIS 363" in result
 
 
 # ─── C7. get_grades ──────────────────────────────────────────────────────────
@@ -724,7 +735,96 @@ class TestToolGetAttendance:
         assert "CTIS" not in result
 
 
-# ─── C9. get_assignments ─────────────────────────────────────────────────────
+# ─── C9. get_exams ───────────────────────────────────────────────────────────
+
+class TestToolGetExams:
+    @pytest.mark.asyncio
+    async def test_no_stars_no_cache(self, monkeypatch):
+        monkeypatch.setattr(STATE, "stars_client", None)
+        monkeypatch.setattr(cache_db, "get_json", MagicMock(return_value=None))
+        result = await agent_service._tool_get_exams({}, user_id=1)
+        assert "bulunamadı" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_cache_fallback(self, monkeypatch):
+        stars = SimpleNamespace(is_authenticated=MagicMock(return_value=False))
+        monkeypatch.setattr(STATE, "stars_client", stars)
+        cached = [{"course": "CTIS 256 Discrete", "exam_name": "Midterm", "date": "10/03/2026", "start_time": "10:00"}]
+        monkeypatch.setattr(cache_db, "get_json", MagicMock(return_value=cached))
+        result = await agent_service._tool_get_exams({}, user_id=1)
+        assert "CTIS 256" in result
+        assert "Midterm" in result
+
+    @pytest.mark.asyncio
+    async def test_course_filter(self, monkeypatch):
+        stars = SimpleNamespace(is_authenticated=MagicMock(return_value=False))
+        monkeypatch.setattr(STATE, "stars_client", stars)
+        cached = [
+            {"course": "CTIS 256 Discrete", "exam_name": "Midterm", "date": "10/03/2026"},
+            {"course": "POLS 101 Intro", "exam_name": "Final", "date": "15/03/2026"},
+        ]
+        monkeypatch.setattr(cache_db, "get_json", MagicMock(return_value=cached))
+        result = await agent_service._tool_get_exams({"course_filter": "POLS"}, user_id=1)
+        assert "POLS" in result
+        assert "CTIS" not in result
+
+
+# ─── C10. get_transcript ─────────────────────────────────────────────────────
+
+class TestToolGetTranscript:
+    @pytest.mark.asyncio
+    async def test_no_data(self, monkeypatch):
+        monkeypatch.setattr(STATE, "stars_client", None)
+        monkeypatch.setattr(cache_db, "get_json", MagicMock(return_value=None))
+        result = await agent_service._tool_get_transcript({}, user_id=1)
+        assert "bulunamadı" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_cache_fallback(self, monkeypatch):
+        stars = SimpleNamespace(is_authenticated=MagicMock(return_value=False))
+        monkeypatch.setattr(STATE, "stars_client", stars)
+        cached = [{"code": "CTIS 256", "name": "Discrete", "grade": "A", "credits": 3, "semester": "2025-26 Fall"}]
+        monkeypatch.setattr(cache_db, "get_json", MagicMock(return_value=cached))
+        result = await agent_service._tool_get_transcript({}, user_id=1)
+        assert "CTIS 256" in result
+        assert "2025-26 Fall" in result
+
+
+# ─── C11. get_letter_grades ──────────────────────────────────────────────────
+
+class TestToolGetLetterGrades:
+    @pytest.mark.asyncio
+    async def test_no_data(self, monkeypatch):
+        monkeypatch.setattr(STATE, "stars_client", None)
+        monkeypatch.setattr(cache_db, "get_json", MagicMock(return_value=None))
+        result = await agent_service._tool_get_letter_grades({}, user_id=1)
+        assert "bulunamadı" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_cache_fallback(self, monkeypatch):
+        stars = SimpleNamespace(is_authenticated=MagicMock(return_value=False))
+        monkeypatch.setattr(STATE, "stars_client", stars)
+        cached = [{"semester": "2025-26 Fall", "courses": [{"code": "CTIS 256", "name": "Discrete", "grade": "A"}]}]
+        monkeypatch.setattr(cache_db, "get_json", MagicMock(return_value=cached))
+        result = await agent_service._tool_get_letter_grades({}, user_id=1)
+        assert "CTIS 256" in result
+        assert "2025-26 Fall" in result
+
+    @pytest.mark.asyncio
+    async def test_semester_filter(self, monkeypatch):
+        stars = SimpleNamespace(is_authenticated=MagicMock(return_value=False))
+        monkeypatch.setattr(STATE, "stars_client", stars)
+        cached = [
+            {"semester": "2025-26 Fall", "courses": [{"code": "CTIS 256", "name": "Discrete", "grade": "A"}]},
+            {"semester": "2024-25 Spring", "courses": [{"code": "MATH 101", "name": "Calculus", "grade": "B+"}]},
+        ]
+        monkeypatch.setattr(cache_db, "get_json", MagicMock(return_value=cached))
+        result = await agent_service._tool_get_letter_grades({"semester_filter": "2024-25"}, user_id=1)
+        assert "MATH 101" in result
+        assert "CTIS 256" not in result
+
+
+# ─── C12. get_assignments ────────────────────────────────────────────────────
 
 class TestToolGetAssignments:
     @pytest.mark.asyncio
@@ -1219,10 +1319,11 @@ class TestExecuteToolCall:
         assert result["tool_call_id"] == "call_xyz"
 
     @pytest.mark.asyncio
-    async def test_all_14_tools_registered(self):
+    async def test_all_tools_registered(self):
         expected = {
             "get_source_map", "read_source", "study_topic", "rag_search",
             "get_moodle_materials", "get_schedule", "get_grades", "get_attendance",
+            "get_exams", "get_transcript", "get_letter_grades",
             "get_assignments", "get_emails", "get_email_detail",
             "list_courses", "set_active_course", "get_stats",
         }
@@ -1504,8 +1605,8 @@ class TestHandleAgentMessage:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestToolDefinitions:
-    def test_14_tools_defined(self):
-        assert len(agent_service.TOOLS) == 14
+    def test_all_tools_defined(self):
+        assert len(agent_service.TOOLS) == 17
 
     def test_all_tools_have_function_type(self):
         for tool in agent_service.TOOLS:

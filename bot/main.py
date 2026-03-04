@@ -31,6 +31,7 @@ from core.stars_client import StarsClient
 from core.sync_engine import SyncEngine
 from core.vector_store import VectorStore
 from core.webmail_client import WebmailClient
+from core import cache_db
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -120,13 +121,33 @@ def _validate_startup_config() -> None:
         raise RuntimeError("TELEGRAM_OWNER_ID not set in environment. Owner check is required for secure startup.")
 
 
+def _populate_stars_cache(stars: StarsClient, owner_id: int) -> None:
+    """Fetch all STARS data right after login and persist to SQLite cache."""
+    try:
+        cache = stars.fetch_all_data(owner_id)
+        if cache:
+            cache_db.set_json("schedule", owner_id, cache.schedule)
+            cache_db.set_json("grades", owner_id, cache.grades)
+            cache_db.set_json("attendance", owner_id, cache.attendance)
+            cache_db.set_json("exams", owner_id, cache.exams)
+            cache_db.set_json("letter_grades", owner_id, cache.letter_grades)
+            cache_db.set_json("user_info", owner_id, cache.user_info)
+            cache_db.set_json("transcript", owner_id, cache.transcript)
+            logger.info(
+                "STARS cache populated: %d schedule, %d grades, %d attendance, "
+                "%d exams, %d letter_grades, %d transcript",
+                len(cache.schedule), len(cache.grades), len(cache.attendance),
+                len(cache.exams), len(cache.letter_grades), len(cache.transcript),
+            )
+    except Exception as exc:
+        logger.warning("STARS cache populate failed: %s", exc)
+
+
 def refresh_external_sessions() -> None:
-    """Keep webmail IMAP and STARS sessions alive; re-login only when necessary.
+    """Login (or re-login) webmail IMAP and STARS sessions.
 
     Called once at startup and then hourly via the notification job queue.
-    For STARS, a keep-alive ping is attempted first so that the 2FA re-login
-    is triggered only when the server-side session has truly expired rather
-    than on every hourly tick.
+    Logs out first so stale connections are discarded before reconnecting.
     """
     # --- Webmail ---
     webmail = STATE.webmail_client
@@ -134,15 +155,17 @@ def refresh_external_sessions() -> None:
     webmail_password = os.getenv("WEBMAIL_PASSWORD", "")
     if webmail is None or not webmail_email or not webmail_password:
         logger.info("Webmail refresh skipped (no credentials)")
-    else:
-        if webmail.authenticated:
-            webmail.logout()
-        if webmail.login(webmail_email, webmail_password):
-            logger.info("Webmail IMAP login OK: %s", webmail_email)
-        else:
-            logger.warning("Webmail IMAP login failed for %s", webmail_email)
+        return
 
-    # --- STARS (keep-alive first, re-login only if session is dead) ---
+    if webmail.authenticated:
+        webmail.logout()
+    if webmail.login(webmail_email, webmail_password):
+        logger.info("Webmail IMAP login OK: %s", webmail_email)
+    else:
+        logger.warning("Webmail IMAP login failed for %s", webmail_email)
+        return  # Can't do STARS without webmail
+
+    # --- STARS ---
     stars = STATE.stars_client
     stars_user = os.getenv("STARS_USERNAME", "")
     stars_pass = os.getenv("STARS_PASSWORD", "")
@@ -151,29 +174,20 @@ def refresh_external_sessions() -> None:
         logger.info("STARS refresh skipped (no credentials)")
         return
 
-    # Try to extend the existing session without a 2FA round-trip.
-    if stars.keep_alive(owner_id):
-        return  # Session still alive — nothing else to do.
+    if stars.is_authenticated(owner_id):
+        stars.logout(owner_id)
 
-    # Session is dead; need a full re-login (triggers 2FA email).
-    # Ensure we have a fresh webmail connection to fetch the verification code.
-    if webmail is not None and webmail_email and webmail_password:
-        if not webmail.authenticated:
-            if not webmail.login(webmail_email, webmail_password):
-                logger.warning("Webmail re-login failed; STARS 2FA code may not be retrievable")
-
-    logger.info("STARS session expired — full re-login for owner %s", owner_id)
+    logger.info("STARS login attempt for owner %s...", owner_id)
     result = stars.start_login(owner_id, stars_user, stars_pass)
     if result.get("status") == "sms_sent":
         for _attempt in range(4):
             time.sleep(5)
-            code = webmail.fetch_stars_verification_code(max_age_seconds=60) if webmail else None
+            code = webmail.fetch_stars_verification_code(max_age_seconds=60)
             if code:
                 verify = stars.verify_sms(owner_id, code)
                 if verify.get("status") == "ok":
                     logger.info("STARS login OK for owner %s", owner_id)
-                    stars.fetch_all_data(owner_id)
-                    logger.info("STARS cache populated for owner %s", owner_id)
+                    _populate_stars_cache(stars, owner_id)
                 else:
                     logger.warning("STARS verify failed: %s", verify.get("message", ""))
                 break
@@ -181,8 +195,7 @@ def refresh_external_sessions() -> None:
             logger.warning("STARS verification code not received within 20s")
     elif result.get("status") == "ok":
         logger.info("STARS login OK (no 2FA needed)")
-        stars.fetch_all_data(owner_id)
-        logger.info("STARS cache populated for owner %s", owner_id)
+        _populate_stars_cache(stars, owner_id)
     else:
         logger.warning("STARS login failed: %s", result.get("message", ""))
 

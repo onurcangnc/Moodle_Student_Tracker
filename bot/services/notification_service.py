@@ -11,6 +11,8 @@ Job schedule:
   grades_sync        — 30 min  (new grades detected + cache refresh)
   attendance_sync    — 60 min  (low attendance alert + cache refresh)
   schedule_sync      — 6 h     (cache refresh only, no notification)
+  exams_sync         — 6 h     (cache refresh only, no notification)
+  exam_reminder      — 1 h     (1-day-before exam alerts with room info from mail)
   deadline_reminder  — 30 min  (upcoming deadline alerts)
   session_refresh    — 24 h   (re-login webmail + STARS once per day)
   summary_generation — 60 min  (KATMAN 2 source summaries)
@@ -21,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from telegram.ext import Application, ContextTypes
 
@@ -391,6 +393,21 @@ async def _sync_attendance(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Attendance warning sent: %d courses", len(warnings))
 
 
+async def _keep_alive_stars(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ping STARS every 15 min to extend session beyond 58-min expiry."""
+    stars = STATE.stars_client
+    if stars is None or not stars.is_authenticated(OWNER_ID):
+        return
+    try:
+        alive = await asyncio.to_thread(stars.keep_alive, OWNER_ID)
+        if alive:
+            logger.debug("STARS keep-alive OK")
+        else:
+            logger.warning("STARS keep-alive failed — session may have expired")
+    except (ConnectionError, RuntimeError, OSError) as exc:
+        logger.warning("STARS keep-alive error: %s", exc)
+
+
 async def _sync_schedule(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Fetch schedule from STARS → cache only (no notification)."""
     stars = STATE.stars_client
@@ -406,6 +423,126 @@ async def _sync_schedule(context: ContextTypes.DEFAULT_TYPE) -> None:
     if schedule:
         cache_db.set_json("schedule", OWNER_ID, schedule)
         logger.debug("Schedule cached: %d entries", len(schedule))
+
+
+async def _sync_exams(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Fetch exams from STARS → cache (no notification)."""
+    stars = STATE.stars_client
+    if stars is None or not stars.is_authenticated(OWNER_ID):
+        return
+
+    try:
+        exams = await asyncio.to_thread(stars.get_exams, OWNER_ID)
+    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+        logger.error("Exam sync failed: %s", exc)
+        return
+
+    if exams:
+        cache_db.set_json("exams", OWNER_ID, exams)
+        logger.debug("Exams cached: %d entries", len(exams))
+
+
+# Regex patterns to extract room info from mail body
+_ROOM_PATTERNS = [
+    re.compile(r"(?:Room|Salon|Sınıf|Derslik|Hall)[:\s]+([A-Z0-9]+-?\d{1,4}[A-Z]?)", re.IGNORECASE),
+    re.compile(r"\b([A-Z]-\d{2,3})\b"),  # e.g. B-201, A-05
+    re.compile(r"\b(EA-\d{2,3})\b", re.IGNORECASE),  # e.g. EA-409
+]
+
+
+def _find_exam_room_in_mails(course_code: str) -> str | None:
+    """Search cached emails for exam room info matching a course code."""
+    emails = cache_db.get_emails(limit=30)
+    if not emails:
+        return None
+
+    # Exam keywords to identify relevant mails
+    exam_kw = re.compile(r"exam|sınav|midterm|final|quiz|qme", re.IGNORECASE)
+    code_pattern = re.compile(re.escape(course_code), re.IGNORECASE)
+
+    for mail in emails:
+        subject = mail.get("subject", "")
+        body = mail.get("body_preview", "") or mail.get("body_full", "")
+        text = f"{subject} {body}"
+
+        # Must mention the course code AND an exam keyword
+        if not code_pattern.search(text) or not exam_kw.search(text):
+            continue
+
+        # Try to extract room
+        for pat in _ROOM_PATTERNS:
+            m = pat.search(text)
+            if m:
+                return m.group(1)
+
+    return None
+
+
+def _parse_exam_date(exam: dict) -> datetime | None:
+    """Parse exam date string into datetime. Handles common STARS formats."""
+    date_str = exam.get("date", "")
+    if not date_str:
+        return None
+
+    # Try common formats
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(date_str.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
+async def _check_exam_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check for exams happening tomorrow and send reminder with room info."""
+    exams = cache_db.get_json("exams", OWNER_ID)
+    if not exams:
+        return
+
+    now = datetime.now()
+    tomorrow = now.date() + timedelta(days=1)
+
+    # Track sent reminders to avoid duplicates
+    sent: list[str] = cache_db.get_json("exam_reminders_sent", OWNER_ID) or []
+
+    notifications = []
+    for exam in exams:
+        exam_dt = _parse_exam_date(exam)
+        if exam_dt is None or exam_dt.date() != tomorrow:
+            continue
+
+        # Build unique key for dedup
+        key = f"{exam.get('course', '')}_{exam.get('exam_name', '')}_{exam.get('date', '')}"
+        if key in sent:
+            continue
+
+        # Extract course code for mail matching (e.g. "CTIS 256" from "CTIS 256 Discrete Structures")
+        course = exam.get("course", "")
+        code_match = re.match(r"([A-Z]{2,}\s*\d{3})", course)
+        course_code = code_match.group(1) if code_match else course
+
+        # Search mails for room info
+        room = _find_exam_room_in_mails(course_code)
+
+        line = f"*{course}* — {exam.get('exam_name', 'Sınav')}"
+        date_info = exam.get("date", "")
+        time_info = exam.get("start_time", "") or exam.get("time_block", "")
+        if date_info:
+            line += f"\n📅 {date_info}"
+            if time_info:
+                line += f", {time_info}"
+        if room:
+            line += f"\n🏫 Salon: {room}"
+
+        notifications.append(line)
+        sent.append(key)
+
+    if notifications:
+        header = "📝 *Yarın sınavın var!*\n"
+        msg = header + "\n\n".join(notifications) + "\n\nBaşarılar!"
+        await _send(context, msg)
+        cache_db.set_json("exam_reminders_sent", OWNER_ID, sent)
+        logger.info("Exam reminder sent: %d exams", len(notifications))
 
 
 async def _check_deadline_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -539,10 +676,28 @@ def register_notification_jobs(app: Application) -> None:
         name="attendance_sync",
     )
     jq.run_repeating(
+        _keep_alive_stars,
+        interval=timedelta(minutes=15),
+        first=timedelta(minutes=5),
+        name="stars_keep_alive",
+    )
+    jq.run_repeating(
         _sync_schedule,
         interval=timedelta(hours=6),
         first=timedelta(minutes=5),
         name="schedule_sync",
+    )
+    jq.run_repeating(
+        _sync_exams,
+        interval=timedelta(hours=6),
+        first=timedelta(minutes=6),
+        name="exams_sync",
+    )
+    jq.run_repeating(
+        _check_exam_reminders,
+        interval=timedelta(hours=1),
+        first=timedelta(minutes=10),
+        name="exam_reminder",
     )
     jq.run_repeating(
         _check_deadline_reminders,
@@ -577,6 +732,6 @@ def register_notification_jobs(app: Application) -> None:
 
     logger.info(
         "Notification jobs registered: assignments=10m, emails=5m, grades=30m, "
-        "attendance=60m, schedule=6h, deadlines=30m, session=24h, summaries=60m, "
-        "cache_cleanup=weekly, syllabus_limits=24h"
+        "attendance=60m, schedule=6h, exams=6h, exam_reminder=1h, deadlines=30m, "
+        "session=24h, summaries=60m, cache_cleanup=weekly, syllabus_limits=24h"
     )

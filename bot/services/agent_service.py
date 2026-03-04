@@ -25,8 +25,12 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
+from telegram import Message
+from telegram.error import TelegramError
+
 from bot.services import user_service
 from bot.state import STATE
+from core import cache_db
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +223,57 @@ TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_exams",
+            "description": (
+                "Sınav takvimi. 'sınavlarım', 'exam schedule', 'ne zaman sınav', "
+                "'midterm ne zaman', 'final tarihleri' gibi isteklerde çağır."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "course_filter": {
+                        "type": "string",
+                        "description": "Ders adı filtresi (opsiyonel)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_transcript",
+            "description": (
+                "Transkript — alınan dersler, notlar, krediler. "
+                "'transkriptim', 'transcript', 'aldığım dersler', 'GPA' gibi isteklerde çağır."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_letter_grades",
+            "description": (
+                "Harf notları dönem bazlı. 'harf notlarım', 'letter grades', "
+                "'dönem notlarım' gibi isteklerde çağır."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "semester_filter": {
+                        "type": "string",
+                        "description": "Dönem filtresi (opsiyonel)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
     # ═══ C. Moodle — Assignments (1 tool) ═══
     {
         "type": "function",
@@ -302,7 +357,11 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_courses",
-            "description": "Kayıtlı kursları listeler. Aktif kurs işaretli gösterilir.",
+            "description": (
+                "Kayıtlı tüm kursları listeler. 'List my courses', 'kurslarım', 'derslerim ne', "
+                "'kurslarımı göster', 'hangi derslere kayıtlıyım' gibi isteklerde MUTLAKA çağır. "
+                "Aktif kurs işaretli gösterilir."
+            ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -423,6 +482,10 @@ Karmaşık sorularda tool'ları paralel çağır:
 Basit sorularda TEK tool yeterli — fazla tool çağırma.
 Sohbet/selamlama → HİÇ tool çağırma, doğrudan cevap ver.
 
+"Help", "yardım", "ne yapabilirsin" → GENEL yardım yanıtı ver (yapabileceklerini listele).
+Önceki konuşmada mail/ders/not konuşulmuş olsa bile "help" isteğini mail/ders bağlamına BAĞLAMA.
+Genel yardım: ders programı, notlar, devamsızlık, mailler, ders çalışma, ödev takibi yapabileceğini söyle.
+
 Bildirim sonrası sorularda:
 - "Detayını ver" → bildirimdeki konu/göndericiyi bul → get_email_detail(keyword=...)
 - "Seminer kaçta?" → bildirimdeki seminer mailini aç → get_email_detail(keyword="Seminar")
@@ -475,6 +538,8 @@ Konu bazlı çalışma (dosya adı belirtilmemişse):
 - "Serhat hoca 11 şubat" → İKİ keyword birleşemez, ÖNCE keyword="Serhat" ile çek, sonra tarih sonuçlardan filtrele
 - Mail detayı isterse: get_email_detail(keyword=...) — konu, hoca adı, ders kodu veya tarih ile arar
 - Sonuç boşsa: "Yakın zamanda yok, istersen son maillerini gösterebilirim"
+- Mail listesi gösterdikten sonra "hepsini göster", "tümünü göster", "hepsini aç" → TÜM maillerin detayını get_email_detail ile sırayla göster, SORU SORMA
+- "Detayını göster" + numara/konu → o mailin detayını aç
 
 ## BİLDİRİM BAĞLAMI (KRİTİK)
 Bot bildirim gönderdiğinde (📧 Yeni Mail, ⚠️ Devamsızlık vb.) bu bildirim konuşma geçmişinde kalır.
@@ -545,10 +610,12 @@ async def _call_llm_with_tools(
 
     # GPT-5 family uses max_completion_tokens instead of max_tokens
     token_key = "max_completion_tokens" if "gpt-5" in adapter.model else "max_tokens"
+    # Tool-selection calls need short output; final responses need more
+    max_tokens = 1024 if tools else 4096
     kwargs: dict[str, Any] = {
         "model": adapter.model,
         "messages": full_messages,
-        token_key: 4096,
+        token_key: max_tokens,
     }
     if tools:
         kwargs["tools"] = tools
@@ -560,6 +627,80 @@ async def _call_llm_with_tools(
         **kwargs,
     )
     return response.choices[0].message
+
+
+# ─── Streaming ───────────────────────────────────────────────────────────────
+
+_STREAM_EDIT_INTERVAL = 1.0  # seconds between Telegram message edits
+
+
+async def _stream_final_response(
+    messages: list[dict[str, Any]],
+    system_prompt: str,
+    message: Message,
+) -> str:
+    """Stream LLM response directly to Telegram via progressive message edits."""
+    llm = STATE.llm
+    if llm is None:
+        return ""
+
+    model_key = llm.engine.router.chat
+    adapter = llm.engine.get_adapter(model_key)
+
+    full_messages = [{"role": "system", "content": system_prompt}] + messages
+    token_key = "max_completion_tokens" if "gpt-5" in adapter.model else "max_tokens"
+    kwargs: dict[str, Any] = {
+        "model": adapter.model,
+        "messages": full_messages,
+        token_key: 4096,
+        "stream": True,
+    }
+
+    stream = await asyncio.to_thread(
+        adapter.client.chat.completions.create,
+        **kwargs,
+    )
+
+    accumulated = ""
+    sent_msg = None
+    last_edit = 0.0
+
+    try:
+        for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta and delta.content:
+                accumulated += delta.content
+
+            now = time.monotonic()
+            # Edit message periodically (not on every token)
+            if accumulated and (now - last_edit) >= _STREAM_EDIT_INTERVAL:
+                try:
+                    if sent_msg is None:
+                        sent_msg = await message.reply_text(accumulated, parse_mode=None)
+                    else:
+                        await sent_msg.edit_text(accumulated, parse_mode=None)
+                    last_edit = now
+                except TelegramError:
+                    pass  # edit rate limit or unchanged text — ignore
+
+        # Final edit with Markdown formatting
+        if accumulated and sent_msg is not None:
+            try:
+                await sent_msg.edit_text(accumulated, parse_mode="Markdown")
+            except TelegramError:
+                try:
+                    await sent_msg.edit_text(accumulated, parse_mode=None)
+                except TelegramError:
+                    pass
+        elif accumulated and sent_msg is None:
+            # Stream was too fast, never sent — send now
+            await message.reply_text(accumulated, parse_mode="Markdown")
+    except Exception as exc:
+        logger.warning("Streaming failed, falling back: %s", exc)
+        if not accumulated:
+            return ""  # caller will use non-streaming fallback
+
+    return accumulated
 
 
 # ─── Tool Handlers ───────────────────────────────────────────────────────────
@@ -871,17 +1012,24 @@ async def _tool_get_moodle_materials(args: dict, user_id: int) -> str:
 async def _tool_get_schedule(args: dict, user_id: int) -> str:
     """Get schedule from STARS with period filter."""
     stars = STATE.stars_client
-    if stars is None or not stars.is_authenticated(user_id):
-        return "STARS girişi yapılmamış. Ders programını görmek için önce /start ile STARS'a giriş yap."
+    schedule = None
 
-    try:
-        schedule = await asyncio.to_thread(stars.get_schedule, user_id)
-    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-        logger.error("Schedule fetch failed: %s", exc, exc_info=True)
-        return f"Ders programı alınamadı: {exc}"
+    # 1. Live fetch (session varsa)
+    if stars and stars.is_authenticated(user_id):
+        try:
+            schedule = await asyncio.to_thread(stars.get_schedule, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.warning("Schedule live fetch failed, trying cache: %s", exc)
 
+    # 2. Cache fallback
     if not schedule:
-        return "Ders programı bilgisi bulunamadı."
+        schedule = cache_db.get_json("schedule", user_id)
+        if schedule:
+            logger.info("Schedule served from cache for user %d", user_id)
+
+    # 3. No data at all
+    if not schedule:
+        return "Ders programı bulunamadı. STARS session süresi dolmuş olabilir — /start ile tekrar giriş yap."
 
     period = args.get("period", "today")
 
@@ -912,17 +1060,24 @@ async def _tool_get_schedule(args: dict, user_id: int) -> str:
 async def _tool_get_grades(args: dict, user_id: int) -> str:
     """Get grades from STARS with optional course filter."""
     stars = STATE.stars_client
-    if stars is None or not stars.is_authenticated(user_id):
-        return "STARS girişi yapılmamış. Not bilgileri için önce /start ile STARS'a giriş yap."
+    grades = None
 
-    try:
-        grades = await asyncio.to_thread(stars.get_grades, user_id)
-    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-        logger.error("Grades fetch failed: %s", exc, exc_info=True)
-        return f"Not bilgileri alınamadı: {exc}"
+    # 1. Live fetch (session varsa)
+    if stars and stars.is_authenticated(user_id):
+        try:
+            grades = await asyncio.to_thread(stars.get_grades, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.warning("Grades live fetch failed, trying cache: %s", exc)
 
+    # 2. Cache fallback
     if not grades:
-        return "Not bilgisi bulunamadı."
+        grades = cache_db.get_json("grades", user_id)
+        if grades:
+            logger.info("Grades served from cache for user %d", user_id)
+
+    # 3. No data at all
+    if not grades:
+        return "Not bilgisi bulunamadı. STARS session süresi dolmuş olabilir — /start ile tekrar giriş yap."
 
     course_filter = args.get("course_filter", "")
     if course_filter:
@@ -942,9 +1097,18 @@ async def _tool_get_grades(args: dict, user_id: int) -> str:
         for a in assessments:
             name = a.get("name", "")
             grade = a.get("grade", "")
+            atype = a.get("type", "")
+            date = a.get("date", "")
             weight = a.get("weight", "")
-            w_str = f" (Ağırlık: {weight})" if weight else ""
-            lines.append(f"  • {name}: {grade}{w_str}")
+            extras = []
+            if atype:
+                extras.append(atype)
+            if date:
+                extras.append(date)
+            if weight:
+                extras.append(f"Ağırlık: {weight}")
+            extra_str = f" ({', '.join(extras)})" if extras else ""
+            lines.append(f"  • {name}: {grade}{extra_str}")
 
     return "\n".join(lines)
 
@@ -952,17 +1116,24 @@ async def _tool_get_grades(args: dict, user_id: int) -> str:
 async def _tool_get_attendance(args: dict, user_id: int) -> str:
     """Get attendance from STARS with limit warnings."""
     stars = STATE.stars_client
-    if stars is None or not stars.is_authenticated(user_id):
-        return "STARS girişi yapılmamış. Devamsızlık bilgisi için önce /start ile STARS'a giriş yap."
+    attendance = None
 
-    try:
-        attendance = await asyncio.to_thread(stars.get_attendance, user_id)
-    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-        logger.error("Attendance fetch failed: %s", exc, exc_info=True)
-        return f"Devamsızlık bilgisi alınamadı: {exc}"
+    # 1. Live fetch (session varsa)
+    if stars and stars.is_authenticated(user_id):
+        try:
+            attendance = await asyncio.to_thread(stars.get_attendance, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.warning("Attendance live fetch failed, trying cache: %s", exc)
 
+    # 2. Cache fallback
     if not attendance:
-        return "Devamsızlık bilgisi bulunamadı."
+        attendance = cache_db.get_json("attendance", user_id)
+        if attendance:
+            logger.info("Attendance served from cache for user %d", user_id)
+
+    # 3. No data at all
+    if not attendance:
+        return "Devamsızlık bilgisi bulunamadı. STARS session süresi dolmuş olabilir — /start ile tekrar giriş yap."
 
     course_filter = args.get("course_filter", "")
     if course_filter:
@@ -993,6 +1164,137 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
             pass
 
         lines.append(line)
+
+    return "\n".join(lines)
+
+
+async def _tool_get_exams(args: dict, user_id: int) -> str:
+    """Get exam schedule from STARS with cache fallback."""
+    stars = STATE.stars_client
+    exams = None
+
+    if stars and stars.is_authenticated(user_id):
+        try:
+            exams = await asyncio.to_thread(stars.get_exams, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.warning("Exams live fetch failed, trying cache: %s", exc)
+
+    if not exams:
+        exams = cache_db.get_json("exams", user_id)
+        if exams:
+            logger.info("Exams served from cache for user %d", user_id)
+
+    if not exams:
+        return "Sınav takvimi bulunamadı. STARS session süresi dolmuş olabilir — /start ile tekrar giriş yap."
+
+    course_filter = args.get("course_filter", "")
+    if course_filter:
+        cf_lower = course_filter.lower()
+        exams = [e for e in exams if cf_lower in e.get("course", "").lower()]
+        if not exams:
+            return f"'{course_filter}' ile eşleşen sınav bulunamadı."
+
+    lines = []
+    for e in exams:
+        course = e.get("course", "")
+        exam_name = e.get("exam_name", "Sınav")
+        date = e.get("date", "")
+        start_time = e.get("start_time", "")
+        time_block = e.get("time_block", "")
+        time_remaining = e.get("time_remaining", "")
+
+        line = f"📝 *{course}* — {exam_name}"
+        if date:
+            line += f"\n  📅 {date}"
+            if start_time:
+                line += f", {start_time}"
+            elif time_block:
+                line += f", {time_block}"
+        if time_remaining:
+            line += f"\n  ⏳ {time_remaining}"
+        lines.append(line)
+
+    return "\n\n".join(lines)
+
+
+async def _tool_get_transcript(args: dict, user_id: int) -> str:
+    """Get academic transcript from STARS with cache fallback."""
+    stars = STATE.stars_client
+    transcript = None
+
+    if stars and stars.is_authenticated(user_id):
+        try:
+            transcript = await asyncio.to_thread(stars.get_transcript, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.warning("Transcript live fetch failed, trying cache: %s", exc)
+
+    if not transcript:
+        transcript = cache_db.get_json("transcript", user_id)
+        if transcript:
+            logger.info("Transcript served from cache for user %d", user_id)
+
+    if not transcript:
+        return "Transkript bulunamadı. STARS session süresi dolmuş olabilir — /start ile tekrar giriş yap."
+
+    lines = ["📋 *Transkript*\n"]
+    current_semester = ""
+    for entry in transcript:
+        semester = entry.get("semester", "")
+        if semester != current_semester:
+            current_semester = semester
+            lines.append(f"\n*{semester}*")
+
+        code = entry.get("code", "")
+        name = entry.get("name", "")
+        grade = entry.get("grade", "")
+        credits = entry.get("credits", "")
+
+        line = f"  • {code} {name}"
+        if grade:
+            line += f" — {grade}"
+        if credits:
+            line += f" ({credits} kr)"
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+async def _tool_get_letter_grades(args: dict, user_id: int) -> str:
+    """Get letter grades from STARS with cache fallback."""
+    stars = STATE.stars_client
+    letter_grades = None
+
+    if stars and stars.is_authenticated(user_id):
+        try:
+            letter_grades = await asyncio.to_thread(stars.get_letter_grades, user_id)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.warning("Letter grades live fetch failed, trying cache: %s", exc)
+
+    if not letter_grades:
+        letter_grades = cache_db.get_json("letter_grades", user_id)
+        if letter_grades:
+            logger.info("Letter grades served from cache for user %d", user_id)
+
+    if not letter_grades:
+        return "Harf notları bulunamadı. STARS session süresi dolmuş olabilir — /start ile tekrar giriş yap."
+
+    semester_filter = args.get("semester_filter", "")
+
+    lines = ["📊 *Harf Notları*\n"]
+    for sem in letter_grades:
+        semester = sem.get("semester", "")
+        if semester_filter and semester_filter.lower() not in semester.lower():
+            continue
+
+        lines.append(f"\n*{semester}*")
+        for c in sem.get("courses", []):
+            code = c.get("code", "")
+            name = c.get("name", "")
+            grade = c.get("grade", "")
+            lines.append(f"  • {code} {name} — {grade}")
+
+    if len(lines) == 1:
+        return f"'{semester_filter}' dönemi ile eşleşen not bulunamadı."
 
     return "\n".join(lines)
 
@@ -1202,6 +1504,9 @@ TOOL_HANDLERS = {
     "get_schedule": _tool_get_schedule,
     "get_grades": _tool_get_grades,
     "get_attendance": _tool_get_attendance,
+    "get_exams": _tool_get_exams,
+    "get_transcript": _tool_get_transcript,
+    "get_letter_grades": _tool_get_letter_grades,
     "get_assignments": _tool_get_assignments,
     "get_emails": _tool_get_emails,
     "get_email_detail": _tool_get_email_detail,
@@ -1269,16 +1574,22 @@ def _detect_language(text: str) -> str:
 # ─── Main Entry Point ────────────────────────────────────────────────────────
 
 
-async def handle_agent_message(user_id: int, user_text: str) -> str:
+async def handle_agent_message(
+    user_id: int,
+    user_text: str,
+    message: Message | None = None,
+) -> str:
     """
     Main agentic handler: takes user message, runs tool loop, returns response.
 
     Flow:
     1. Build system prompt with 3-layer teaching methodology
     2. Get conversation history
-    3. Call LLM with 14 tools + parallel_tool_calls=True
+    3. Call LLM with tools + parallel_tool_calls=True
     4. If tool calls → execute in parallel → feed results → repeat (max 5)
-    5. Return final text response
+    5. Stream final text response to Telegram (if message provided)
+
+    Returns empty string if response was already streamed to the user.
     """
     if STATE.llm is None:
         return "Sistem henüz hazır değil. Lütfen birazdan tekrar deneyin."
@@ -1289,7 +1600,6 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
     lang = _detect_language(user_text)
     if lang == "en":
         system_prompt += "\n\n[LANGUAGE OVERRIDE] The user's current message is in ENGLISH. You MUST respond entirely in English."
-    # Turkish is default, no override needed
 
     available_tools = _get_available_tools(user_id)
 
@@ -1300,6 +1610,13 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
     messages.append({"role": "user", "content": user_text})
 
     for iteration in range(MAX_TOOL_ITERATIONS):
+        # Refresh typing indicator before each LLM call
+        if message:
+            try:
+                await message.chat.send_action("typing")
+            except TelegramError:
+                pass
+
         try:
             response_msg = await _call_llm_with_tools(
                 messages, system_prompt, available_tools
@@ -1313,6 +1630,8 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
 
         tool_calls = getattr(response_msg, "tool_calls", None)
         if not tool_calls:
+            # LLM returned final text — this was a non-streaming call (with tools)
+            # The response is already complete, just return it
             final_text = response_msg.content or ""
             user_service.add_conversation_turn(user_id, "user", user_text)
             user_service.add_conversation_turn(user_id, "assistant", final_text)
@@ -1343,6 +1662,13 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
         ]
         messages.append(assistant_msg)
 
+        # Refresh typing before tool execution
+        if message:
+            try:
+                await message.chat.send_action("typing")
+            except TelegramError:
+                pass
+
         tool_results = await asyncio.gather(
             *[_execute_tool_call(tc, user_id) for tc in tool_calls]
         )
@@ -1355,8 +1681,23 @@ async def handle_agent_message(user_id: int, user_text: str) -> str:
             extra={"user_id": user_id, "tools": [tc.function.name for tc in tool_calls]},
         )
 
-    # Max iterations exceeded
+    # Max iterations exceeded — stream final response
+    if message:
+        try:
+            await message.chat.send_action("typing")
+        except TelegramError:
+            pass
+
     try:
+        # Try streaming the final response
+        if message:
+            final_text = await _stream_final_response(messages, system_prompt, message)
+            if final_text:
+                user_service.add_conversation_turn(user_id, "user", user_text)
+                user_service.add_conversation_turn(user_id, "assistant", final_text)
+                return ""  # already sent via streaming
+
+        # Non-streaming fallback
         response_msg = await _call_llm_with_tools(messages, system_prompt, [])
         final_text = response_msg.content if response_msg else "Yanıt üretilemedi."
     except Exception:
