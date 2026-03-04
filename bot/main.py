@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -20,13 +21,16 @@ from bot.handlers.commands import post_init, register_command_handlers
 from bot.handlers.messages import register_message_handlers
 from bot.logging_config import setup_logging
 from bot.middleware.error_handler import global_error_handler
+from bot.services.notification_service import register_notification_jobs
 from bot.state import STATE
 from core import config as core_config
 from core.document_processor import DocumentProcessor
 from core.llm_engine import LLMEngine
 from core.moodle_client import MoodleClient
+from core.stars_client import StarsClient
 from core.sync_engine import SyncEngine
 from core.vector_store import VectorStore
+from core.webmail_client import WebmailClient
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -116,6 +120,73 @@ def _validate_startup_config() -> None:
         raise RuntimeError("TELEGRAM_OWNER_ID not set in environment. Owner check is required for secure startup.")
 
 
+def refresh_external_sessions() -> None:
+    """Keep webmail IMAP and STARS sessions alive; re-login only when necessary.
+
+    Called once at startup and then hourly via the notification job queue.
+    For STARS, a keep-alive ping is attempted first so that the 2FA re-login
+    is triggered only when the server-side session has truly expired rather
+    than on every hourly tick.
+    """
+    # --- Webmail ---
+    webmail = STATE.webmail_client
+    webmail_email = os.getenv("WEBMAIL_EMAIL", "")
+    webmail_password = os.getenv("WEBMAIL_PASSWORD", "")
+    if webmail is None or not webmail_email or not webmail_password:
+        logger.info("Webmail refresh skipped (no credentials)")
+    else:
+        if webmail.authenticated:
+            webmail.logout()
+        if webmail.login(webmail_email, webmail_password):
+            logger.info("Webmail IMAP login OK: %s", webmail_email)
+        else:
+            logger.warning("Webmail IMAP login failed for %s", webmail_email)
+
+    # --- STARS (keep-alive first, re-login only if session is dead) ---
+    stars = STATE.stars_client
+    stars_user = os.getenv("STARS_USERNAME", "")
+    stars_pass = os.getenv("STARS_PASSWORD", "")
+    owner_id = CONFIG.owner_id
+    if stars is None or not stars_user or not stars_pass or not owner_id:
+        logger.info("STARS refresh skipped (no credentials)")
+        return
+
+    # Try to extend the existing session without a 2FA round-trip.
+    if stars.keep_alive(owner_id):
+        return  # Session still alive — nothing else to do.
+
+    # Session is dead; need a full re-login (triggers 2FA email).
+    # Ensure we have a fresh webmail connection to fetch the verification code.
+    if webmail is not None and webmail_email and webmail_password:
+        if not webmail.authenticated:
+            if not webmail.login(webmail_email, webmail_password):
+                logger.warning("Webmail re-login failed; STARS 2FA code may not be retrievable")
+
+    logger.info("STARS session expired — full re-login for owner %s", owner_id)
+    result = stars.start_login(owner_id, stars_user, stars_pass)
+    if result.get("status") == "sms_sent":
+        for _attempt in range(4):
+            time.sleep(5)
+            code = webmail.fetch_stars_verification_code(max_age_seconds=60) if webmail else None
+            if code:
+                verify = stars.verify_sms(owner_id, code)
+                if verify.get("status") == "ok":
+                    logger.info("STARS login OK for owner %s", owner_id)
+                    stars.fetch_all_data(owner_id)
+                    logger.info("STARS cache populated for owner %s", owner_id)
+                else:
+                    logger.warning("STARS verify failed: %s", verify.get("message", ""))
+                break
+        else:
+            logger.warning("STARS verification code not received within 20s")
+    elif result.get("status") == "ok":
+        logger.info("STARS login OK (no 2FA needed)")
+        stars.fetch_all_data(owner_id)
+        logger.info("STARS cache populated for owner %s", owner_id)
+    else:
+        logger.warning("STARS login failed: %s", result.get("message", ""))
+
+
 def _initialize_components() -> None:
     """Initialize core RAG components and cache Moodle course metadata."""
     errors = core_config.validate()
@@ -135,6 +206,11 @@ def _initialize_components() -> None:
     STATE.vector_store = vector_store
     STATE.llm = llm
     STATE.sync_engine = sync_engine
+    STATE.stars_client = StarsClient()
+    STATE.webmail_client = WebmailClient()
+
+    # Initial login for webmail + STARS (also runs hourly via notification job)
+    refresh_external_sessions()
 
     if moodle.connect():
         courses = moodle.get_courses()
@@ -149,6 +225,7 @@ def create_application() -> Application:
     app = Application.builder().token(CONFIG.telegram_bot_token).post_init(post_init).build()
     register_command_handlers(app)
     register_message_handlers(app)
+    register_notification_jobs(app)
     app.add_error_handler(global_error_handler)
     return app
 

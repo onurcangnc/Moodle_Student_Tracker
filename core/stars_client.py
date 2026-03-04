@@ -98,7 +98,7 @@ class StarsClient:
             logger.info(f"STARS login step1-4: {r.status_code} url={r.url}")
             for i, resp in enumerate(r.history):
                 logger.info(f"  init[{i}]: {resp.status_code} → {resp.headers.get('Location', '?')}")
-            logger.info(f"STARS cookies after init: {dict(s.cookies)}")
+            logger.debug(f"STARS cookies after init: {list(s.cookies.keys())}")
 
             # Parse login page for hidden fields (CSRF token etc.)
             login_soup = BeautifulSoup(r.text, "html.parser")
@@ -124,7 +124,7 @@ class StarsClient:
                 timeout=15,
             )
             logger.info(f"STARS login POST: {r.status_code} url={r.url}")
-            logger.info(f"STARS cookies after login: {dict(s.cookies)}")
+            logger.debug(f"STARS cookies after login: {list(s.cookies.keys())}")
 
             # Check if we landed on verification page (SMS or Email)
             is_verify = "verifySms" in r.url or "verifyEmail" in r.url or "verifyCode" in r.text.lower()
@@ -161,7 +161,7 @@ class StarsClient:
                         name = inp.get("name")
                         if name:
                             ss._sms_hidden[name] = inp.get("value", "")
-                    logger.info(f"STARS verify form hidden fields: {ss._sms_hidden}")
+                    logger.debug(f"STARS verify form hidden fields: {list(ss._sms_hidden.keys())}")
 
                 return {"status": "sms_sent"}
 
@@ -225,7 +225,7 @@ class StarsClient:
             loc = r.headers.get("Location", "")
             if loc.startswith("/"):
                 loc = f"{BASE}{loc}"
-            logger.info(f"STARS cookies for redirect: {list(s.cookies.keys())}")
+            logger.debug(f"STARS cookies for redirect: {list(s.cookies.keys())}")
 
             prev_url = verify_url
             max_hops = 15
@@ -233,8 +233,9 @@ class StarsClient:
             while loc and max_hops > 0:
                 s.headers["Referer"] = prev_url
                 r2 = s.get(loc, allow_redirects=False, timeout=15)
-                logger.info(
-                    f"STARS hop: {loc} → {r2.status_code} Location={r2.headers.get('Location', 'none')} Set-Cookie={r2.headers.get('Set-Cookie', 'none')[:100] if r2.headers.get('Set-Cookie') else 'none'}"
+                logger.debug(
+                    f"STARS hop: {loc} → {r2.status_code} Location={r2.headers.get('Location', 'none')} "
+                    f"Set-Cookie={'yes' if r2.headers.get('Set-Cookie') else 'none'}"
                 )
 
                 # Remove stale verification cookies set by intermediate redirects
@@ -303,6 +304,38 @@ class StarsClient:
         if ss:
             ss.session.close()
 
+    def keep_alive(self, user_id: int) -> bool:
+        """Ping STARS to extend the server-side session without triggering 2FA.
+
+        Makes a lightweight GET to /srs/ and checks we stay authenticated
+        (no redirect to login page). If successful, resets the client-side
+        auth_time so the session is not flagged as expired. Returns True if
+        the session is still live.
+        """
+        ss = self._sessions.get(user_id)
+        if not ss or not ss.authenticated:
+            return False
+        try:
+            r = ss.session.get(f"{BASE}/srs/", allow_redirects=True, timeout=10)
+            if (
+                r.status_code == 200
+                and "/srs" in r.url
+                and "login" not in r.url
+                and "accounts" not in r.url
+            ):
+                ss.auth_time = time.time()  # Reset client-side expiry timer
+                logger.info("STARS keep-alive OK for user %s (session extended)", user_id)
+                return True
+            logger.info(
+                "STARS keep-alive: session expired for user %s (redirected to %s)",
+                user_id, r.url,
+            )
+            ss.authenticated = False
+            return False
+        except requests.RequestException as exc:
+            logger.warning("STARS keep-alive error for user %s: %s", user_id, exc)
+            return False
+
     # ── AJAX Data Methods ─────────────────────────────────────────────────
 
     def _ajax_post(self, user_id: int, endpoint: str) -> BeautifulSoup | None:
@@ -328,6 +361,74 @@ class StarsClient:
         except requests.RequestException as e:
             logger.error(f"STARS AJAX {endpoint} error: {e}")
             return None
+
+    def _ajax_get(self, user_id: int, endpoint: str) -> BeautifulSoup | None:
+        """GET a STARS AJAX endpoint (SPA navigation pattern), return parsed HTML or None."""
+        ss = self._sessions.get(user_id)
+        if not ss or not ss.authenticated:
+            return None
+        if ss.expired:
+            ss.authenticated = False
+            return None
+
+        url = f"{BASE}/srs/ajax/{endpoint}"
+        try:
+            r = ss.session.get(url, timeout=15)
+            if r.status_code != 200:
+                logger.debug("STARS AJAX GET %s: HTTP %s", endpoint, r.status_code)
+                return None
+            return BeautifulSoup(r.text, "html.parser")
+        except requests.RequestException as e:
+            logger.error("STARS AJAX GET %s error: %s", endpoint, e)
+            return None
+
+    def _discover_prog_string(self, user_id: int) -> str | None:
+        """
+        Find the progString parameter needed for curriculum.php.
+
+        The SPA JavaScript navigation calls:
+          paneSplitter.loadContent("center", "ajax/curriculum.php?progString=DEPT,PROG,1&rndval=...", ...)
+
+        We search for this URL pattern in the home page and the main SRS page.
+        """
+        ss = self._sessions.get(user_id)
+        if not ss or not ss.authenticated:
+            return None
+
+        _PATTERN = re.compile(r"curriculum\.php\?progString=([^&\"'<>\s]+)")
+
+        sources = []
+
+        # 1. Try the SRS home page — the shell or home fragment may embed navigation links
+        try:
+            r = ss.session.get(f"{BASE}/srs/", timeout=15)
+            sources.append(r.text)
+        except requests.RequestException:
+            pass
+
+        # 2. Try home.php — the home content panel loaded by completeLogin
+        try:
+            r = ss.session.get(f"{BASE}/srs/ajax/home.php", timeout=15)
+            sources.append(r.text)
+        except requests.RequestException:
+            pass
+
+        # 3. Try the setup JS — navigation is configured in setup-dhtml.js
+        try:
+            r = ss.session.get(f"{BASE}/srs/js/setup-dhtml.js", timeout=15)
+            sources.append(r.text)
+        except requests.RequestException:
+            pass
+
+        for text in sources:
+            m = _PATTERN.search(text)
+            if m:
+                from urllib.parse import unquote
+                prog = unquote(m.group(1))
+                logger.info("STARS: discovered progString=%s", prog)
+                return prog
+
+        return None
 
     # ── User Info + CGPA ──────────────────────────────────────────────────
 
@@ -416,6 +517,25 @@ class StarsClient:
 
         courses = []
         divs = soup.find_all("div", class_="attendDiv")
+
+        # --- DIAGNOSTIC: log HTML structure to identify parsing issues ---
+        logger.debug(
+            "Attendance page: %d attendDiv found. h4 texts: %s",
+            len(divs),
+            [d.find("h4").get_text(strip=True)[:40] if d.find("h4") else "NO_H4"
+             for d in divs],
+        )
+        for d in divs:
+            _h4 = d.find("h4")
+            _h4_text = _h4.get_text(strip=True)[:35] if _h4 else "?"
+            _table_in_div = bool(d.find("table"))
+            _table_after_h4 = bool(_h4.find_next("table")) if _h4 else False
+            logger.debug(
+                "  [%s] table_in_div=%s  table_after_h4=%s",
+                _h4_text, _table_in_div, _table_after_h4,
+            )
+        # --- END DIAGNOSTIC ---
+
         if not divs:
             # Try alternate: look for h4 + table pairs
             divs = [soup]
@@ -631,6 +751,116 @@ class StarsClient:
         return self._cache.get(user_id)
 
     # ── Letter Grades ─────────────────────────────────────────────────────
+
+    def get_transcript(self, user_id: int) -> list[dict] | None:
+        """
+        Fetch full degree-audit transcript from /srs/ajax/curriculum.php.
+
+        Confirmed endpoint (from browser network inspection):
+          GET /srs/ajax/curriculum.php?progString=DEPT,PROG,1&rndval=<timestamp>
+
+        progString (e.g. "CTISS,CTIS_BS,1") identifies the student's curriculum.
+        We first try without it (server may infer from session), then discover it.
+
+        Columns: Code(0) | Name(1) | Status(2) | Grade(3) | Credits(4) | Semester(5)
+                 | Course Taken Instead(6)   ← elective slots have empty Code cell
+
+        Returns a flat list of graded courses (skips 'Not graded' and S/U/T/W/P).
+        """
+        ss = self._sessions.get(user_id)
+        if not ss or not ss.authenticated:
+            return None
+        if ss.expired:
+            ss.authenticated = False
+            return None
+
+        def _fetch_curriculum(extra_params: dict) -> BeautifulSoup | None:
+            params = {"rndval": str(int(time.time() * 1000))}
+            params.update(extra_params)
+            try:
+                r = ss.session.get(
+                    f"{BASE}/srs/ajax/curriculum.php",
+                    params=params,
+                    timeout=15,
+                )
+                if r.status_code == 200 and "Curriculum" in r.text:
+                    return BeautifulSoup(r.text, "html.parser")
+                logger.debug("curriculum.php %s → HTTP %s (%d bytes)", extra_params, r.status_code, len(r.text))
+            except requests.RequestException as exc:
+                logger.warning("curriculum.php error: %s", exc)
+            return None
+
+        # Strategy 1: Try without progString — server may infer from session cookie
+        soup = _fetch_curriculum({})
+
+        # Strategy 2: Discover progString from navigation sources, then retry
+        if soup is None:
+            prog = self._discover_prog_string(user_id)
+            if prog:
+                soup = _fetch_curriculum({"progString": prog})
+
+        if soup is None:
+            logger.error("STARS transcript: curriculum.php not reachable")
+            return None
+
+        courses = []
+        # Columns: Code | Name | Status | Grade | Credits | Semester | Course Taken Instead
+        # Elective slots have empty Code — actual course is in cell[6]
+        for table in soup.find_all("table"):
+            for row in table.find_all("tr"):
+                cells = row.find_all("td")
+                if len(cells) < 5:
+                    continue
+
+                def _cell(i: int) -> str:
+                    if i >= len(cells):
+                        return ""
+                    # replace \xa0 (non-breaking space from &nbsp;) with nothing
+                    return cells[i].get_text(separator=" ", strip=True).replace("\xa0", "").strip()
+
+                code_text   = _cell(0)
+                name_text   = _cell(1)
+                status_text = _cell(2)
+                grade_text  = _cell(3)
+                cred_text   = _cell(4)
+                sem_text    = _cell(5)
+                taken_text  = _cell(6)  # "MATH 105 Introduction to Calculus I" for elective rows
+
+                # Elective slot row: code is empty, actual course is in taken_text
+                if not code_text and taken_text:
+                    # Extract code from the beginning: e.g. "MATH 105 ..." → "MATH 105"
+                    m = re.match(r"([A-Z]{2,}\s*\d{3}[A-Z]?)\s+(.*)", taken_text)
+                    if m:
+                        code_text = m.group(1).strip()
+                        name_text = m.group(2).strip()
+
+                # Skip header rows and rows with no course code pattern
+                if not code_text or not re.match(r"[A-Z]{2,}", code_text):
+                    continue
+
+                # Skip "Not graded" rows
+                if not grade_text or grade_text.lower() in ("", "-", "not graded", "—", "not graded"):
+                    continue
+
+                try:
+                    credits = int(cred_text)
+                except ValueError:
+                    try:
+                        credits = int(float(cred_text))
+                    except ValueError:
+                        credits = 0
+
+                courses.append({
+                    "code": code_text,
+                    "name": name_text,
+                    "status": status_text,
+                    "grade": grade_text,
+                    "credits": credits,
+                    "semester": sem_text,
+                })
+
+        logger.info("STARS transcript: %d graded courses parsed", len(courses))
+        return courses
 
     def get_letter_grades(self, user_id: int) -> list[dict] | None:
         soup = self._ajax_post(user_id, "stats/letter-grade.php")

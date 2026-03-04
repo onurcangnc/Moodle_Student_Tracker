@@ -1,4 +1,4 @@
-"""Unified message handlers for chat-first learning and admin uploads."""
+"""Unified message handlers for agentic chat and admin uploads."""
 
 from __future__ import annotations
 
@@ -8,34 +8,75 @@ import time
 from pathlib import Path
 
 from telegram import Message, Update
+from telegram.constants import ChatAction
 from telegram.error import TelegramError
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from bot.middleware.auth import admin_only
-from bot.services import document_service, llm_service, rag_service, user_service
+from bot.services import document_service, user_service
+from bot.services.agent_service import handle_agent_message
 from bot.services.topic_cache import TOPIC_CACHE
 from core import config as core_config
 
 logger = logging.getLogger(__name__)
 
+_TELEGRAM_MAX_LEN = 4096
+
+
+def _split_message(text: str, max_len: int = _TELEGRAM_MAX_LEN) -> list[str]:
+    """Split a long message into chunks, preferring paragraph → line → word breaks."""
+    if len(text) <= max_len:
+        return [text]
+    chunks: list[str] = []
+    while len(text) > max_len:
+        split_at = text.rfind("\n\n", 0, max_len)
+        if split_at == -1:
+            split_at = text.rfind("\n", 0, max_len)
+        if split_at == -1:
+            split_at = text.rfind(" ", 0, max_len)
+        if split_at == -1:
+            split_at = max_len
+        chunks.append(text[:split_at].rstrip())
+        text = text[split_at:].lstrip()
+    if text:
+        chunks.append(text)
+    return chunks
+
 
 async def _reply_message(message: Message, text: str) -> None:
-    """Send response with Markdown fallback to plain text on parse errors."""
+    """Send response with Markdown fallback and automatic chunking for long messages."""
+    chunks = _split_message(text)
+    for chunk in chunks:
+        try:
+            await message.reply_text(chunk, parse_mode="Markdown")
+        except TelegramError:
+            try:
+                await message.reply_text(chunk)
+            except TelegramError as exc:
+                logger.error("Failed to send message chunk: %s", exc)
+                await message.reply_text("Yanıt gönderilirken hata oluştu.")
+
+
+async def _typing_keepalive(message: Message, stop_event: asyncio.Event) -> None:
+    """Re-send typing action every 4 seconds until stop_event is set."""
     try:
-        await message.reply_text(text, parse_mode="Markdown")
-    except TelegramError:
-        await message.reply_text(text)
+        while not stop_event.is_set():
+            await message.reply_chat_action(ChatAction.TYPING)
+            await asyncio.sleep(4)
+    except Exception:
+        pass
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handle all text messages via one flow.
+    Handle all text messages via agentic LLM with function calling.
 
     Flow:
-    1) active course check
-    2) retrieve context
-    3) teaching mode (sufficient) or guidance mode (insufficient)
-    4) send response
+    1) rate limit check
+    2) show typing indicator immediately (perceived latency fix)
+    3) route to agent_service.handle_agent_message()
+    4) agent decides which tools to call (RAG, assignments, grades, etc.)
+    5) send response
     """
     message = update.effective_message
     user = update.effective_user
@@ -44,36 +85,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     user_service.record_user_activity(user.id)
     if not user_service.check_rate_limit(user.id):
-        await message.reply_text("Cok hizli mesaj gonderdiniz. Lutfen bir dakika sonra tekrar deneyin.")
+        await message.reply_text("\xc7ok h\u0131zl\u0131 mesaj g\xf6nderdiniz. L\xfctfen bir dakika sonra tekrar deneyin.")
         return
 
     query = message.text.strip()
     if not query:
         return
 
-    active_course = user_service.get_active_course(user.id)
-    if active_course is None:
-        await message.reply_text("Henuz bir kurs secmediniz. /courses ile kurslari gorebilirsiniz.")
-        return
+    # Show typing indicator immediately, keep it alive during processing
+    stop_typing = asyncio.Event()
+    typing_task = asyncio.create_task(_typing_keepalive(message, stop_typing))
 
-    history = user_service.get_conversation_history(user.id)
-    retrieval = await rag_service.retrieve_context(query=query, course_id=active_course.course_id)
-    if retrieval.has_sufficient_context:
-        response = await llm_service.generate_teaching_response(
-            query=query,
-            chunks=retrieval.chunks,
-            conversation_history=history,
-        )
-    else:
-        topics = await TOPIC_CACHE.get_topics(active_course.course_id)
-        response = await llm_service.generate_guidance_response(
-            query=query,
-            available_topics=topics,
-            conversation_history=history,
-        )
+    try:
+        response = await handle_agent_message(user_id=user.id, user_text=query)
+    finally:
+        stop_typing.set()
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
 
-    user_service.add_conversation_turn(user.id, role="user", content=query)
-    user_service.add_conversation_turn(user.id, role="assistant", content=response)
     await _reply_message(message, response)
 
 
@@ -92,7 +124,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await message.reply_text("Dokuman yuklemek icin once /upload komutunu kullanin.")
         return
 
-    filename = message.document.file_name or f"upload_{int(time.time())}.bin"
+    raw_name = message.document.file_name or f"upload_{int(time.time())}.bin"
+    filename = raw_name.replace("/", "_").replace("\\", "_").replace("..", "_")
     upload_dir = core_config.downloads_dir
     upload_dir.mkdir(parents=True, exist_ok=True)
     local_path = upload_dir / f"{int(time.time())}_{filename}"

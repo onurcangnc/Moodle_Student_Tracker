@@ -1,418 +1,669 @@
-# Kurulum Rehberi
+# Setup Guide
 
-Adim adim kurulum. Her sey sifirdan, hic bir sey bilmiyorsan bile kurabilirsin.
-
----
-
-## Icindekiler
-
-1. [Gereksinimler](#1-gereksinimler)
-2. [Python Kurulumu](#2-python-kurulumu)
-3. [Projeyi Indir](#3-projeyi-indir)
-4. [Bagimliliklar](#4-bagimliliklar)
-5. [Tesseract OCR](#5-tesseract-ocr-opsiyonel)
-6. [Telegram Bot Olustur](#6-telegram-bot-olustur)
-7. [API Anahtarlari](#7-api-anahtarlari)
-8. [Bilkent Bilgileri](#8-bilkent-bilgileri)
-9. [.env Dosyasini Doldur](#9-env-dosyasini-doldur)
-10. [Calistir](#10-calistir)
-11. [Sunucu Kurulumu (VPS)](#11-sunucu-kurulumu-vps)
-12. [Sorun Giderme](#12-sorun-giderme)
+Step-by-step installation from zero. No prior experience required.
 
 ---
 
-## 1. Gereksinimler
+## Table of Contents
 
-| Gereksinim | Minimum | Tavsiye |
-|-----------|---------|---------|
-| Python | 3.11 | 3.12 |
+1. [Requirements](#1-requirements)
+2. [Python Installation](#2-python-installation)
+3. [Clone the Repository](#3-clone-the-repository)
+4. [Install Dependencies](#4-install-dependencies)
+5. [Tesseract OCR (Optional)](#5-tesseract-ocr-optional)
+6. [Create a Telegram Bot](#6-create-a-telegram-bot)
+7. [API Keys](#7-api-keys)
+8. [Bilkent Moodle Credentials](#8-bilkent-moodle-credentials)
+9. [Configure .env](#9-configure-env)
+10. [Run the Bot](#10-run-the-bot)
+11. [Testing](#11-testing)
+12. [Server Deployment (VPS)](#12-server-deployment-vps)
+13. [Updating & Maintenance](#13-updating--maintenance)
+14. [Troubleshooting](#14-troubleshooting)
+
+---
+
+## 1. Requirements
+
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| Python | 3.10 | 3.12 |
 | RAM | 2 GB | 4 GB |
 | Disk | 2 GB | 5 GB |
-| OS | Windows 10 / Ubuntu 20.04 / macOS 12 | Ubuntu 22.04 (sunucu) |
+| OS | Ubuntu 22.04 / Windows 10 | Ubuntu 24.04 |
 
-**Hesaplar:**
-- Bilkent Moodle hesabi (ogrenci)
-- Bilkent STARS hesabi (ogrenci numarasi + sifre)
-- Bilkent Webmail hesabi (IMAP erisimi)
-- Telegram hesabi
-- Google AI Studio hesabi (ucretsiz)
-- OpenAI hesabi (ucretli, ayda ~$0.90)
+**Notes:**
+- The embedding model (`paraphrase-multilingual-MiniLM-L12-v2`) downloads ~500 MB on first run.
+- Tesseract OCR requires an additional ~100 MB (only needed for scanned PDFs).
+- Server deployment requires at least 2 GB RAM — the embedding model stays resident in memory.
 
 ---
 
-## 2. Python Kurulumu
+## 2. Python Installation
 
-### Windows
-1. [python.org/downloads](https://www.python.org/downloads/) adresinden Python 3.12 indir
-2. Kurulum sirasinda **"Add Python to PATH"** kutucugunu **mutlaka** isaretle
-3. Dogrula:
-```bash
-python --version
-# Python 3.12.x
-```
+### Ubuntu / Debian
 
-### Ubuntu/Debian
 ```bash
 sudo apt update
-sudo apt install python3.12 python3.12-venv python3-pip -y
+sudo apt install -y python3 python3-venv python3-pip git
+python3 --version   # must be 3.10+
+```
+
+### Windows
+
+1. Download Python 3.10+ from [python.org](https://www.python.org/downloads/)
+2. During installation, check **"Add Python to PATH"**
+3. Verify:
+
+```powershell
+python --version   # 3.10+
 ```
 
 ### macOS
+
 ```bash
 brew install python@3.12
+python3 --version   # 3.10+
 ```
 
 ---
 
-## 3. Projeyi Indir
+## 3. Clone the Repository
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/onurcangnc/Moodle_Student_Tracker.git
 cd Moodle_Student_Tracker
 ```
 
-veya ZIP olarak indir ve bir klasore cikar.
-
 ---
 
-## 4. Bagimliliklar
-
-### Sanal ortam olustur (tavsiye edilir)
+## 4. Install Dependencies
 
 ```bash
-# Windows
-python -m venv venv
-venv\Scripts\activate
-
-# Linux/macOS
+# Create virtual environment
 python3 -m venv venv
-source venv/bin/activate
-```
 
-### Paketleri kur
+# Activate it
+source venv/bin/activate        # Linux/macOS
+# venv\Scripts\activate         # Windows (PowerShell)
+# venv\Scripts\activate.bat     # Windows (CMD)
 
-```bash
+# Install production dependencies
 pip install -r requirements.txt
 ```
 
-> **Not:** Ilk kurulumda `sentence-transformers` embedding modelini indirecek (~100 MB). Bu bir kere olur.
+Dev dependencies (tests, linter):
 
-> **Windows hatasi?** `faiss-cpu` veya `pymupdf` kurulumunda hata alirsan:
-> ```bash
-> pip install --upgrade pip setuptools wheel
-> pip install -r requirements.txt
-> ```
+```bash
+pip install -r requirements-dev.txt
+# or
+make dev
+```
+
+### PyStemmer (Performance)
+
+The BM25 index uses Snowball stemming. The `snowballstemmer` package falls back to pure Python when the C extension is unavailable (~30s startup). Install PyStemmer for the C extension (~1.5s startup):
+
+```bash
+pip install PyStemmer
+```
+
+> PyStemmer is not in `requirements.txt` because it requires a C compiler. If it fails to install, the bot continues working — startup is just slower.
 
 ---
 
-## 5. Tesseract OCR (Opsiyonel)
+## 5. Tesseract OCR (Optional)
 
-Sadece **taranmis (scanned) PDF** dosyalarin varsa gerekli. Cogu ders materyali zaten text-based PDF oldugu icin opsiyonel.
+Required only for scanned (image-based) PDFs. Text-based PDFs work without it. The bot inspects each PDF page individually and sends only scanned pages to OCR.
 
-### Windows
-1. [github.com/UB-Mannheim/tesseract/wiki](https://github.com/UB-Mannheim/tesseract/wiki) adresinden `.exe` indir
-2. Kurulum sirasinda **Turkish** dil paketini sec
-3. Kurulum yolunu PATH'e ekle (genelde `C:\Program Files\Tesseract-OCR`)
+### Ubuntu / Debian
 
-### Ubuntu/Debian
 ```bash
-sudo apt install tesseract-ocr tesseract-ocr-tur -y
+sudo apt install -y tesseract-ocr tesseract-ocr-tur
+tesseract --version
 ```
 
+### Windows
+
+1. Download the installer from [UB Mannheim](https://github.com/UB-Mannheim/tesseract/wiki)
+2. Select Turkish language pack during installation
+3. Add Tesseract to PATH, or specify `TESSERACT_CMD` in `.env`
+
 ### macOS
+
 ```bash
 brew install tesseract tesseract-lang
 ```
 
-### Dogrula
-```bash
-tesseract --version
-# tesseract 5.x.x
+---
+
+## 6. Create a Telegram Bot
+
+### 6.1. Get a Bot Token
+
+1. Open a conversation with [@BotFather](https://t.me/BotFather) on Telegram
+2. Send `/newbot`
+3. Enter a display name (e.g., `Moodle Assistant`)
+4. Enter a username (e.g., `moodle_asistan_bot`)
+5. Save the token BotFather gives you:
+
+   ```
+   5123456789:ABCdefGHIjklMNOpqrs-TUVwxyz12345
+   ```
+
+### 6.2. Find Your Chat ID
+
+1. Open a conversation with [@userinfobot](https://t.me/userinfobot)
+2. Send `/start`
+3. Save the **Id** value (e.g., `123456789`)
+
+This is your `TELEGRAM_OWNER_ID`. The owner can use admin commands (`/upload`, `/stats`).
+
+### 6.3. Add Extra Admins (Optional)
+
+If multiple people need admin access, comma-separate their chat IDs in `.env`:
+
+```
+TELEGRAM_ADMIN_IDS=111222333,444555666
 ```
 
 ---
 
-## 6. Telegram Bot Olustur
+## 7. API Keys
 
-1. Telegram'da **@BotFather**'i bul
-2. `/newbot` komutunu gonder
-3. Bot icin bir isim ver (ornek: "Moodle Asistan")
-4. Bot icin bir username ver (ornek: `moodle_asistan_bot`) — `_bot` ile bitmeli
-5. BotFather sana bir **token** verecek:
+The bot requires at least one LLM API key. Multiple providers can be configured; the bot selects the best model per task via `TaskRouter`.
+
+### 7.1. Google Gemini (Recommended)
+
+Gemini 2.5 Flash is used for the main chat and teaching tasks. The free tier is limited (5 RPM / 20 RPD).
+
+1. Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+2. Click "Create API Key"
+3. Add to `.env`:
+
    ```
-   7234567890:AAH1234abcdef...
+   GEMINI_API_KEY=AIzaSy...
    ```
-   Bu token'i kaydet → `.env` dosyasina `TELEGRAM_BOT_TOKEN` olarak gireceksin.
 
-### Telegram Chat ID'ni Bul
+### 7.2. OpenAI
 
-1. Telegram'da **@userinfobot**'u bul
-2. `/start` gonder
-3. Sana chat ID'ni verecek (ornek: `649226694`)
-4. Bu ID'yi kaydet → `.env` dosyasina `TELEGRAM_OWNER_ID` olarak gireceksin.
+GPT-4.1 nano is used for memory extraction and topic detection.
 
----
+1. Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+2. Click "Create new secret key"
+3. Add to `.env`:
 
-## 7. API Anahtarlari
+   ```
+   OPENAI_API_KEY=sk-proj-...
+   ```
 
-### Google Gemini (Ucretsiz — ana chat motoru)
+### 7.3. Model Routing (Optional)
 
-1. [aistudio.google.com/apikey](https://aistudio.google.com/apikey) adresine git
-2. Google hesabinla giris yap
-3. "Create API Key" tikla
-4. API key'i kopyala → `.env` dosyasina `GEMINI_API_KEY` olarak gir
+Override the model for each task in `.env`:
 
-> Ucretsiz plan: Gunluk 1500 istek, cogu kullanim icin yeterli.
-
-### OpenAI (Ucretli — intent + extraction)
-
-1. [platform.openai.com/api-keys](https://platform.openai.com/api-keys) adresine git
-2. Hesap olustur veya giris yap
-3. "Create new secret key" tikla
-4. API key'i kopyala → `.env` dosyasina `OPENAI_API_KEY` olarak gir
-5. Bakiye yukle: **$5 yeterli** (aylar yeter)
-
-> Kullanilan modeller: GPT-4.1-mini (intent, ~$0.016/1K istek) ve GPT-4.1-nano (extraction, ~$0.005/1K istek)
-> Tahmini aylik maliyet: **~$0.90**
-
-### Z.ai / GLM (Opsiyonel fallback)
-
-Zorunlu degil. Gemini ve OpenAI yeterliyse bos birakabilirsin.
-
----
-
-## 8. Bilkent Bilgileri
-
-### Moodle
-- **MOODLE_URL**: Bilkent Moodle adresi. **Her donem degisir!**
-  - Ornek: `https://moodle.bilkent.edu.tr/2025-2026-spring`
-  - Yeni donemde bu URL'yi guncelle
-- **MOODLE_USERNAME**: Bilkent kullanici adin (ogrenci numarasi veya email)
-- **MOODLE_PASSWORD**: Moodle sifren
-
-> Token otomatik alinir ve `data/.moodle_token` dosyasina kaydedilir. Manuel token girmene gerek yok.
-
-### STARS
-- **STARS_USERNAME**: Bilkent ogrenci numaran
-- **STARS_PASSWORD**: STARS sifren
-
-> Bot, STARS'a her 10 dakikada otomatik giris yapar. 2FA kodu email'den otomatik okunur.
-
-### Webmail (IMAP)
-- **WEBMAIL_EMAIL**: Bilkent email adresin (ornek: `ad.soyad@ug.bilkent.edu.tr`)
-- **WEBMAIL_PASSWORD**: Email sifren
-
-> STARS 2FA kodlarinin otomatik okunmasi icin gerekli. Ayrica AIRS/DAIS mail bildirimleri icin kullanilir.
-
----
-
-## 9. .env Dosyasini Doldur
-
-```bash
-cp .env.example .env
+```ini
+MODEL_CHAT=gemini-2.5-flash        # Main chat (RAG + agentic)
+MODEL_STUDY=gemini-2.5-flash       # Deep teaching mode
+MODEL_EXTRACTION=gpt-4.1-nano      # Memory extraction
+MODEL_TOPIC_DETECT=gpt-4.1-nano    # Topic detection
+MODEL_SUMMARY=gemini-2.5-flash     # Weekly digest
+MODEL_QUESTIONS=gemini-2.5-flash   # Practice questions
+MODEL_OVERVIEW=gemini-2.5-flash    # Course overview
 ```
 
-Simdi `.env` dosyasini bir text editor ile ac ve doldur:
+Supported models: Gemini 2.5 Flash/Pro, GPT-4.1 nano/mini, GPT-5 mini, GLM 4.5/4.7, Claude Haiku/Sonnet/Opus.
 
-```bash
-# ─── Moodle ──────────────────────────────────────────────
+---
+
+## 8. Bilkent Moodle Credentials
+
+Bilkent uses a different Moodle URL every semester. Check the current URL on the Bilkent website.
+
+```ini
+# Example (2025-2026 Spring)
 MOODLE_URL=https://moodle.bilkent.edu.tr/2025-2026-spring
 MOODLE_USERNAME=22003467
-MOODLE_PASSWORD=sifreni_buraya_yaz
-
-# ─── LLM API Keys ───────────────────────────────────────
-GEMINI_API_KEY=AIza...
-OPENAI_API_KEY=sk-...
-
-# ─── Telegram Bot ────────────────────────────────────────
-TELEGRAM_BOT_TOKEN=7234567890:AAH1234...
-TELEGRAM_OWNER_ID=649226694
-
-# ─── STARS ───────────────────────────────────────────────
-STARS_USERNAME=22003467
-STARS_PASSWORD=stars_sifren
-
-# ─── Webmail IMAP ────────────────────────────────────────
-WEBMAIL_EMAIL=ad.soyad@ug.bilkent.edu.tr
-WEBMAIL_PASSWORD=email_sifren
+MOODLE_PASSWORD=your_password
 ```
 
-**Geri kalan ayarlar (MODEL_CHAT, EMBEDDING_MODEL, vs.) degistirme — varsayilanlar optimize edilmis durumda.**
+**Important notes:**
+- On first connection, the bot fetches a Moodle token and saves it to `data/moodle_token.txt`. Subsequent restarts reuse the cached token.
+- When the semester changes, update `MOODLE_URL`.
+- If you change your Moodle password, delete `data/moodle_token.txt` and restart the bot.
 
 ---
 
-## 10. Calistir
+## 9. Configure .env
 
 ```bash
-python telegram_bot.py
+cp .env.example .env
 ```
 
-Basarili cikti:
-```
-🔧 Bilesenler yukleniyor...
-🚀 Bot calisiyor! (Owner: 649226694)
-🔄 Auto-sync: Her 10 dk | Odev check: Her 10 dk
-📧 Mail: Her 30 dk | STARS auto-login: Her 10 dk
-   Ctrl+C ile durdur
+Open `.env` and fill in:
+
+```ini
+# ── REQUIRED ──────────────────────────────────────
+MOODLE_URL=https://moodle.bilkent.edu.tr/2025-2026-spring
+MOODLE_USERNAME=...
+MOODLE_PASSWORD=...
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_OWNER_ID=...
+
+# ── AT LEAST ONE LLM KEY ──────────────────────────
+OPENAI_API_KEY=...
+GEMINI_API_KEY=...
+
+# ── EMAIL & STARS (enables email and grade tools) ─
+WEBMAIL_EMAIL=...
+WEBMAIL_PASSWORD=...
+STARS_USERNAME=...
+STARS_PASSWORD=...
+
+# ── OPTIONAL (defaults are usually fine) ──────────
+# MODEL_CHAT=gemini-2.5-flash
+# MODEL_COMPLEXITY=gpt-4.1-mini
+# RAG_SIMILARITY_THRESHOLD=0.65
+# HEALTHCHECK_PORT=9090
+# LOG_LEVEL=INFO
 ```
 
-Simdi Telegram'da botunu bul ve `/start` gonder.
+### Data Directory Layout
 
-### Ilk calistirmada ne olur?
-1. Moodle'a otomatik giris yapilir
-2. Webmail'e baglanilir
-3. STARS'a giris yapilir (2FA kodu email'den otomatik okunur)
-4. Ders materyalleri indirilir ve indexlenir (ilk sync 2-5 dakika surebilir)
-5. Hazir! Artik soru sorabilirsin.
+The bot creates a `data/` directory automatically on first run. **None of these files are committed to git.**
+
+```
+data/
+├── downloads/              Raw Moodle files (PDF, DOCX, PPTX) downloaded during sync
+├── chromadb/               FAISS vector index + BM25 index + chunk metadata
+├── cache.db                SQLite persistent cache
+│                           ├── emails table  — refreshed every 5 min by background job
+│                           ├── grades        — refreshed every 30 min
+│                           ├── assignments   — refreshed every 10 min
+│                           └── schedule      — refreshed every 6 h
+├── memory.db               Per-user conversation history (TTL-based)
+├── .moodle_token           Cached Moodle session token (auto-renewed)
+├── sync_state.json         Tracks which Moodle files have been downloaded
+├── study_sessions.json     Study session analytics
+├── profile.md              User profile (topic preferences, study history)
+├── file_summaries.json     LLM-generated summaries for RAG prioritization
+└── source_summaries/       Per-course source summaries
+```
+
+**Background jobs vs. tool handlers:** Background jobs are the only writers to `cache.db`. Tool handlers (email, grades, assignments) read from the cache for instant responses. On a fresh install, the cache is empty; the bot falls back to live API calls until the first background job cycle completes (~5 minutes after startup).
+
+### Configuration Reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RATE_LIMIT_MAX` | `30` | Max requests per window |
+| `RATE_LIMIT_WINDOW` | `60` | Rate limit window (seconds) |
+| `MEMORY_MAX_MESSAGES` | `15` | Conversation history size per user |
+| `MEMORY_TTL_MINUTES` | `60` | Memory TTL (minutes) |
+| `HEALTHCHECK_PORT` | `9090` | Health endpoint port |
+| `HEALTHCHECK_ENABLED` | `true` | Enable/disable health endpoint |
+| `CHUNK_SIZE` | `1000` | Text chunk size (characters) |
+| `CHUNK_OVERLAP` | `200` | Chunk overlap (characters) |
+| `RAG_TOP_K` | `5` | Max chunks returned per search |
 
 ---
 
-## 11. Sunucu Kurulumu (VPS)
-
-Botun 7/24 calismasi icin bir VPS (sanal sunucu) gerekli.
-
-### Tavsiye: Hetzner / DigitalOcean / Contabo
-- **Minimum:** 2 vCPU, 4 GB RAM, 40 GB SSD
-- **Maliyet:** ~$4-6/ay
-
-### Sunucuda Kurulum (Ubuntu 22.04)
+## 10. Run the Bot
 
 ```bash
-# 1. Sistem guncelle
-sudo apt update && sudo apt upgrade -y
-
-# 2. Python + gerekli paketler
-sudo apt install python3.12 python3.12-venv python3-pip tesseract-ocr tesseract-ocr-tur -y
-
-# 3. Proje klasoru olustur
-sudo mkdir -p /opt/moodle-bot
-cd /opt/moodle-bot
-
-# 4. Sanal ortam
-python3.12 -m venv venv
+# Activate virtual environment
 source venv/bin/activate
 
-# 5. Dosyalari kopyala (kendi bilgisayarindan)
-# Kendi bilgisayarinda su komutu calistir:
-# scp -r ./* root@SUNUCU_IP:/opt/moodle-bot/
-
-# 6. Bagimliliklar
-pip install -r requirements.txt
-
-# 7. .env dosyasini olustur ve doldur
-cp .env.example .env
-nano .env
+# Start
+python -m bot.main
 ```
 
-### systemd Servisi (7/24 calisma)
+Or with Makefile:
 
 ```bash
-sudo nano /etc/systemd/system/moodle-bot.service
+make run
 ```
 
-Icerik:
-```ini
-[Unit]
-Description=Moodle Student Tracker Telegram Bot
-After=network.target
+Expected startup output:
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/moodle-bot
-ExecStart=/opt/moodle-bot/venv/bin/python telegram_bot.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
 ```
+INFO | Initializing bot components...
+INFO | Vector store loaded. 3661 chunks.
+INFO | BM25 index built: 3661 chunks in 1.62s
+INFO | Moodle connection established (courses=5)
+INFO | Healthcheck endpoint listening on 0.0.0.0:9090/health
+INFO | Bot started
+```
+
+### First Use
+
+1. Open a conversation with your bot on Telegram
+2. Send `/start` to see the welcome message
+3. Send `/courses` to list loaded courses
+4. Select a course: `/courses CTIS 363`
+5. Ask a question: `What is ethics?`
+6. The bot searches course materials and returns a grounded answer
+
+### Health Check
 
 ```bash
-# Servisi aktiflestir ve baslat
-sudo systemctl daemon-reload
-sudo systemctl enable moodle-bot
-sudo systemctl start moodle-bot
-
-# Durumu kontrol et
-sudo systemctl status moodle-bot
-
-# Loglari izle
-journalctl -u moodle-bot -f
+curl http://localhost:9090/health
 ```
 
-### Guncelleme (yeni kod deploy etme)
-
-Kendi bilgisayarindan:
-```bash
-# Syntax kontrol (deploy etmeden once)
-python -c "import ast; ast.parse(open('telegram_bot.py').read()); print('OK')"
-
-# Dosyalari gonder
-scp telegram_bot.py main.py root@SUNUCU_IP:/opt/moodle-bot/
-scp core/*.py root@SUNUCU_IP:/opt/moodle-bot/core/
-
-# Servisi yeniden baslat
-ssh root@SUNUCU_IP "systemctl restart moodle-bot"
+```json
+{
+  "status": "ok",
+  "uptime_seconds": 3600,
+  "version": "abc1234",
+  "chunks_loaded": 3661,
+  "active_users_24h": 1
+}
 ```
 
 ---
 
-## 12. Sorun Giderme
+## 11. Testing
 
-### "ModuleNotFoundError: No module named 'xxx'"
 ```bash
+# Install dev dependencies
+make dev
+# or: pip install -r requirements-dev.txt
+
+# Unit tests only — fast, no external dependencies
+make test
+# or: python -m pytest tests/unit/ -v --tb=short
+
+# All tests (unit + integration)
+make test-all
+# or: python -m pytest tests/ -v --tb=short
+
+# With inline coverage report
+make test-cov
+# or: python -m pytest tests/ -v --cov=bot --cov-report=term-missing
+
+# Run a single test file
+python -m pytest tests/unit/test_conversation_memory.py -v
+
+# Run a specific test by name
+python -m pytest tests/unit/test_rag_service.py::test_hybrid_search_returns_results -v
+
+# Run tests matching a keyword
+python -m pytest -k "memory" -v
+
+# Skip slow tests
+python -m pytest -m "not slow" -v
+
+# Run only slow-marked tests
+python -m pytest -m slow -v
+
+# Integration tests only
+python -m pytest tests/integration/ -v --tb=short
+
+# Generate HTML coverage report
+python -m pytest tests/ --cov=bot --cov-report=html
+# then open: htmlcov/index.html
+
+# Run with more verbose output
+python -m pytest tests/unit/ -v --tb=long
+
+# Stop on first failure
+python -m pytest tests/unit/ -x -v
+
+# Run last failed tests
+python -m pytest --lf -v
+```
+
+---
+
+## 12. Server Deployment (VPS)
+
+### Method A: Systemd (Recommended)
+
+```bash
+# 1. Copy project to server
+scp -r . root@SERVER_IP:/opt/moodle-bot/
+
+# 2. Connect to server
+ssh root@SERVER_IP
+
+# 3. Create a dedicated user (security best practice)
+useradd -r -s /bin/false botuser
+chown -R botuser:botuser /opt/moodle-bot
+
+# 4. Install dependencies
+cd /opt/moodle-bot
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
-```
-Sanal ortami aktif etmeyi unutma (`source venv/bin/activate` veya `venv\Scripts\activate`).
+pip install PyStemmer   # recommended for BM25 performance
 
-### "MOODLE_TOKEN invalid" veya Moodle baglanti hatasi
-- `MOODLE_URL`'nin dogru doneme ait oldugundan emin ol
-- Bilkent Moodle URL'si **her donem degisir** (ornek: `2025-2026-spring`)
-- `data/.moodle_token` dosyasini sil ve botu yeniden baslat
+# 5. Create .env
+cp .env.example .env
+nano .env   # fill in required fields
 
-### STARS giris hatasi / 2FA kodu bulunamadi
-- Webmail bilgilerinin dogru oldugunu kontrol et
-- IMAP erisiminin acik oldugunu dogrula (Bilkent webmail genelde varsayilan acik)
-- STARS sifreni degistirdiysen `.env`'i guncelle
+# 6. Install systemd service
+cp scripts/moodle-bot.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable moodle-bot
+systemctl start moodle-bot
 
-### "faiss" veya "sentence-transformers" kurulum hatasi
-```bash
-pip install --upgrade pip setuptools wheel
-pip install faiss-cpu sentence-transformers
-```
-
-### Bot calisiyor ama mesajlara cevap vermiyor
-- `TELEGRAM_OWNER_ID`'nin dogru oldugunu kontrol et
-- Bot sadece owner'a cevap verir (guvenlik)
-- Telegram'da botu `/start` ile baslat
-
-### Indexleme cok yavas
-- Normal: Ilk sync 2-5 dakika surebilir (tum materyaller indiriliyor)
-- Buyuk PDF'ler (400+ sayfa) 2-3 dakika surebilir
-- Sonraki sync'ler sadece yeni dosyalari kontrol eder (saniyeler icerisinde)
-
-### Sunucuda "Killed" hatasi (bellek yetersiz)
-```bash
-# Swap ekle (2 GB)
-sudo fallocate -l 2G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-```
-
-### Sifirdan indexleme (tum verileri temizle)
-```bash
-rm -f data/faiss.index data/metadata.json data/sync_state.json
-# Botu yeniden baslat, sonra Telegram'dan /sync gonder
-```
-
-### Log kontrol
-```bash
-# Sunucuda
+# 7. Verify
+systemctl status moodle-bot
 journalctl -u moodle-bot -f
+curl http://localhost:9090/health
+```
 
-# Veya direkt
-python telegram_bot.py 2>&1 | tee bot.log
+#### Systemd Security Hardening
+
+`scripts/moodle-bot.service` includes these protections:
+
+| Directive | Effect |
+|-----------|--------|
+| `NoNewPrivileges=true` | Prevents privilege escalation |
+| `ProtectSystem=strict` | Makes system directories read-only |
+| `ProtectHome=true` | Blocks access to `/home` |
+| `ReadWritePaths=...` | Only `data/` and `logs/` are writable |
+| `PrivateTmp=true` | Uses an isolated temporary directory |
+
+> The service file uses `User=botuser`. To run as root, comment out or change those lines.
+
+### Method B: Docker
+
+```bash
+# 1. Copy project to server and connect
+scp -r . root@SERVER_IP:/opt/moodle-bot/
+ssh root@SERVER_IP
+cd /opt/moodle-bot
+
+# 2. Create .env
+cp .env.example .env
+nano .env
+
+# 3. Start with Docker
+docker compose up -d
+
+# 4. Verify
+docker compose logs -f
+docker compose ps
+```
+
+The Docker volume `bot_data` persists FAISS index, downloaded files, and conversation state across container restarts.
+
+---
+
+## 13. Updating & Maintenance
+
+### Makefile Deploy
+
+```bash
+# Full pipeline: lint → test → push → SSH deploy
+make deploy
+```
+
+This runs:
+1. `ruff check .` — lint
+2. `pytest tests/unit/` — unit tests
+3. `git push origin main` — push to remote
+4. SSH into server and runs `scripts/deploy-remote.sh`
+
+### Manual Update
+
+```bash
+# Push local changes
+git push origin main
+
+# Pull on server
+ssh root@SERVER_IP "cd /opt/moodle-bot && git pull && systemctl restart moodle-bot"
+```
+
+### Makefile Reference
+
+| Command | Description |
+|---------|-------------|
+| `make install` | Install production dependencies |
+| `make dev` | Install dev dependencies |
+| `make run` | Start the bot |
+| `make test` | Run unit tests |
+| `make test-all` | Run all tests |
+| `make test-cov` | Coverage report |
+| `make lint` | ruff lint check |
+| `make format` | ruff auto-format |
+| `make deploy` | Deploy to server |
+| `make logs` | Tail server logs |
+| `make status` | Server service status |
+| `make restart` | Restart server service |
+| `make health` | Server health check |
+| `make clean` | Remove `__pycache__`, `.pyc`, cache files |
+
+### Rebuild the Index from Scratch
+
+If the RAG index is corrupt or outdated:
+
+```bash
+# On the server
+cd /opt/moodle-bot/data
+rm -f faiss.index metadata.json sync_state.json
+systemctl restart moodle-bot
+# Bot re-downloads and re-indexes all Moodle materials on startup
+```
+
+### Reset the SQLite Cache
+
+If the email/grades/assignments cache appears stale or corrupt:
+
+```bash
+cd /opt/moodle-bot/data
+rm -f cache.db
+systemctl restart moodle-bot
+# Background jobs repopulate the cache within the first 5–10 minutes
+```
+
+### Offline Mode for Embedding Model
+
+The embedding model is downloaded from Hugging Face on first run (~500 MB). After that, switch to offline mode:
+
+```ini
+# .env
+HF_HUB_OFFLINE=1
+```
+
+---
+
+## 14. Troubleshooting
+
+### Bot won't start
+
+```bash
+journalctl -u moodle-bot --no-pager -n 50
+# or with Docker:
+docker compose logs --tail 50
+```
+
+| Error | Fix |
+|-------|-----|
+| `TELEGRAM_BOT_TOKEN is empty` | Check token in `.env` |
+| `Moodle connection failed` | Is `MOODLE_URL` correct? It changes every semester |
+| `Port 9090 already in use` | Change `HEALTHCHECK_PORT` or set `HEALTHCHECK_ENABLED=false` |
+| `No module named 'bot'` | Run from the project root: `python -m bot.main` |
+| `ModuleNotFoundError` | Activate virtual environment: `source venv/bin/activate` |
+
+### LLM API errors
+
+```bash
+# Test OpenAI connection
+python -c "from openai import OpenAI; c = OpenAI(); print(c.models.list().data[0].id)"
+
+# Test Gemini connection
+python -c "
+from openai import OpenAI
+c = OpenAI(api_key='YOUR_GEMINI_KEY', base_url='https://generativelanguage.googleapis.com/v1beta/openai/')
+print(c.models.list().data[0].id)
+"
+```
+
+| Error | Fix |
+|-------|-----|
+| `AuthenticationError` | API key is wrong or expired |
+| `RateLimitError` | Gemini free tier: 5 RPM / 20 RPD — upgrade or switch to OpenAI |
+| `proxies TypeError` | Upgrade openai: `pip install 'openai>=1.58.0'` |
+
+### Moodle connection fails
+
+- The URL is semester-specific. Check the current URL on the Bilkent website.
+- Token may be expired:
+
+```bash
+rm data/moodle_token.txt
+# Restart bot — a new token is fetched automatically
+```
+
+### Embedding model won't download
+
+```bash
+# Download manually
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')"
+
+# Then switch to offline mode in .env
+# HF_HUB_OFFLINE=1
+```
+
+### Telegram Conflict error
+
+```
+telegram.error.Conflict: terminated by other getUpdates request
+```
+
+Another bot instance is running or a previous polling session hasn't closed:
+
+```bash
+# Systemd
+systemctl stop moodle-bot
+sleep 15
+systemctl start moodle-bot
+
+# Docker
+docker compose down
+sleep 15
+docker compose up -d
+```
+
+### BM25 index is slow to build
+
+If BM25 indexing takes 20+ seconds:
+
+```bash
+pip install PyStemmer
+# Restart bot — startup drops to ~1.5s
+```
+
+### Health check not responding
+
+```bash
+# Check if port is listening
+ss -tlnp | grep 9090
+
+# Manual test
+curl -v http://localhost:9090/health
+
+# Disable if not needed
+# .env: HEALTHCHECK_ENABLED=false
 ```

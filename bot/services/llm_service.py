@@ -58,7 +58,7 @@ def _format_history(history: list[dict[str, str]]) -> str:
     if not history:
         return "Yok."
     lines = [f"{item.get('role', 'user')}: {item.get('content', '').strip()}" for item in history]
-    return "\n".join(lines[-5:])
+    return "\n".join(lines[-15:])
 
 
 async def _complete(task: str, system_prompt: str, user_prompt: str) -> str:

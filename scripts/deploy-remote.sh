@@ -78,10 +78,10 @@ log "Health check bekleniyor..."
 HEALTH_OK=false
 for i in $(seq 1 6); do
     sleep 5
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health 2>/dev/null || echo "000")
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9090/health 2>/dev/null || echo "000")
     if [ "$HTTP_CODE" = "200" ]; then
         HEALTH_OK=true
-        HEALTH_BODY=$(curl -s http://localhost:8080/health)
+        HEALTH_BODY=$(curl -s http://localhost:9090/health)
         log "Health check PASS - $HEALTH_BODY"
         break
     fi

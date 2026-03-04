@@ -9,6 +9,13 @@ data/memory.db
 data/sync_state.json
 data/study_sessions.json
 data/profile.md
+data/cache.db
+data/file_summaries.json
+data/source_summaries/
+data/conversation_history.json
+
+# Logs
+logs/
 
 # Python
 __pycache__/

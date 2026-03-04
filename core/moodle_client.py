@@ -666,6 +666,60 @@ class MoodleClient:
 
         return result
 
+    def get_forum_posts(self, course_id: int | None = None, limit: int = 5) -> list[dict]:
+        """
+        Fetch recent forum announcements and discussions.
+        Uses: mod_forum_get_forums_by_courses → mod_forum_get_forum_discussions
+
+        Returns list of: {course, forum_name, subject, author, date, preview}
+        """
+        courses = self.get_courses()
+        if course_id is not None:
+            courses = [c for c in courses if c.id == course_id]
+        course_ids = [c.id for c in courses]
+        course_map = {c.id: c.fullname for c in courses}
+        if not course_ids:
+            return []
+
+        params = {f"courseids[{i}]": cid for i, cid in enumerate(course_ids)}
+        forums_raw = self._call("mod_forum_get_forums_by_courses", **params)
+        if not isinstance(forums_raw, list):
+            return []
+
+        announcement_forums = [f for f in forums_raw if f.get("type") == "news"]
+        target_forums = announcement_forums if announcement_forums else forums_raw[:3]
+
+        posts: list[dict] = []
+        for forum in target_forums:
+            forum_id = forum.get("id")
+            forum_name = forum.get("name", "Forum")
+            cid = forum.get("course", 0)
+            cname = course_map.get(cid, f"Course {cid}")
+            if not forum_id:
+                continue
+            discussions_raw = self._call(
+                "mod_forum_get_forum_discussions",
+                forumid=forum_id,
+                page=0,
+                perpage=limit,
+            )
+            if not isinstance(discussions_raw, dict):
+                continue
+            for d in discussions_raw.get("discussions", [])[:limit]:
+                msg_html = d.get("message", "") or d.get("firstpostmessage", "")
+                preview = self._clean_html(msg_html)[:200]
+                posts.append({
+                    "course": cname,
+                    "forum_name": forum_name,
+                    "subject": d.get("name", ""),
+                    "author": d.get("userfullname", ""),
+                    "date": d.get("timemodified", 0),
+                    "preview": preview,
+                })
+
+        posts.sort(key=lambda p: p["date"], reverse=True)
+        return posts[:limit]
+
     # ─── Utilities ───────────────────────────────────────────────────────
 
     @staticmethod

@@ -2,7 +2,7 @@
 name = "telegram-rag-bot"
 version = "1.0.0"
 description = "Telegram tabanli RAG destekli Moodle ogrenci asistani."
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration", "tests/e2e"]
@@ -13,10 +13,12 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: integration tests",
     "e2e: end-to-end tests",
+    "safety: verified defense tests — always run, must pass",
+    "redteam: gap-discovery red-team tests — run with -m redteam; xfail means gap exists",
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py310"
 line-length = 120
 
 [tool.ruff.lint]

@@ -22,7 +22,7 @@ log "Lint gecti"
 
 # 2. Test
 log "Testler calistiriliyor..."
-python -m pytest tests/unit/ -v --tb=short || fail "Testler fail - once duzelt"
+python3 -m pytest tests/unit/ -v --tb=short || fail "Testler fail - once duzelt"
 log "Testler gecti"
 
 # 3. Uncommitted degisiklik kontrolu
