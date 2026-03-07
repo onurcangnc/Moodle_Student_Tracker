@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import time
 from datetime import datetime, timedelta
 
 from telegram.ext import Application, ContextTypes
@@ -642,6 +644,36 @@ async def _sync_syllabus_limits(context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+# Polling watchdog: if no Telegram update received for 30 min, self-kill.
+# systemd Restart=always will restart the process.
+_WATCHDOG_TIMEOUT = 1800  # 30 minutes
+_WATCHDOG_GRACE = 600     # 10 minutes after startup before checking
+
+
+async def _polling_watchdog(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Kill the process if Telegram polling appears stuck."""
+    now = time.monotonic()
+    uptime = now - STATE.started_at_monotonic
+
+    # Don't check during startup grace period
+    if uptime < _WATCHDOG_GRACE:
+        return
+
+    last = STATE.last_update_received
+    # If never received any update, use startup time as baseline
+    if last == 0.0:
+        last = STATE.started_at_monotonic
+
+    silence = now - last
+    if silence > _WATCHDOG_TIMEOUT:
+        logger.critical(
+            "WATCHDOG: No Telegram update for %.0f seconds — killing process for restart",
+            silence,
+        )
+        await _send(context, "⚠️ Bot polling stuck — otomatik restart yapılıyor...")
+        os._exit(1)  # noqa: SLF001 — hard kill, systemd restarts
+
+
 # ─── Registration ─────────────────────────────────────────────────────────────
 
 def register_notification_jobs(app: Application) -> None:
@@ -729,9 +761,16 @@ def register_notification_jobs(app: Application) -> None:
         first=timedelta(minutes=5),  # Run soon after startup so limits are ready
         name="syllabus_limits_sync",
     )
+    jq.run_repeating(
+        _polling_watchdog,
+        interval=timedelta(minutes=5),
+        first=timedelta(minutes=10),
+        name="polling_watchdog",
+    )
 
     logger.info(
         "Notification jobs registered: assignments=10m, emails=5m, grades=30m, "
         "attendance=60m, schedule=6h, exams=6h, exam_reminder=1h, deadlines=30m, "
-        "session=24h, summaries=60m, cache_cleanup=weekly, syllabus_limits=24h"
+        "session=24h, summaries=60m, cache_cleanup=weekly, syllabus_limits=24h, "
+        "polling_watchdog=5m"
     )

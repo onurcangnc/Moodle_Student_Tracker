@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from bot.middleware.auth import admin_only
 from bot.services import user_service
+from bot.state import STATE
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,7 @@ async def post_init(app: Application) -> None:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send welcome message for agentic workflow."""
+    STATE.last_update_received = time.monotonic()
     await update.effective_message.reply_text(
         "Merhaba! 👋\n\n"
         "Ben akademik asistanınım — komut ezberleme, benimle konuş!\n\n"

@@ -45,6 +45,7 @@ class BotState:
     file_summaries: dict[str, dict] = field(default_factory=dict)
     started_at_monotonic: float = 0.0
     startup_version: str = "unknown"
+    last_update_received: float = 0.0  # monotonic timestamp of last Telegram update
 
 
 STATE = BotState()

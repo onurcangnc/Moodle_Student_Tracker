@@ -15,6 +15,7 @@ from bot.middleware.auth import admin_only
 from bot.services import document_service, user_service
 from bot.services.agent_service import handle_agent_message
 from bot.services.topic_cache import TOPIC_CACHE
+from bot.state import STATE
 from core import config as core_config
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if message is None or user is None or not message.text:
         return
 
+    STATE.last_update_received = time.monotonic()
     user_service.record_user_activity(user.id)
     if not user_service.check_rate_limit(user.id):
         await message.reply_text("Çok hızlı mesaj gönderdiniz. Lütfen bir dakika sonra tekrar deneyin.")
