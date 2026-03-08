@@ -175,7 +175,8 @@ def refresh_external_sessions() -> None:
         return
 
     if stars.is_authenticated(owner_id):
-        stars.logout(owner_id)
+        logger.info("STARS session still active for owner %s — skipping re-login", owner_id)
+        return
 
     logger.info("STARS login attempt for owner %s...", owner_id)
     result = stars.start_login(owner_id, stars_user, stars_pass)
