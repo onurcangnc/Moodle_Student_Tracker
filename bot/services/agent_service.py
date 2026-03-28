@@ -1594,6 +1594,7 @@ async def handle_agent_message(
     if STATE.llm is None:
         return "Sistem henüz hazır değil. Lütfen birazdan tekrar deneyin."
 
+    t_start = time.time()
     system_prompt = _build_system_prompt(user_id)
 
     # Detect language of current message and inject directive
@@ -1618,9 +1619,11 @@ async def handle_agent_message(
                 pass
 
         try:
+            t_llm = time.time()
             response_msg = await _call_llm_with_tools(
                 messages, system_prompt, available_tools
             )
+            logger.info("LLM call (iter %d): %.2fs", iteration + 1, time.time() - t_llm)
         except Exception as exc:
             logger.error("LLM call failed (iteration %d): %s", iteration, exc, exc_info=True)
             return "Bir sorun oluştu. Lütfen tekrar deneyin."
@@ -1645,6 +1648,7 @@ async def handle_agent_message(
                     rag_sources="",
                 )
 
+            logger.info("Total response time: %.2fs (no tools)", time.time() - t_start)
             return final_text
 
         # LLM wants tools — execute in parallel
@@ -1669,16 +1673,18 @@ async def handle_agent_message(
             except TelegramError:
                 pass
 
+        t_tools = time.time()
         tool_results = await asyncio.gather(
             *[_execute_tool_call(tc, user_id) for tc in tool_calls]
         )
         messages.extend(tool_results)
+        tool_names = [tc.function.name for tc in tool_calls]
 
         logger.info(
-            "Tool loop iteration %d: %d tools",
+            "Tools executed (iter %d): %s in %.2fs",
             iteration + 1,
-            len(tool_calls),
-            extra={"user_id": user_id, "tools": [tc.function.name for tc in tool_calls]},
+            tool_names,
+            time.time() - t_tools,
         )
 
     # Max iterations exceeded — stream final response
@@ -1691,8 +1697,11 @@ async def handle_agent_message(
     try:
         # Try streaming the final response
         if message:
+            t_stream = time.time()
             final_text = await _stream_final_response(messages, system_prompt, message)
             if final_text:
+                logger.info("Streaming response: %.2fs", time.time() - t_stream)
+                logger.info("Total response time: %.2fs (streamed)", time.time() - t_start)
                 user_service.add_conversation_turn(user_id, "user", user_text)
                 user_service.add_conversation_turn(user_id, "assistant", final_text)
                 return ""  # already sent via streaming
@@ -1705,4 +1714,5 @@ async def handle_agent_message(
 
     user_service.add_conversation_turn(user_id, "user", user_text)
     user_service.add_conversation_turn(user_id, "assistant", final_text)
+    logger.info("Total response time: %.2fs (with tools)", time.time() - t_start)
     return final_text
