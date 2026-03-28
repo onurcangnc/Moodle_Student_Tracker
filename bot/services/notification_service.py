@@ -548,7 +548,7 @@ async def _check_exam_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _check_deadline_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Remind about assignments due within 24 hours."""
+    """Remind about assignments due within 24 hours (not expired, not already notified)."""
     moodle = STATE.moodle
     if moodle is None:
         return
@@ -559,19 +559,40 @@ async def _check_deadline_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Notification: deadline reminder check failed: %s", exc)
         return
 
-    urgent = [a for a in assignments if not a.submitted]
+    now = time.time()
+    # Filter: not submitted, not expired, has a deadline
+    urgent = [
+        a for a in assignments
+        if not a.submitted
+        and a.due_date > now  # not expired
+        and a.due_date > 0    # has a deadline
+    ]
     if not urgent:
         return
 
-    lines = ["⏰ *Yaklaşan Deadline'lar (24 saat içinde)*\n"]
-    for a in urgent:
-        remaining = a.time_remaining if hasattr(a, "time_remaining") else ""
-        lines.append(f"• *{a.course_name}* — {a.name}")
-        if remaining:
-            lines.append(f"  Kalan: {remaining}")
+    # Dedup: track which deadlines we've already notified
+    sent: list[str] = cache_db.get_json("deadline_reminders_sent", OWNER_ID) or []
+    notifications = []
 
-    await _send(context, "\n".join(lines))
-    logger.info("Deadline reminder sent: %d urgent", len(urgent))
+    for a in urgent:
+        key = f"{a.course_name}_{a.name}_{a.due_date}"
+        if key in sent:
+            continue
+
+        remaining = a.time_remaining if hasattr(a, "time_remaining") else ""
+        line = f"• *{a.course_name}* — {a.name}"
+        if remaining:
+            line += f"\n  Kalan: {remaining}"
+        notifications.append(line)
+        sent.append(key)
+
+    if not notifications:
+        return
+
+    msg = "⏰ *Yaklaşan Deadline'lar (24 saat içinde)*\n\n" + "\n".join(notifications)
+    await _send(context, msg)
+    cache_db.set_json("deadline_reminders_sent", OWNER_ID, sent)
+    logger.info("Deadline reminder sent: %d urgent", len(notifications))
 
 
 async def _cleanup_old_cache(context: ContextTypes.DEFAULT_TYPE) -> None:
