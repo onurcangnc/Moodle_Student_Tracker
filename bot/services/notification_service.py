@@ -209,9 +209,13 @@ async def _check_new_assignments(context: ContextTypes.DEFAULT_TYPE) -> None:
     cache_db.set_json("assignments", OWNER_ID, serialized)
     logger.debug("Assignments cached: %d entries", len(serialized))
 
-    # Detect truly new assignments (not yet seen this session)
+    now = time.time()
+    # Detect truly new assignments (not yet seen this session, not expired)
     new_assignments = []
     for a in raw or []:
+        # Skip expired assignments
+        if hasattr(a, "due_date") and a.due_date > 0 and a.due_date < now:
+            continue
         aid = f"{a.course_name}_{a.name}"
         if aid not in STATE.known_assignment_ids:
             STATE.known_assignment_ids.add(aid)
@@ -222,9 +226,13 @@ async def _check_new_assignments(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     lines = ["📋 *Yeni Ödev Bildirimi*\n"]
     for a in new_assignments:
-        due = a.due_date if hasattr(a, "due_date") else "?"
+        # Format due date as human-readable
+        due_str = "?"
+        if hasattr(a, "due_date") and a.due_date > 0:
+            due_dt = datetime.fromtimestamp(a.due_date)
+            due_str = due_dt.strftime("%d/%m/%Y %H:%M")
         remaining = a.time_remaining if hasattr(a, "time_remaining") else ""
-        lines.append(f"• *{a.course_name}* — {a.name}\n  Teslim: {due}")
+        lines.append(f"• *{a.course_name}* — {a.name}\n  Teslim: {due_str}")
         if remaining:
             lines.append(f"  Kalan: {remaining}")
 
