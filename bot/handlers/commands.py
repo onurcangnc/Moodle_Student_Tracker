@@ -10,18 +10,22 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 from bot.middleware.auth import admin_only
 from bot.services import user_service
+from bot.services.agent_service import warmup_llm_connections
 from bot.state import STATE
 
 logger = logging.getLogger(__name__)
 
 
 async def post_init(app: Application) -> None:
-    """Register visible command list in Telegram client UI."""
+    """Register visible command list in Telegram client UI + warm up LLM connections."""
     commands = [
         BotCommand("start", "Botu başlat"),
         BotCommand("upload", "Admin materyal yükleme"),
     ]
     await app.bot.set_my_commands(commands)
+
+    # Pre-warm LLM connections to eliminate cold start latency
+    await warmup_llm_connections()
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -98,8 +98,29 @@ def _get_fast_router() -> Router:
         timeout=30,
         enable_pre_call_checks=True,
     )
-    logger.info("LiteLLM router initialized with latency-based routing")
+    logger.info("LiteLLM router initialized with %d models", len(model_list))
     return _litellm_router
+
+
+async def warmup_llm_connections() -> None:
+    """
+    Pre-warm LLM connections at startup to eliminate cold start latency.
+    Makes a lightweight call to establish TCP/TLS connections and populate
+    the router's latency measurements.
+    """
+    try:
+        router = _get_fast_router()
+        start = time.time()
+        # Minimal call to warm up connections
+        await router.acompletion(
+            model="fast",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1,
+        )
+        elapsed = (time.time() - start) * 1000
+        logger.info("LLM connections warmed up in %.0fms", elapsed)
+    except Exception as exc:
+        logger.warning("LLM warmup failed (non-critical): %s", exc)
 
 MAX_TOOL_ITERATIONS = 5
 
