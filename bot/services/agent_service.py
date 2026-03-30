@@ -49,7 +49,6 @@ def _get_fast_router() -> Router:
         return _litellm_router
 
     # Build model list — only models with RELIABLE tool calling support
-    # Excluded: Groq (malformed tool JSON), GLM (no parallel_tool_calls)
     model_list = []
 
     # OpenAI GPT-4.1-mini (fast, reliable, best tool support)
@@ -72,6 +71,16 @@ def _get_fast_router() -> Router:
             },
         })
 
+    # Mistral Large (excellent tool calling, 200B tokens/month)
+    if os.getenv("MISTRAL_API_KEY"):
+        model_list.append({
+            "model_name": "fast",
+            "litellm_params": {
+                "model": "mistral/mistral-large-latest",
+                "api_key": os.getenv("MISTRAL_API_KEY"),
+            },
+        })
+
     # DeepSeek V3 (very cheap: $0.14/M input, good tool support)
     if os.getenv("DEEPSEEK_API_KEY"):
         model_list.append({
@@ -82,8 +91,18 @@ def _get_fast_router() -> Router:
             },
         })
 
+    # GLM-5 (agentic workflows optimized, free)
+    if os.getenv("GLM_API_KEY"):
+        model_list.append({
+            "model_name": "fast",
+            "litellm_params": {
+                "model": "zai/glm-5",
+                "api_key": os.getenv("GLM_API_KEY"),
+            },
+        })
+
     if not model_list:
-        raise RuntimeError("No LLM API keys configured! Set at least one of: OPENAI_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY")
+        raise RuntimeError("No LLM API keys configured!")
 
     _litellm_router = Router(
         model_list=model_list,
