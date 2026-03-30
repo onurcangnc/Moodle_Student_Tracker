@@ -81,14 +81,13 @@ def _get_fast_router() -> Router:
             },
         })
 
-    # GLM-4-Flash (FREE, Chinese model with good multilingual)
+    # GLM-4.5-Flash (FREE via Zhipu/ZAI)
     if os.getenv("GLM_API_KEY"):
         model_list.append({
             "model_name": "fast",
             "litellm_params": {
-                "model": "openai/glm-4-flash",  # OpenAI-compatible endpoint
+                "model": "zai/glm-4.5-flash",
                 "api_key": os.getenv("GLM_API_KEY"),
-                "api_base": os.getenv("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"),
             },
         })
 
@@ -479,7 +478,7 @@ TOOLS: list[dict[str, Any]] = [
                 "Transkript — alınan dersler, notlar, krediler. "
                 "'transkriptim', 'transcript', 'aldığım dersler', 'GPA' gibi isteklerde çağır."
             ),
-            "parameters": {"type": "object", "properties": {}, "required": []},
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
     {
@@ -590,7 +589,7 @@ TOOLS: list[dict[str, Any]] = [
                 "'kurslarımı göster', 'hangi derslere kayıtlıyım' gibi isteklerde MUTLAKA çağır. "
                 "Aktif kurs işaretli gösterilir."
             ),
-            "parameters": {"type": "object", "properties": {}, "required": []},
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
     {
@@ -618,7 +617,7 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "get_stats",
             "description": "Bot istatistikleri: chunk, kurs, dosya sayısı, uptime.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
 ]
