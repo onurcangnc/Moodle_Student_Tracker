@@ -1359,9 +1359,7 @@ async def _tool_get_grades(args: dict, user_id: int) -> str:
 
 
 async def _tool_get_attendance(args: dict, user_id: int) -> str:
-    """Get attendance from STARS + syllabus limits from RAG."""
-    import re
-
+    """Get attendance from STARS + syllabus limits from cache."""
     # Cache-first: background job updates cache every 1 minute
     attendance = cache_db.get_json("attendance", user_id)
 
@@ -1375,37 +1373,9 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
         if not attendance:
             return f"'{course_filter}' ile eşleşen kurs devamsızlığı bulunamadı."
 
-    # Search syllabus for attendance limits
-    syllabus_limits: dict[str, dict] = {}
-    vs = STATE.vector_store
-    if vs:
-        for cd in attendance:
-            cname = cd.get("course", "")
-            # Extract course code (e.g., "CTIS 363" from "CTIS 363 Ethical...")
-            code_match = re.match(r"([A-Z]{2,4}\s*\d{3})", cname)
-            if code_match:
-                code = code_match.group(1)
-                # Search for attendance policy in syllabus
-                try:
-                    results = vs.hybrid_search(
-                        f"{code} attendance absence devamsızlık limit policy",
-                        n_results=3,
-                        course_filter=code,
-                    )
-                    for r in results:
-                        text = r.get("text", "").lower()
-                        # Look for patterns like "3 absences", "%20", "20%"
-                        abs_match = re.search(r"(\d+)\s*(?:absence|devamsızlık)", text)
-                        pct_match = re.search(r"(%\s*\d+|\d+\s*%)", text)
-                        if abs_match:
-                            syllabus_limits[cname] = {"type": "count", "limit": int(abs_match.group(1))}
-                            break
-                        elif pct_match:
-                            pct = int(re.sub(r"[%\s]", "", pct_match.group(1)))
-                            syllabus_limits[cname] = {"type": "percent", "limit": pct}
-                            break
-                except Exception:
-                    pass
+    # Load cached syllabus limits (populated by notification_service daily job)
+    # Format: {course_name: max_hours} — 0 means "checked but not found"
+    syllabus_limits: dict[str, int] = cache_db.get_json("syllabus_limits", user_id) or {}
 
     lines = []
     for cd in attendance:
@@ -1421,29 +1391,19 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
             line += f" Devam: {ratio}"
         line += f" ({absent} devamsız / {total} ders)"
 
-        # Add syllabus limit info
-        if cname in syllabus_limits:
-            limit_info = syllabus_limits[cname]
-            if limit_info["type"] == "count":
-                max_abs = limit_info["limit"]
-                remaining = max(0, max_abs - absent)
-                line += f"\n  📋 Syllabus limiti: max {max_abs} devamsızlık"
-                if remaining > 0:
-                    line += f" → {remaining} hak kaldı ✅"
-                else:
-                    line += f" → ⚠️ LİMİT AŞILDI!"
-            elif limit_info["type"] == "percent":
-                max_pct = limit_info["limit"]
-                try:
-                    current_pct = 100 - float(ratio.replace("%", ""))
-                    remaining_pct = max_pct - current_pct
-                    line += f"\n  📋 Syllabus limiti: max %{max_pct} devamsızlık"
-                    if remaining_pct > 0:
-                        line += f" → %{remaining_pct:.1f} hak kaldı ✅"
-                    else:
-                        line += f" → ⚠️ LİMİT AŞILDI!"
-                except (ValueError, AttributeError):
-                    line += f"\n  📋 Syllabus limiti: max %{max_pct} devamsızlık"
+        # Check cached syllabus limit (0 = not found sentinel)
+        max_hours = syllabus_limits.get(cname)
+        if max_hours and max_hours > 0:
+            # Syllabus specifies hours. Use 3h/session for 3-credit courses (typical).
+            hours_absent = absent * 3
+            remaining_hours = max(0, max_hours - hours_absent)
+            line += f"\n  📋 Syllabus limiti: max {max_hours} saat"
+            line += f" → {hours_absent} saat kullandın ({absent} ders)"
+            if remaining_hours > 0:
+                remaining_sessions = remaining_hours // 3
+                line += f" → ~{remaining_sessions} ders hakkın kaldı ✅"
+            else:
+                line += f" → ⚠️ LİMİT AŞILDI!"
         else:
             # Default warning if no syllabus found
             try:
