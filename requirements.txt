@@ -4,6 +4,7 @@
 beautifulsoup4==4.12.3
 faiss-cpu==1.13.2
 langchain-text-splitters==0.2.4
+litellm>=1.30.0
 markdownify==0.13.1
 numpy>=1.24.0,<3.0
 openai>=1.58.0

@@ -21,10 +21,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 from typing import Any
 
+from litellm import Router
 from telegram import Message
 from telegram.error import TelegramError
 
@@ -33,6 +35,45 @@ from bot.state import STATE
 from core import cache_db
 
 logger = logging.getLogger(__name__)
+
+# ─── LiteLLM Router (latency-based model selection) ─────────────────────────────
+# Automatically picks the fastest responding model, with fallback on failure.
+
+_litellm_router: Router | None = None
+
+
+def _get_fast_router() -> Router:
+    """Lazy-init LiteLLM router with latency-based routing."""
+    global _litellm_router
+    if _litellm_router is not None:
+        return _litellm_router
+
+    model_list = [
+        {
+            "model_name": "fast",
+            "litellm_params": {
+                "model": "gpt-4.1-mini",
+                "api_key": os.getenv("OPENAI_API_KEY"),
+            },
+        },
+        {
+            "model_name": "fast",
+            "litellm_params": {
+                "model": "gemini/gemini-2.5-flash",
+                "api_key": os.getenv("GEMINI_API_KEY"),
+            },
+        },
+    ]
+
+    _litellm_router = Router(
+        model_list=model_list,
+        routing_strategy="latency-based-routing",
+        num_retries=2,
+        timeout=30,
+        enable_pre_call_checks=True,
+    )
+    logger.info("LiteLLM router initialized with latency-based routing")
+    return _litellm_router
 
 MAX_TOOL_ITERATIONS = 5
 
@@ -767,40 +808,30 @@ async def _call_llm_with_tools(
     tools: list[dict[str, Any]],
     use_complex_model: bool = False,
 ) -> Any:
-    """Call LLM with function calling via the adapter's OpenAI client."""
-    llm = STATE.llm
-    if llm is None:
-        return None
-
-    # Smart model selection: use complexity model for complex queries
-    if use_complex_model:
-        model_key = llm.engine.router.complexity  # gpt-4.1-mini
-        logger.debug("Using complexity model for high-quality response")
-    else:
-        model_key = llm.engine.router.chat
-    adapter = llm.engine.get_adapter(model_key)
+    """Call LLM with function calling via LiteLLM Router (latency-based)."""
+    router = _get_fast_router()
 
     full_messages = [{"role": "system", "content": system_prompt}] + messages
 
-    # GPT-5 family uses max_completion_tokens instead of max_tokens
-    token_key = "max_completion_tokens" if "gpt-5" in adapter.model else "max_tokens"
     # Tool-selection calls need short output; final responses need more
     max_tokens = 1024 if tools else 4096
     kwargs: dict[str, Any] = {
-        "model": adapter.model,
+        "model": "fast",  # LiteLLM picks fastest available model
         "messages": full_messages,
-        token_key: max_tokens,
+        "max_tokens": max_tokens,
     }
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
         kwargs["parallel_tool_calls"] = True
 
-    response = await asyncio.to_thread(
-        adapter.client.chat.completions.create,
-        **kwargs,
-    )
-    return response.choices[0].message
+    try:
+        response = await router.acompletion(**kwargs)
+        logger.debug("LiteLLM response from: %s", response.model)
+        return response.choices[0].message
+    except Exception as exc:
+        logger.error("LiteLLM call failed: %s", exc)
+        return None
 
 
 # ─── Streaming ───────────────────────────────────────────────────────────────
@@ -814,33 +845,28 @@ async def _stream_final_response(
     message: Message,
 ) -> str:
     """Stream LLM response directly to Telegram via progressive message edits."""
-    llm = STATE.llm
-    if llm is None:
-        return ""
-
-    model_key = llm.engine.router.chat
-    adapter = llm.engine.get_adapter(model_key)
+    router = _get_fast_router()
 
     full_messages = [{"role": "system", "content": system_prompt}] + messages
-    token_key = "max_completion_tokens" if "gpt-5" in adapter.model else "max_tokens"
     kwargs: dict[str, Any] = {
-        "model": adapter.model,
+        "model": "fast",
         "messages": full_messages,
-        token_key: 4096,
+        "max_tokens": 4096,
         "stream": True,
     }
 
-    stream = await asyncio.to_thread(
-        adapter.client.chat.completions.create,
-        **kwargs,
-    )
+    try:
+        stream = await router.acompletion(**kwargs)
+    except Exception as exc:
+        logger.error("LiteLLM streaming failed: %s", exc)
+        return ""
 
     accumulated = ""
     sent_msg = None
     last_edit = 0.0
 
     try:
-        for chunk in stream:
+        async for chunk in stream:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 accumulated += delta.content
