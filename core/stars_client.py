@@ -586,8 +586,13 @@ class StarsClient:
                     cells = row.find_all("td")
                     if len(cells) >= 3:
                         attended_text = cells[2].get_text(strip=True)
-                        # Parse "1 / 1" or "0 / 1"
-                        present = "1" in attended_text.split("/")[0] if "/" in attended_text else True
+                        # Parse "X / Y" — present if X > 0 (e.g., "2/ 2" means attended)
+                        present = True
+                        if "/" in attended_text:
+                            try:
+                                present = int(attended_text.split("/")[0].strip()) > 0
+                            except ValueError:
+                                present = True
                         records.append(
                             {
                                 "title": cells[0].get_text(strip=True),
