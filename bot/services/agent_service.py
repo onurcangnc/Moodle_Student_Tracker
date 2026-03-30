@@ -71,10 +71,9 @@ def _get_fast_router() -> Router:
             },
         })
 
-    # Mistral Large — DISABLED: tool call ID format incompatible with LiteLLM
-    # Error: "Tool call id must be a-z, A-Z, 0-9, with a length of 9"
-    # if os.getenv("MISTRAL_API_KEY"):
-    #     model_list.append({...})
+    # Mistral Large — DISABLED: LiteLLM generates tool call IDs that don't match
+    # Mistral's required format (9 char alphanumeric). This is a LiteLLM bug.
+    # if os.getenv("MISTRAL_API_KEY"): ...
 
     # DeepSeek V3 (very cheap: $0.14/M input, good tool support)
     if os.getenv("DEEPSEEK_API_KEY"):
@@ -86,10 +85,8 @@ def _get_fast_router() -> Router:
             },
         })
 
-    # GLM-5 — DISABLED: doesn't support parallel_tool_calls param
-    # Even with drop_params, causes issues
-    # if os.getenv("GLM_API_KEY"):
-    #     model_list.append({...})
+    # GLM-5 — DISABLED: doesn't support parallel_tool_calls parameter
+    # if os.getenv("GLM_API_KEY"): ...
 
     if not model_list:
         raise RuntimeError("No LLM API keys configured!")
@@ -468,7 +465,7 @@ TOOLS: list[dict[str, Any]] = [
                 "Transkript — alınan dersler, notlar, krediler. "
                 "'transkriptim', 'transcript', 'aldığım dersler', 'GPA' gibi isteklerde çağır."
             ),
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "parameters": {"type": "object", "properties": {"_": {"type": "string", "description": "Unused"}}},
         },
     },
     {
@@ -579,7 +576,7 @@ TOOLS: list[dict[str, Any]] = [
                 "'kurslarımı göster', 'hangi derslere kayıtlıyım' gibi isteklerde MUTLAKA çağır. "
                 "Aktif kurs işaretli gösterilir."
             ),
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "parameters": {"type": "object", "properties": {"_": {"type": "string", "description": "Unused"}}},
         },
     },
     {
@@ -607,7 +604,7 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "get_stats",
             "description": "Bot istatistikleri: chunk, kurs, dosya sayısı, uptime.",
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "parameters": {"type": "object", "properties": {"_": {"type": "string", "description": "Unused"}}},
         },
     },
 ]
@@ -852,7 +849,7 @@ async def _call_llm_with_tools(
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
-        # NOT using parallel_tool_calls — many models don't support it (GLM, Mistral)
+        kwargs["parallel_tool_calls"] = True  # GPT, Gemini, DeepSeek all support this
 
     try:
         response = await router.acompletion(**kwargs)
