@@ -134,8 +134,9 @@ def _extract_syllabus_attendance_limit(course_name: str) -> int | None:
 
     Strategy:
     1. Derive short code from STARS full name (e.g. "HCIV 201 Sci..." → "HCIV 201")
-    2. Query RAG with course_filter=short_code (substring match in metadata)
-    3. Fallback: query without filter but embed course name in query text
+    2. FIRST: Check files with "syllabus" or "course details" in name (Bilkent convention)
+    3. Then: Query RAG with course_filter=short_code
+    4. Fallback: query without filter but embed course name in query text
     Returns integer hour limit, or None if not found / no syllabus uploaded.
     """
     store = STATE.vector_store
@@ -143,6 +144,17 @@ def _extract_syllabus_attendance_limit(course_name: str) -> int | None:
         return None
 
     short_code = _short_course_code(course_name)
+
+    def _extract_from_texts(texts: list[str]) -> int | None:
+        """Apply absence patterns to combined texts."""
+        combined = "\n".join(texts)
+        for pattern in _ABSENCE_PATTERNS:
+            m = pattern.search(combined)
+            if m:
+                val = int(m.group(1))
+                if 4 <= val <= 50:
+                    return val
+        return None
 
     def _search_and_extract(queries: list[tuple[str, str | None]]) -> int | None:
         """Search RAG and extract limit from results."""
@@ -156,17 +168,30 @@ def _extract_syllabus_attendance_limit(course_name: str) -> int | None:
                         seen_texts.append(text)
             except Exception as exc:
                 logger.debug("Syllabus RAG query failed for %s: %s", course_name, exc)
+        return _extract_from_texts(seen_texts)
 
-        combined = "\n".join(seen_texts)
-        for pattern in _ABSENCE_PATTERNS:
-            m = pattern.search(combined)
-            if m:
-                val = int(m.group(1))
-                if 4 <= val <= 50:
-                    return val
-        return None
+    # Step 0: Bilkent convention — first doc is usually syllabus
+    # Directly read files named "syllabus*" or "course details*" (case-insensitive)
+    try:
+        files = store.get_files_for_course(short_code)
+        syllabus_files = [
+            f for f in files
+            if any(kw in f.get("filename", "").lower() for kw in ["syllabus", "course_details", "course details"])
+        ]
+        for sf in syllabus_files:
+            chunks = store.get_file_chunks(sf["filename"], max_chunks=20)
+            texts = [c.get("text", "") for c in chunks if c.get("text")]
+            limit = _extract_from_texts(texts)
+            if limit is not None:
+                logger.info(
+                    "Syllabus attendance limit found for %s (file=%s): %d h",
+                    course_name, sf["filename"], limit,
+                )
+                return limit
+    except Exception as exc:
+        logger.debug("Direct syllabus file check failed for %s: %s", course_name, exc)
 
-    # Step 1: Try filtered queries first (course-specific results only)
+    # Step 1: Try filtered queries (course-specific results only)
     filtered_queries = [
         ("syllabus attendance absence limit hours miss lecture", short_code),
         ("devamsızlık saat limit hakkı miss", short_code),
