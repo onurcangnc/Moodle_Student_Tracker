@@ -71,15 +71,10 @@ def _get_fast_router() -> Router:
             },
         })
 
-    # Mistral Large (excellent tool calling, 200B tokens/month)
-    if os.getenv("MISTRAL_API_KEY"):
-        model_list.append({
-            "model_name": "fast",
-            "litellm_params": {
-                "model": "mistral/mistral-large-latest",
-                "api_key": os.getenv("MISTRAL_API_KEY"),
-            },
-        })
+    # Mistral Large — DISABLED: tool call ID format incompatible with LiteLLM
+    # Error: "Tool call id must be a-z, A-Z, 0-9, with a length of 9"
+    # if os.getenv("MISTRAL_API_KEY"):
+    #     model_list.append({...})
 
     # DeepSeek V3 (very cheap: $0.14/M input, good tool support)
     if os.getenv("DEEPSEEK_API_KEY"):
@@ -91,15 +86,10 @@ def _get_fast_router() -> Router:
             },
         })
 
-    # GLM-5 (agentic workflows optimized, free)
-    if os.getenv("GLM_API_KEY"):
-        model_list.append({
-            "model_name": "fast",
-            "litellm_params": {
-                "model": "zai/glm-5",
-                "api_key": os.getenv("GLM_API_KEY"),
-            },
-        })
+    # GLM-5 — DISABLED: doesn't support parallel_tool_calls param
+    # Even with drop_params, causes issues
+    # if os.getenv("GLM_API_KEY"):
+    #     model_list.append({...})
 
     if not model_list:
         raise RuntimeError("No LLM API keys configured!")
@@ -862,7 +852,7 @@ async def _call_llm_with_tools(
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
-        kwargs["parallel_tool_calls"] = True
+        # NOT using parallel_tool_calls — many models don't support it (GLM, Mistral)
 
     try:
         response = await router.acompletion(**kwargs)
