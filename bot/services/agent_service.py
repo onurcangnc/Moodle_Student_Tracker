@@ -48,22 +48,62 @@ def _get_fast_router() -> Router:
     if _litellm_router is not None:
         return _litellm_router
 
-    model_list = [
-        {
+    # Build model list dynamically based on available API keys
+    model_list = []
+
+    # OpenAI GPT-4.1-mini (fast, reliable)
+    if os.getenv("OPENAI_API_KEY"):
+        model_list.append({
             "model_name": "fast",
             "litellm_params": {
                 "model": "gpt-4.1-mini",
                 "api_key": os.getenv("OPENAI_API_KEY"),
             },
-        },
-        {
+        })
+
+    # Google Gemini 2.5 Flash (free tier: 15 RPM)
+    if os.getenv("GEMINI_API_KEY"):
+        model_list.append({
             "model_name": "fast",
             "litellm_params": {
                 "model": "gemini/gemini-2.5-flash",
                 "api_key": os.getenv("GEMINI_API_KEY"),
             },
-        },
-    ]
+        })
+
+    # Groq Llama 3.3 70B (FREE, ultra-fast LPU inference ~800 tok/s)
+    if os.getenv("GROQ_API_KEY"):
+        model_list.append({
+            "model_name": "fast",
+            "litellm_params": {
+                "model": "groq/llama-3.3-70b-versatile",
+                "api_key": os.getenv("GROQ_API_KEY"),
+            },
+        })
+
+    # GLM-4-Flash (FREE, Chinese model with good multilingual)
+    if os.getenv("GLM_API_KEY"):
+        model_list.append({
+            "model_name": "fast",
+            "litellm_params": {
+                "model": "openai/glm-4-flash",  # OpenAI-compatible endpoint
+                "api_key": os.getenv("GLM_API_KEY"),
+                "api_base": os.getenv("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"),
+            },
+        })
+
+    # DeepSeek V3 (very cheap: $0.14/M input, GPT-4 level quality)
+    if os.getenv("DEEPSEEK_API_KEY"):
+        model_list.append({
+            "model_name": "fast",
+            "litellm_params": {
+                "model": "deepseek/deepseek-chat",
+                "api_key": os.getenv("DEEPSEEK_API_KEY"),
+            },
+        })
+
+    if not model_list:
+        raise RuntimeError("No LLM API keys configured! Set at least one of: OPENAI_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, GLM_API_KEY, DEEPSEEK_API_KEY")
 
     _litellm_router = Router(
         model_list=model_list,
