@@ -422,8 +422,9 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "get_attendance",
             "description": (
-                "Devamsızlık bilgisi. Spesifik ders sorulursa SADECE o dersi getir. "
-                "Limite yaklaşıyorsa UYAR. STARS girişi gerektirir."
+                "Devamsızlık bilgisi + syllabus'tan max limit + kalan hak hesabı. "
+                "STARS'tan mevcut devamsızlık, RAG'den syllabus limiti çeker. "
+                "Spesifik ders sorulursa SADECE o dersi getir."
             ),
             "parameters": {
                 "type": "object",
@@ -696,7 +697,6 @@ Karmaşık sorularda tool'ları paralel çağır:
 - "Sınavlara nasıl hazırlanayım?" → get_assignments + get_schedule + get_source_map
 - "Bugün ne var?" → get_schedule(today) + get_assignments(upcoming)
 - "Akademik durumum?" → get_grades + get_attendance + get_assignments
-- "Devamsızlık durumum/limiti?" → get_attendance (STARS'tan mevcut) + read_source/rag_search (syllabus'tan max limit) → kalan hakkı hesapla
 
 Basit sorularda TEK tool yeterli — fazla tool çağırma.
 Sohbet/selamlama → HİÇ tool çağırma, doğrudan cevap ver.
@@ -1359,7 +1359,9 @@ async def _tool_get_grades(args: dict, user_id: int) -> str:
 
 
 async def _tool_get_attendance(args: dict, user_id: int) -> str:
-    """Get attendance from cache (updated every 1 min by background sync)."""
+    """Get attendance from STARS + syllabus limits from RAG."""
+    import re
+
     # Cache-first: background job updates cache every 1 minute
     attendance = cache_db.get_json("attendance", user_id)
 
@@ -1373,6 +1375,38 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
         if not attendance:
             return f"'{course_filter}' ile eşleşen kurs devamsızlığı bulunamadı."
 
+    # Search syllabus for attendance limits
+    syllabus_limits: dict[str, dict] = {}
+    vs = STATE.vector_store
+    if vs:
+        for cd in attendance:
+            cname = cd.get("course", "")
+            # Extract course code (e.g., "CTIS 363" from "CTIS 363 Ethical...")
+            code_match = re.match(r"([A-Z]{2,4}\s*\d{3})", cname)
+            if code_match:
+                code = code_match.group(1)
+                # Search for attendance policy in syllabus
+                try:
+                    results = vs.hybrid_search(
+                        f"{code} attendance absence devamsızlık limit policy",
+                        n_results=3,
+                        course_filter=code,
+                    )
+                    for r in results:
+                        text = r.get("text", "").lower()
+                        # Look for patterns like "3 absences", "%20", "20%"
+                        abs_match = re.search(r"(\d+)\s*(?:absence|devamsızlık)", text)
+                        pct_match = re.search(r"(%\s*\d+|\d+\s*%)", text)
+                        if abs_match:
+                            syllabus_limits[cname] = {"type": "count", "limit": int(abs_match.group(1))}
+                            break
+                        elif pct_match:
+                            pct = int(re.sub(r"[%\s]", "", pct_match.group(1)))
+                            syllabus_limits[cname] = {"type": "percent", "limit": pct}
+                            break
+                except Exception:
+                    pass
+
     lines = []
     for cd in attendance:
         cname = cd.get("course", "Bilinmeyen")
@@ -1384,15 +1418,40 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
 
         line = f"📚 {cname}:"
         if ratio:
-            line += f" Devam oranı: {ratio}"
-        line += f" ({absent}/{total} devamsız)"
+            line += f" Devam: {ratio}"
+        line += f" ({absent} devamsız / {total} ders)"
 
-        try:
-            ratio_num = float(ratio.replace("%", "")) if ratio else 100
-            if ratio_num < 85:
-                line += "\n  ⚠️ Dikkat: Devamsızlık limiti %20'ye yaklaşıyor!"
-        except (ValueError, AttributeError):
-            pass
+        # Add syllabus limit info
+        if cname in syllabus_limits:
+            limit_info = syllabus_limits[cname]
+            if limit_info["type"] == "count":
+                max_abs = limit_info["limit"]
+                remaining = max(0, max_abs - absent)
+                line += f"\n  📋 Syllabus limiti: max {max_abs} devamsızlık"
+                if remaining > 0:
+                    line += f" → {remaining} hak kaldı ✅"
+                else:
+                    line += f" → ⚠️ LİMİT AŞILDI!"
+            elif limit_info["type"] == "percent":
+                max_pct = limit_info["limit"]
+                try:
+                    current_pct = 100 - float(ratio.replace("%", ""))
+                    remaining_pct = max_pct - current_pct
+                    line += f"\n  📋 Syllabus limiti: max %{max_pct} devamsızlık"
+                    if remaining_pct > 0:
+                        line += f" → %{remaining_pct:.1f} hak kaldı ✅"
+                    else:
+                        line += f" → ⚠️ LİMİT AŞILDI!"
+                except (ValueError, AttributeError):
+                    line += f"\n  📋 Syllabus limiti: max %{max_pct} devamsızlık"
+        else:
+            # Default warning if no syllabus found
+            try:
+                ratio_num = float(ratio.replace("%", "")) if ratio else 100
+                if ratio_num < 85:
+                    line += "\n  ⚠️ Dikkat: Devamsızlık limiti %20'ye yaklaşıyor!"
+            except (ValueError, AttributeError):
+                pass
 
         lines.append(line)
 
