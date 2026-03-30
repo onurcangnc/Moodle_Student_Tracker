@@ -36,6 +36,44 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_ITERATIONS = 5
 
+# ─── Instant Responses (LLM bypass for simple queries) ───────────────────────
+
+_INSTANT_RESPONSES: dict[str, str] = {
+    # Greetings
+    "merhaba": "Merhaba! 👋 Nasıl yardımcı olabilirim?",
+    "selam": "Selam! Ne yapmak istersin?",
+    "slm": "Selam! Ne yapmak istersin?",
+    "mrb": "Merhaba! 👋 Nasıl yardımcı olabilirim?",
+    "hi": "Hi! How can I help you?",
+    "hello": "Hello! What can I do for you?",
+    "hey": "Hey! How can I help?",
+    # Gratitude
+    "teşekkürler": "Rica ederim! Başka bir şey lazım olursa yaz. 🙂",
+    "teşekkür ederim": "Rica ederim! Başka bir şey lazım olursa yaz. 🙂",
+    "sağol": "Ne demek! Başka sorun varsa sor. 🙂",
+    "sağ ol": "Ne demek! Başka sorun varsa sor. 🙂",
+    "thanks": "You're welcome! Let me know if you need anything else.",
+    "thank you": "You're welcome! Let me know if you need anything else.",
+    # Acknowledgments
+    "tamam": "Tamam! Başka bir şey var mı?",
+    "ok": "Okay! Anything else?",
+    "anladım": "Güzel! Başka sorun olursa yaz.",
+    "peki": "Peki! Başka bir konuda yardım edebilir miyim?",
+    # Farewells
+    "görüşürüz": "Görüşürüz! İyi çalışmalar! 👋",
+    "bye": "Bye! Good luck! 👋",
+    "bb": "Görüşürüz! 👋",
+}
+
+
+def _check_instant_response(text: str) -> str | None:
+    """Check if message matches an instant response pattern."""
+    normalized = text.strip().lower()
+    # Exact match
+    if normalized in _INSTANT_RESPONSES:
+        return _INSTANT_RESPONSES[normalized]
+    return None
+
 # ─── Tool Definitions (OpenAI function calling format) ────────────────────────
 
 TOOLS: list[dict[str, Any]] = [
@@ -701,6 +739,51 @@ async def _stream_final_response(
             return ""  # caller will use non-streaming fallback
 
     return accumulated
+
+
+async def _send_progressive(message: Message, text: str) -> None:
+    """
+    Send pre-generated text progressively for perceived speed.
+    Simulates streaming by revealing text in chunks.
+    """
+    if not text:
+        return
+
+    # For short messages, just send directly
+    if len(text) < 100:
+        await message.reply_text(text, parse_mode="Markdown")
+        return
+
+    # Progressive reveal: start with first sentence/chunk, expand
+    chunk_size = max(50, len(text) // 5)  # ~5 updates total
+    sent_msg = None
+
+    try:
+        for i in range(0, len(text), chunk_size):
+            partial = text[: i + chunk_size]
+            if sent_msg is None:
+                sent_msg = await message.reply_text(partial, parse_mode=None)
+            else:
+                try:
+                    await sent_msg.edit_text(partial, parse_mode=None)
+                except TelegramError:
+                    pass  # Rate limit or unchanged — continue
+            await asyncio.sleep(0.15)  # Brief pause between updates
+
+        # Final edit with Markdown
+        if sent_msg:
+            try:
+                await sent_msg.edit_text(text, parse_mode="Markdown")
+            except TelegramError:
+                try:
+                    await sent_msg.edit_text(text, parse_mode=None)
+                except TelegramError:
+                    pass
+    except Exception as exc:
+        logger.warning("Progressive send failed: %s", exc)
+        # Fallback: send full text
+        if sent_msg is None:
+            await message.reply_text(text, parse_mode="Markdown")
 
 
 # ─── Tool Handlers ───────────────────────────────────────────────────────────
@@ -1539,6 +1622,14 @@ async def handle_agent_message(
 
     Returns empty string if response was already streamed to the user.
     """
+    # ═══ Instant response bypass (no LLM call) ═══
+    instant = _check_instant_response(user_text)
+    if instant:
+        user_service.add_conversation_turn(user_id, "user", user_text)
+        user_service.add_conversation_turn(user_id, "assistant", instant)
+        logger.info("Instant response for: %s", user_text[:30])
+        return instant
+
     if STATE.llm is None:
         return "Sistem henüz hazır değil. Lütfen birazdan tekrar deneyin."
 
@@ -1581,21 +1672,20 @@ async def handle_agent_message(
 
         tool_calls = getattr(response_msg, "tool_calls", None)
         if not tool_calls:
-            # LLM returned final text — this was a non-streaming call (with tools)
-            # The response is already complete, just return it
+            # LLM returned final text — send progressively for perceived speed
             final_text = response_msg.content or ""
+
+            if message and final_text:
+                # Progressive send: show text appearing quickly
+                await _send_progressive(message, final_text)
+                user_service.add_conversation_turn(user_id, "user", user_text)
+                user_service.add_conversation_turn(user_id, "assistant", final_text)
+                logger.info("Total response time: %.2fs (progressive)", time.time() - t_start)
+                return ""  # Already sent
+
+            # No message object — return text directly
             user_service.add_conversation_turn(user_id, "user", user_text)
             user_service.add_conversation_turn(user_id, "assistant", final_text)
-
-            if STATE.llm and STATE.llm.mem_manager:
-                active = user_service.get_active_course(user_id)
-                STATE.llm.mem_manager.record_exchange(
-                    user_message=user_text,
-                    assistant_response=final_text,
-                    course=active.course_id if active else "",
-                    rag_sources="",
-                )
-
             logger.info("Total response time: %.2fs (no tools)", time.time() - t_start)
             return final_text
 

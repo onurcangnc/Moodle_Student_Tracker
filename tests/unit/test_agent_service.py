@@ -1464,8 +1464,20 @@ class TestBuildSystemPrompt:
 
 class TestHandleAgentMessage:
     @pytest.mark.asyncio
+    async def test_instant_response_greeting(self, monkeypatch):
+        # Instant responses should work even without LLM
+        result = await agent_service.handle_agent_message(1, "merhaba")
+        assert "merhaba" in result.lower() or "yardımcı" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_instant_response_thanks(self, monkeypatch):
+        result = await agent_service.handle_agent_message(1, "teşekkürler")
+        assert "rica" in result.lower()
+
+    @pytest.mark.asyncio
     async def test_no_llm(self, monkeypatch):
-        result = await agent_service.handle_agent_message(1, "hello")
+        # Non-instant messages should fail without LLM
+        result = await agent_service.handle_agent_message(1, "notlarımı göster")
         assert "hazır değil" in result.lower()
 
     @pytest.mark.asyncio
