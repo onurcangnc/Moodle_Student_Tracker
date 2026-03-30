@@ -696,6 +696,7 @@ Karmaşık sorularda tool'ları paralel çağır:
 - "Sınavlara nasıl hazırlanayım?" → get_assignments + get_schedule + get_source_map
 - "Bugün ne var?" → get_schedule(today) + get_assignments(upcoming)
 - "Akademik durumum?" → get_grades + get_attendance + get_assignments
+- "Devamsızlık durumum/limiti?" → get_attendance (STARS'tan mevcut) + read_source/rag_search (syllabus'tan max limit) → kalan hakkı hesapla
 
 Basit sorularda TEK tool yeterli — fazla tool çağırma.
 Sohbet/selamlama → HİÇ tool çağırma, doğrudan cevap ver.
