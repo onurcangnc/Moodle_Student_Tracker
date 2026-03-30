@@ -1377,33 +1377,45 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
     # Format: {course_name: max_hours} — 0 means "checked but not found"
     syllabus_limits: dict[str, int] = cache_db.get_json("syllabus_limits", user_id) or {}
 
+    def _calc_missed_hours(records: list[dict]) -> int:
+        """Calculate actual missed hours from STARS raw data (e.g., '0/ 2' = 2h missed)."""
+        total_missed = 0
+        for r in records:
+            raw = r.get("raw", "")
+            if "/" in raw:
+                try:
+                    parts = raw.replace(" ", "").split("/")
+                    attended_h = int(parts[0])
+                    total_h = int(parts[1])
+                    total_missed += total_h - attended_h
+                except (ValueError, IndexError):
+                    pass
+        return total_missed
+
     lines = []
     for cd in attendance:
         cname = cd.get("course", "Bilinmeyen")
         records = cd.get("records", [])
         ratio = cd.get("ratio", "")
 
-        total = len(records)
-        absent = sum(1 for r in records if not r.get("attended", True))
+        total_sessions = len(records)
+        absent_sessions = sum(1 for r in records if not r.get("attended", True))
+        hours_absent = _calc_missed_hours(records)
 
         line = f"📚 {cname}:"
         if ratio:
             line += f" Devam: {ratio}"
-        line += f" ({absent} devamsız / {total} ders)"
+        line += f" ({hours_absent} saat devamsız / {absent_sessions} ders)"
 
         # Check cached syllabus limit (0 = not found sentinel)
         max_hours = syllabus_limits.get(cname)
         if max_hours and max_hours > 0:
-            # Syllabus specifies hours. Use 3h/session for 3-credit courses (typical).
-            hours_absent = absent * 3
             remaining_hours = max(0, max_hours - hours_absent)
             line += f"\n  📋 Syllabus limiti: max {max_hours} saat"
-            line += f" → {hours_absent} saat kullandın ({absent} ders)"
             if remaining_hours > 0:
-                remaining_sessions = remaining_hours // 3
-                line += f" → ~{remaining_sessions} ders hakkın kaldı ✅"
+                line += f" → {remaining_hours} saat hakkın kaldı ✅"
             else:
-                line += f" → ⚠️ LİMİT AŞILDI!"
+                line += f" → ⚠️ LİMİT AŞILDI! ({hours_absent - max_hours} saat fazla)"
         else:
             # Default warning if no syllabus found
             try:

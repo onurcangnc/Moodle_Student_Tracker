@@ -61,6 +61,8 @@ _ABSENCE_PATTERNS = [
     re.compile(r"absence\s+limit[:\s]+(\d+)", re.IGNORECASE),
     # "(\d+) hours of absence"
     re.compile(r"(\d+)\s*hours?\s+of\s+absence", re.IGNORECASE),
+    # "less than 19 lecture hours of absence"
+    re.compile(r"less\s+than\s+(\d+)\s*(?:lecture\s+)?hours?\s*(?:of\s+)?absence", re.IGNORECASE),
     # Turkish: "devamsızlık hakkı: 12 saat" / "12 saatlik devamsızlık hakkı"
     re.compile(r"devams[ıi]zl[ıi]k\s+hakk[ıi][:\s]+(\d+)\s*saat", re.IGNORECASE),
     re.compile(r"(\d+)\s*saatlik\s+devams[ıi]zl[ıi]k", re.IGNORECASE),
@@ -147,8 +149,13 @@ def _extract_syllabus_attendance_limit(course_name: str) -> int | None:
         ("syllabus attendance absence limit hours miss lecture", short_code),
         ("devamsızlık saat limit hakkı miss", short_code),
         ("minimum requirements qualify final exam", short_code),
+        # "Course Details" docs often contain attendance policy (e.g., "Week 01 - Course Details")
+        ("course details attendance absence hours miss", short_code),
+        # Week 1 lectures often have syllabus content
+        ("week 1 attendance policy absence limit", short_code),
         # Fallback: no filter, course code embedded in query text
         (f"{short_code} syllabus attendance miss hours absence limit", None),
+        (f"{short_code} course details minimum requirements absence", None),
     ]
 
     seen_texts: list[str] = []
