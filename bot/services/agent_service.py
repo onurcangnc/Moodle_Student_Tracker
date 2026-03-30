@@ -74,6 +74,115 @@ def _check_instant_response(text: str) -> str | None:
         return _INSTANT_RESPONSES[normalized]
     return None
 
+
+# ─── Smart Model Selection ───────────────────────────────────────────────────
+
+_COMPLEXITY_KEYWORDS = {
+    # Deep analysis requests
+    "detaylı", "ayrıntılı", "derinlemesine", "kapsamlı", "analiz",
+    "karşılaştır", "compare", "explain in detail", "thoroughly",
+    # Multi-aspect queries
+    "akademik durumum", "genel durum", "özet", "summary",
+    "tüm dersler", "all courses", "everything",
+    # Teaching requests
+    "anlat", "öğret", "açıkla", "explain", "teach",
+    # Planning requests
+    "nasıl hazırlanayım", "strateji", "plan", "tavsiye",
+}
+
+
+def _is_complex_query(user_text: str, tool_count: int = 0) -> bool:
+    """Detect if query needs higher-quality model."""
+    text_lower = user_text.lower()
+
+    # Multiple tools requested = complex
+    if tool_count >= 2:
+        return True
+
+    # Long query = likely complex
+    if len(user_text) > 150:
+        return True
+
+    # Complexity keywords
+    if any(kw in text_lower for kw in _COMPLEXITY_KEYWORDS):
+        return True
+
+    return False
+
+
+# ─── Smart Error Messages ────────────────────────────────────────────────────
+
+def _extract_topic(text: str) -> str | None:
+    """Extract main topic from user query for profile tracking."""
+    text_lower = text.lower()
+
+    # Skip greetings and short messages
+    if len(text) < 10:
+        return None
+
+    # Common topic patterns
+    topic_patterns = [
+        # Course-related
+        ("not", "notlar"),
+        ("devamsızlık", "devamsızlık"),
+        ("ders program", "program"),
+        ("ödev", "ödevler"),
+        ("sınav", "sınavlar"),
+        ("mail", "mailler"),
+        # Study-related
+        ("çalış", "ders çalışma"),
+        ("anlat", "konu açıklama"),
+        ("öğret", "öğretim"),
+        ("privacy", "privacy"),
+        ("ethics", "ethics"),
+        ("güvenlik", "güvenlik"),
+    ]
+
+    for pattern, topic in topic_patterns:
+        if pattern in text_lower:
+            return topic
+
+    return None
+
+
+def _smart_error(error_type: str, context: str = "", user_id: int | None = None) -> str:
+    """Generate helpful error messages with recovery suggestions."""
+
+    if error_type == "llm_failed":
+        return (
+            "⚠️ Yanıt oluştururken bir sorun oluştu.\n\n"
+            "Şunları deneyebilirsin:\n"
+            "• Soruyu daha kısa/basit yaz\n"
+            "• Biraz bekleyip tekrar dene\n"
+            f"{context}"
+        )
+
+    if error_type == "llm_null":
+        return (
+            "⚠️ Yanıt üretilemedi. Sistem meşgul olabilir.\n"
+            "Birkaç saniye bekleyip tekrar dene."
+        )
+
+    if error_type == "stars_session":
+        # Try to provide cached data info
+        cache_hint = ""
+        if user_id:
+            cached = cache_db.get_json("grades", user_id)
+            if cached:
+                cache_hint = f"\n💡 Son bilinen veriler mevcut (cache). Temel bilgiler için tekrar sorabilirsin."
+        return (
+            f"⚠️ STARS bağlantısı sona ermiş.{cache_hint}\n\n"
+            "Yeniden bağlanmak için /start yaz."
+        )
+
+    if error_type == "no_data":
+        return (
+            f"📭 {context}\n\n"
+            "Farklı bir sorgu denemek ister misin?"
+        )
+
+    return "Bir sorun oluştu. Lütfen tekrar dene."
+
 # ─── Tool Definitions (OpenAI function calling format) ────────────────────────
 
 TOOLS: list[dict[str, Any]] = [
@@ -477,6 +586,9 @@ def _build_system_prompt(user_id: int) -> str:
     if STATE.llm:
         student_ctx = STATE.llm._build_student_context()
 
+    # Add student profile context
+    profile_ctx = cache_db.get_profile_context(user_id)
+
     return f"""Sen Bilkent Üniversitesi öğrencileri için bir akademik asistan botsun.
 
 ## DİL KURALI (KRİTİK — HER MESAJDA UYGULA)
@@ -489,6 +601,7 @@ Kullanıcının SON mesajının dili yanıt dilini belirler. Konuşma geçmişi 
 Aktif servisler: {chr(10).join(services)}
 Tarih: {date_str} ({today_tr})
 {student_ctx}
+{profile_ctx}
 
 ## KONUŞMA BAĞLAMI (KRİTİK)
 Her mesajı KONUŞMADAKİ ÖNCEKI MESAJLARLA BİRLİKTE değerlendir.
@@ -614,6 +727,23 @@ Yanıtını göndermeden önce kontrol et:
 ASLA kullanma: chunk, RAG, retrieval, embedding, vector, tool, function call, token, pipeline, LLM, model, API, context window, top-k
 Bunlar yerine: materyal, kaynak, bilgi, arama, içerik
 
+## FOLLOW-UP ÖNERİLERİ (KRİTİK — KULLANICI DENEYİMİ)
+Her yanıtın sonunda BAĞLAMSAL bir öneri ekle (zorunlu değil ama faydalı):
+
+Veri gösterdikten sonra (notlar, program, ödev):
+→ "Başka bir şey görmek ister misin? (devamsızlık, transkript vb.)"
+
+Ders çalışma sonrası:
+→ "Devam edelim mi, yoksa başka bir konuya mı geçelim?"
+
+Sorun/düşük not görürsen:
+→ "Bu dersle ilgili materyallere bakabilir veya çalışma planı yapabiliriz."
+
+Mail gösterdikten sonra:
+→ "Detayını görmek istersen numarasını veya konusunu yaz."
+
+ÖNEMLİ: Önerileri KISA tut (1 cümle), abartma. Soru sor ama baskıcı olma.
+
 ## SON KURAL — DİL (BU KURALI ASLA İHLAL ETME)
 Kullanıcının SON mesajı İngilizce ise yanıtın %100 İngilizce olmalı.
 Kullanıcının SON mesajı Türkçe ise yanıtın %100 Türkçe olmalı.
@@ -635,13 +765,19 @@ async def _call_llm_with_tools(
     messages: list[dict[str, Any]],
     system_prompt: str,
     tools: list[dict[str, Any]],
+    use_complex_model: bool = False,
 ) -> Any:
     """Call LLM with function calling via the adapter's OpenAI client."""
     llm = STATE.llm
     if llm is None:
         return None
 
-    model_key = llm.engine.router.chat
+    # Smart model selection: use complexity model for complex queries
+    if use_complex_model:
+        model_key = llm.engine.router.complexity  # gpt-4.1-mini
+        logger.debug("Using complexity model for high-quality response")
+    else:
+        model_key = llm.engine.router.chat
     adapter = llm.engine.get_adapter(model_key)
 
     full_messages = [{"role": "system", "content": system_prompt}] + messages
@@ -1649,6 +1785,10 @@ async def handle_agent_message(
         messages.append({"role": turn["role"], "content": turn["content"]})
     messages.append({"role": "user", "content": user_text})
 
+    # Detect if query needs higher-quality model
+    is_complex = _is_complex_query(user_text)
+    tools_used: list[str] = []
+
     for iteration in range(MAX_TOOL_ITERATIONS):
         # Refresh typing indicator before each LLM call
         if message:
@@ -1659,16 +1799,19 @@ async def handle_agent_message(
 
         try:
             t_llm = time.time()
+            # Use complex model for final response if query is complex or multiple tools used
+            use_complex = is_complex or len(tools_used) >= 2
             response_msg = await _call_llm_with_tools(
-                messages, system_prompt, available_tools
+                messages, system_prompt, available_tools, use_complex_model=use_complex
             )
-            logger.info("LLM call (iter %d): %.2fs", iteration + 1, time.time() - t_llm)
+            logger.info("LLM call (iter %d): %.2fs%s", iteration + 1, time.time() - t_llm,
+                       " [complex]" if use_complex else "")
         except Exception as exc:
             logger.error("LLM call failed (iteration %d): %s", iteration, exc, exc_info=True)
-            return "Bir sorun oluştu. Lütfen tekrar deneyin."
+            return _smart_error("llm_failed", f"Hata: {type(exc).__name__}")
 
         if response_msg is None:
-            return "Yanıt üretilemedi. Lütfen tekrar deneyin."
+            return _smart_error("llm_null")
 
         tool_calls = getattr(response_msg, "tool_calls", None)
         if not tool_calls:
@@ -1680,12 +1823,18 @@ async def handle_agent_message(
                 await _send_progressive(message, final_text)
                 user_service.add_conversation_turn(user_id, "user", user_text)
                 user_service.add_conversation_turn(user_id, "assistant", final_text)
+                # Track query for profile
+                active = user_service.get_active_course(user_id)
+                cache_db.track_query(user_id, course=active.course_id if active else None, topic=_extract_topic(user_text))
                 logger.info("Total response time: %.2fs (progressive)", time.time() - t_start)
                 return ""  # Already sent
 
             # No message object — return text directly
             user_service.add_conversation_turn(user_id, "user", user_text)
             user_service.add_conversation_turn(user_id, "assistant", final_text)
+            # Track query for profile
+            active = user_service.get_active_course(user_id)
+            cache_db.track_query(user_id, course=active.course_id if active else None, topic=_extract_topic(user_text))
             logger.info("Total response time: %.2fs (no tools)", time.time() - t_start)
             return final_text
 
@@ -1717,6 +1866,7 @@ async def handle_agent_message(
         )
         messages.extend(tool_results)
         tool_names = [tc.function.name for tc in tool_calls]
+        tools_used.extend(tool_names)  # Track for complexity detection
 
         logger.info(
             "Tools executed (iter %d): %s in %.2fs",
@@ -1752,5 +1902,14 @@ async def handle_agent_message(
 
     user_service.add_conversation_turn(user_id, "user", user_text)
     user_service.add_conversation_turn(user_id, "assistant", final_text)
+
+    # Track query for profile building
+    active = user_service.get_active_course(user_id)
+    cache_db.track_query(
+        user_id,
+        course=active.course_id if active else None,
+        topic=_extract_topic(user_text),
+    )
+
     logger.info("Total response time: %.2fs (with tools)", time.time() - t_start)
     return final_text

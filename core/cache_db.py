@@ -201,3 +201,83 @@ def set_json(cache_key: str, user_id: int, data: Any) -> None:
         logger.debug("Cache set [%s/%s]", cache_key, user_id)
     except (sqlite3.Error, TypeError) as exc:
         logger.error("Cache write failed [%s/%s]: %s", cache_key, user_id, exc)
+
+
+# ─── Student Profile ────────────────────────────────────────────────────────
+
+
+def get_student_profile(user_id: int) -> dict:
+    """Get student profile with preferences and behavior data."""
+    profile = get_json("student_profile", user_id)
+    if profile is None:
+        # Default profile
+        return {
+            "course_queries": {},  # {course_name: count}
+            "preferred_lang": "tr",  # detected over time
+            "query_count": 0,
+            "last_topics": [],  # recent 5 topics asked about
+            "style_hints": [],  # e.g., ["prefers_detail", "asks_followups"]
+        }
+    return profile
+
+
+def update_student_profile(user_id: int, updates: dict) -> None:
+    """Update specific fields in student profile."""
+    profile = get_student_profile(user_id)
+    profile.update(updates)
+    set_json("student_profile", user_id, profile)
+
+
+def track_query(user_id: int, course: str | None = None, topic: str | None = None) -> None:
+    """Track a query for profile building."""
+    profile = get_student_profile(user_id)
+
+    # Increment query count
+    profile["query_count"] = profile.get("query_count", 0) + 1
+
+    # Track course queries
+    if course:
+        courses = profile.get("course_queries", {})
+        courses[course] = courses.get(course, 0) + 1
+        profile["course_queries"] = courses
+
+    # Track recent topics (keep last 5)
+    if topic:
+        topics = profile.get("last_topics", [])
+        if topic not in topics:
+            topics.insert(0, topic)
+            profile["last_topics"] = topics[:5]
+
+    set_json("student_profile", user_id, profile)
+
+
+def get_profile_context(user_id: int) -> str:
+    """Build context string from profile for system prompt."""
+    profile = get_student_profile(user_id)
+
+    parts = []
+
+    # Favorite courses
+    course_queries = profile.get("course_queries", {})
+    if course_queries:
+        top_courses = sorted(course_queries.items(), key=lambda x: x[1], reverse=True)[:3]
+        if top_courses:
+            names = [c[0] for c in top_courses]
+            parts.append(f"Sık sorduğu dersler: {', '.join(names)}")
+
+    # Recent topics
+    topics = profile.get("last_topics", [])
+    if topics:
+        parts.append(f"Son ilgilendiği konular: {', '.join(topics[:3])}")
+
+    # Query count (engagement level)
+    count = profile.get("query_count", 0)
+    if count > 50:
+        parts.append("Aktif kullanıcı (50+ sorgu)")
+    elif count > 10:
+        parts.append("Düzenli kullanıcı")
+
+    if not parts:
+        return ""
+
+    return "\n📊 Öğrenci Profili:\n" + "\n".join(f"  • {p}" for p in parts)

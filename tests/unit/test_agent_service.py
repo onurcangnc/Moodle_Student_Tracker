@@ -1518,7 +1518,7 @@ class TestHandleAgentMessage:
     async def test_english_language_override(self, monkeypatch):
         call_args = {}
 
-        async def capture_llm(messages, system_prompt, tools):
+        async def capture_llm(messages, system_prompt, tools, use_complex_model=False):
             call_args["system_prompt"] = system_prompt
             return SimpleNamespace(content="Hello!", tool_calls=None)
 
@@ -1540,12 +1540,13 @@ class TestHandleAgentMessage:
         )
         monkeypatch.setattr(STATE, "llm", SimpleNamespace(
             engine=SimpleNamespace(
-                router=SimpleNamespace(chat="gpt-5-mini"),
+                router=SimpleNamespace(chat="gpt-5-mini", complexity="gpt-4.1-mini"),
                 get_adapter=lambda k: SimpleNamespace(model="gpt-5-mini", client=MagicMock()),
             ),
             mem_manager=None,
             _build_student_context=lambda: "",
         ))
+        monkeypatch.setattr(cache_db, "track_query", lambda *args, **kwargs: None)
         await agent_service.handle_agent_message(1, "Show me my grades")
         assert "LANGUAGE OVERRIDE" in call_args["system_prompt"]
         assert "ENGLISH" in call_args["system_prompt"]
@@ -1554,7 +1555,7 @@ class TestHandleAgentMessage:
     async def test_turkish_no_override(self, monkeypatch):
         call_args = {}
 
-        async def capture_llm(messages, system_prompt, tools):
+        async def capture_llm(messages, system_prompt, tools, use_complex_model=False):
             call_args["system_prompt"] = system_prompt
             return SimpleNamespace(content="Notlarınız:", tool_calls=None)
 
@@ -1574,9 +1575,10 @@ class TestHandleAgentMessage:
             "bot.services.agent_service.user_service.add_conversation_turn",
             lambda uid, role, content: None,
         )
+        monkeypatch.setattr(cache_db, "track_query", lambda *args, **kwargs: None)
         monkeypatch.setattr(STATE, "llm", SimpleNamespace(
             engine=SimpleNamespace(
-                router=SimpleNamespace(chat="gpt-5-mini"),
+                router=SimpleNamespace(chat="gpt-5-mini", complexity="gpt-4.1-mini"),
                 get_adapter=lambda k: SimpleNamespace(model="gpt-5-mini", client=MagicMock()),
             ),
             mem_manager=None,
