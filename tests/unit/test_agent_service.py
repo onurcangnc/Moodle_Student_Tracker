@@ -89,6 +89,19 @@ def _make_stars(authenticated=True, schedule=None, grades=None, attendance=None)
     )
 
 
+def _make_cache_getter(schedule=None, grades=None, attendance=None, exams=None):
+    """Create a cache_db.get_json mock for cache-first tool handlers."""
+    def getter(key, user_id):
+        mapping = {
+            "schedule": schedule,
+            "grades": grades,
+            "attendance": attendance,
+            "exams": exams,
+        }
+        return mapping.get(key)
+    return getter
+
+
 def _make_webmail(authenticated=True, mails=None):
     return SimpleNamespace(
         authenticated=authenticated,
@@ -592,7 +605,8 @@ class TestToolGetSchedule:
             {"day": "Pazartesi", "time": "09:00-10:30", "course": "CTIS 363", "room": "B-201"},
             {"day": "Salı", "time": "13:30-15:00", "course": "EDEB 201", "room": "A-102"},
         ]
-        monkeypatch.setattr(STATE, "stars_client", _make_stars(schedule=schedule))
+        # Cache-first: mock cache_db.get_json instead of STARS client
+        monkeypatch.setattr(cache_db, "get_json", _make_cache_getter(schedule=schedule))
         result = await agent_service._tool_get_schedule({"period": "week"}, user_id=1)
         assert "Pazartesi" in result
         assert "Salı" in result
@@ -644,7 +658,8 @@ class TestToolGetGrades:
                 ],
             }
         ]
-        monkeypatch.setattr(STATE, "stars_client", _make_stars(grades=grades))
+        # Cache-first: mock cache_db.get_json instead of STARS client
+        monkeypatch.setattr(cache_db, "get_json", _make_cache_getter(grades=grades))
         result = await agent_service._tool_get_grades({}, user_id=1)
         assert "CTIS 363" in result
         assert "85" in result
@@ -656,7 +671,8 @@ class TestToolGetGrades:
             {"course": "CTIS 363", "assessments": [{"name": "Mid", "grade": "80", "weight": ""}]},
             {"course": "EDEB 201", "assessments": [{"name": "Mid", "grade": "70", "weight": ""}]},
         ]
-        monkeypatch.setattr(STATE, "stars_client", _make_stars(grades=grades))
+        # Cache-first: mock cache_db.get_json instead of STARS client
+        monkeypatch.setattr(cache_db, "get_json", _make_cache_getter(grades=grades))
         result = await agent_service._tool_get_grades({"course_filter": "CTIS"}, user_id=1)
         assert "CTIS 363" in result
         assert "EDEB" not in result
@@ -666,14 +682,16 @@ class TestToolGetGrades:
         grades = [
             {"course": "CTIS 363", "assessments": [{"name": "Mid", "grade": "80", "weight": ""}]},
         ]
-        monkeypatch.setattr(STATE, "stars_client", _make_stars(grades=grades))
+        # Cache-first: mock cache_db.get_json instead of STARS client
+        monkeypatch.setattr(cache_db, "get_json", _make_cache_getter(grades=grades))
         result = await agent_service._tool_get_grades({"course_filter": "PHYS"}, user_id=1)
         assert "bulunamadı" in result.lower()
 
     @pytest.mark.asyncio
     async def test_no_assessments(self, monkeypatch):
         grades = [{"course": "CTIS 363", "assessments": []}]
-        monkeypatch.setattr(STATE, "stars_client", _make_stars(grades=grades))
+        # Cache-first: mock cache_db.get_json instead of STARS client
+        monkeypatch.setattr(cache_db, "get_json", _make_cache_getter(grades=grades))
         result = await agent_service._tool_get_grades({}, user_id=1)
         assert "girilmemiş" in result.lower()
 
@@ -682,13 +700,16 @@ class TestToolGetGrades:
 
 class TestToolGetAttendance:
     @pytest.mark.asyncio
-    async def test_no_stars(self, monkeypatch):
+    async def test_no_cache(self, monkeypatch):
+        # Cache-first: no cache = no data (session never established)
+        monkeypatch.setattr(cache_db, "get_json", _make_cache_getter(attendance=None))
         result = await agent_service._tool_get_attendance({}, user_id=1)
-        assert "giriş" in result.lower()
+        assert "bulunamadı" in result.lower()
 
     @pytest.mark.asyncio
     async def test_empty_attendance(self, monkeypatch):
-        monkeypatch.setattr(STATE, "stars_client", _make_stars(attendance=[]))
+        # Cache-first: mock cache_db.get_json instead of STARS client
+        monkeypatch.setattr(cache_db, "get_json", _make_cache_getter(attendance=[]))
         result = await agent_service._tool_get_attendance({}, user_id=1)
         assert "bulunamadı" in result.lower()
 
@@ -703,7 +724,8 @@ class TestToolGetAttendance:
                 ],
             }
         ]
-        monkeypatch.setattr(STATE, "stars_client", _make_stars(attendance=attendance))
+        # Cache-first: mock cache_db.get_json instead of STARS client
+        monkeypatch.setattr(cache_db, "get_json", _make_cache_getter(attendance=attendance))
         result = await agent_service._tool_get_attendance({}, user_id=1)
         assert "CTIS 363" in result
         assert "90%" in result
@@ -719,7 +741,8 @@ class TestToolGetAttendance:
                 ],
             }
         ]
-        monkeypatch.setattr(STATE, "stars_client", _make_stars(attendance=attendance))
+        # Cache-first: mock cache_db.get_json instead of STARS client
+        monkeypatch.setattr(cache_db, "get_json", _make_cache_getter(attendance=attendance))
         result = await agent_service._tool_get_attendance({}, user_id=1)
         assert "⚠️" in result
 
@@ -729,7 +752,8 @@ class TestToolGetAttendance:
             {"course": "CTIS 363", "ratio": "90%", "records": []},
             {"course": "EDEB 201", "ratio": "85%", "records": []},
         ]
-        monkeypatch.setattr(STATE, "stars_client", _make_stars(attendance=attendance))
+        # Cache-first: mock cache_db.get_json instead of STARS client
+        monkeypatch.setattr(cache_db, "get_json", _make_cache_getter(attendance=attendance))
         result = await agent_service._tool_get_attendance({"course_filter": "EDEB"}, user_id=1)
         assert "EDEB" in result
         assert "CTIS" not in result

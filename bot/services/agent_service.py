@@ -1010,22 +1010,9 @@ async def _tool_get_moodle_materials(args: dict, user_id: int) -> str:
 
 
 async def _tool_get_schedule(args: dict, user_id: int) -> str:
-    """Get schedule from STARS with period filter."""
-    stars = STATE.stars_client
-    schedule = None
-
-    # 1. Live fetch (session varsa)
-    if stars and stars.is_authenticated(user_id):
-        try:
-            schedule = await asyncio.to_thread(stars.get_schedule, user_id)
-        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-            logger.warning("Schedule live fetch failed, trying cache: %s", exc)
-
-    # 2. Cache fallback
-    if not schedule:
-        schedule = cache_db.get_json("schedule", user_id)
-        if schedule:
-            logger.info("Schedule served from cache for user %d", user_id)
+    """Get schedule from cache (updated every 1 min by background sync)."""
+    # Cache-first: background job updates cache every 1 minute
+    schedule = cache_db.get_json("schedule", user_id)
 
     # 3. No data at all
     if not schedule:
@@ -1058,24 +1045,10 @@ async def _tool_get_schedule(args: dict, user_id: int) -> str:
 
 
 async def _tool_get_grades(args: dict, user_id: int) -> str:
-    """Get grades from STARS with optional course filter."""
-    stars = STATE.stars_client
-    grades = None
+    """Get grades from cache (updated every 1 min by background sync)."""
+    # Cache-first: background job updates cache every 1 minute
+    grades = cache_db.get_json("grades", user_id)
 
-    # 1. Live fetch (session varsa)
-    if stars and stars.is_authenticated(user_id):
-        try:
-            grades = await asyncio.to_thread(stars.get_grades, user_id)
-        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-            logger.warning("Grades live fetch failed, trying cache: %s", exc)
-
-    # 2. Cache fallback
-    if not grades:
-        grades = cache_db.get_json("grades", user_id)
-        if grades:
-            logger.info("Grades served from cache for user %d", user_id)
-
-    # 3. No data at all
     if not grades:
         return "Not bilgisi bulunamadı. STARS session süresi dolmuş olabilir — /start ile tekrar giriş yap."
 
@@ -1114,24 +1087,10 @@ async def _tool_get_grades(args: dict, user_id: int) -> str:
 
 
 async def _tool_get_attendance(args: dict, user_id: int) -> str:
-    """Get attendance from STARS with limit warnings."""
-    stars = STATE.stars_client
-    attendance = None
+    """Get attendance from cache (updated every 1 min by background sync)."""
+    # Cache-first: background job updates cache every 1 minute
+    attendance = cache_db.get_json("attendance", user_id)
 
-    # 1. Live fetch (session varsa)
-    if stars and stars.is_authenticated(user_id):
-        try:
-            attendance = await asyncio.to_thread(stars.get_attendance, user_id)
-        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-            logger.warning("Attendance live fetch failed, trying cache: %s", exc)
-
-    # 2. Cache fallback
-    if not attendance:
-        attendance = cache_db.get_json("attendance", user_id)
-        if attendance:
-            logger.info("Attendance served from cache for user %d", user_id)
-
-    # 3. No data at all
     if not attendance:
         return "Devamsızlık bilgisi bulunamadı. STARS session süresi dolmuş olabilir — /start ile tekrar giriş yap."
 
@@ -1169,20 +1128,9 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
 
 
 async def _tool_get_exams(args: dict, user_id: int) -> str:
-    """Get exam schedule from STARS with cache fallback."""
-    stars = STATE.stars_client
-    exams = None
-
-    if stars and stars.is_authenticated(user_id):
-        try:
-            exams = await asyncio.to_thread(stars.get_exams, user_id)
-        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-            logger.warning("Exams live fetch failed, trying cache: %s", exc)
-
-    if not exams:
-        exams = cache_db.get_json("exams", user_id)
-        if exams:
-            logger.info("Exams served from cache for user %d", user_id)
+    """Get exam schedule from cache (updated every 1 min by background sync)."""
+    # Cache-first: background job updates cache every 1 minute
+    exams = cache_db.get_json("exams", user_id)
 
     if not exams:
         return "Sınav takvimi bulunamadı. STARS session süresi dolmuş olabilir — /start ile tekrar giriş yap."

@@ -3,19 +3,21 @@ Background notification service using PTB job queue.
 =====================================================
 Every job does two things:
   1. Detect changes → notify owner via Telegram
-  2. Write fresh data to SQLite cache (so tool handlers never block on live API)
+  2. Write fresh data to SQLite cache (so tool handlers read from cache, not live API)
 
 Job schedule:
+  stars_full_sync    — 1 min   (keep-alive + ALL STARS data → cache, near real-time)
   assignment_check   — 10 min  (new assignments + cache refresh)
   email_check        — 5 min   (new mails + cache refresh)
-  grades_sync        — 30 min  (new grades detected + cache refresh)
-  attendance_sync    — 60 min  (low attendance alert + cache refresh)
-  schedule_sync      — 6 h     (cache refresh only, no notification)
-  exams_sync         — 6 h     (cache refresh only, no notification)
+  grades_sync        — 30 min  (new grades NOTIFICATION only — cache already fresh from full_sync)
+  attendance_sync    — 60 min  (low attendance alert — cache already fresh from full_sync)
   exam_reminder      — 1 h     (1-day-before exam alerts with room info from mail)
   deadline_reminder  — 30 min  (upcoming deadline alerts)
-  session_refresh    — 24 h   (re-login webmail + STARS once per day)
+  session_refresh    — 24 h    (re-login webmail + STARS once per day)
   summary_generation — 60 min  (KATMAN 2 source summaries)
+
+Architecture: Cache-first reads. User queries read from SQLite (instant).
+Background sync updates cache every 1 min (near real-time STARS data).
 """
 
 from __future__ import annotations
@@ -403,40 +405,50 @@ async def _sync_attendance(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Attendance warning sent: %d courses", len(warnings))
 
 
-async def _keep_alive_stars(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Ping STARS every 15 min to extend session beyond 58-min expiry."""
+async def _stars_full_sync(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Unified STARS sync: keep-alive + fetch ALL data + cache.
+    Runs every 1 minute for near real-time data.
+
+    This replaces separate jobs: keep_alive, sync_schedule, sync_exams.
+    Grades/attendance sync jobs still run for NOTIFICATIONS only.
+    """
     stars = STATE.stars_client
     if stars is None or not stars.is_authenticated(OWNER_ID):
         return
+
     try:
+        # 1. Keep session alive
         alive = await asyncio.to_thread(stars.keep_alive, OWNER_ID)
-        if alive:
-            logger.debug("STARS keep-alive OK")
-        else:
-            logger.warning("STARS keep-alive failed — session may have expired")
-    except (ConnectionError, RuntimeError, OSError) as exc:
-        logger.warning("STARS keep-alive error: %s", exc)
+        if not alive:
+            logger.warning("STARS keep-alive failed in full_sync")
+            return
 
+        # 2. Fetch all data at once
+        cache = await asyncio.to_thread(stars.fetch_all_data, OWNER_ID)
+        if not cache:
+            logger.warning("STARS fetch_all_data returned None")
+            return
 
-async def _sync_schedule(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fetch schedule from STARS → cache only (no notification)."""
-    stars = STATE.stars_client
-    if stars is None or not stars.is_authenticated(OWNER_ID):
-        return
+        # 3. Write everything to SQLite cache
+        cache_db.set_json("schedule", OWNER_ID, cache.schedule)
+        cache_db.set_json("grades", OWNER_ID, cache.grades)
+        cache_db.set_json("attendance", OWNER_ID, cache.attendance)
+        cache_db.set_json("exams", OWNER_ID, cache.exams)
+        cache_db.set_json("letter_grades", OWNER_ID, cache.letter_grades)
+        cache_db.set_json("transcript", OWNER_ID, cache.transcript)
+        cache_db.set_json("user_info", OWNER_ID, cache.user_info)
 
-    try:
-        schedule = await asyncio.to_thread(stars.get_schedule, OWNER_ID)
+        logger.debug(
+            "STARS full sync OK: %d grades, %d attendance, %d exams, %d schedule",
+            len(cache.grades), len(cache.attendance), len(cache.exams), len(cache.schedule),
+        )
     except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-        logger.error("Schedule sync failed: %s", exc)
-        return
-
-    if schedule:
-        cache_db.set_json("schedule", OWNER_ID, schedule)
-        logger.debug("Schedule cached: %d entries", len(schedule))
+        logger.warning("STARS full sync error: %s", exc)
 
 
 async def _sync_exams(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fetch exams from STARS → cache (no notification)."""
+    """Fetch exams from STARS → cache (no notification). DEPRECATED - kept for compatibility."""
     stars = STATE.stars_client
     if stars is None or not stars.is_authenticated(OWNER_ID):
         return
@@ -738,23 +750,12 @@ def register_notification_jobs(app: Application) -> None:
         first=timedelta(minutes=4),
         name="attendance_sync",
     )
+    # ═══ STARS Full Sync: 1-minute unified sync (keep-alive + all data + cache) ═══
     jq.run_repeating(
-        _keep_alive_stars,
-        interval=timedelta(minutes=15),
-        first=timedelta(minutes=5),
-        name="stars_keep_alive",
-    )
-    jq.run_repeating(
-        _sync_schedule,
-        interval=timedelta(hours=6),
-        first=timedelta(minutes=5),
-        name="schedule_sync",
-    )
-    jq.run_repeating(
-        _sync_exams,
-        interval=timedelta(hours=6),
-        first=timedelta(minutes=6),
-        name="exams_sync",
+        _stars_full_sync,
+        interval=timedelta(minutes=1),
+        first=timedelta(seconds=30),
+        name="stars_full_sync",
     )
     jq.run_repeating(
         _check_exam_reminders,
@@ -800,8 +801,7 @@ def register_notification_jobs(app: Application) -> None:
     )
 
     logger.info(
-        "Notification jobs registered: assignments=10m, emails=5m, grades=30m, "
-        "attendance=60m, schedule=6h, exams=6h, exam_reminder=1h, deadlines=30m, "
-        "session=24h, summaries=60m, cache_cleanup=weekly, syllabus_limits=24h, "
-        "polling_watchdog=5m"
+        "Notification jobs registered: stars_full_sync=1m, assignments=10m, emails=5m, "
+        "grades=30m, attendance=60m, exam_reminder=1h, deadlines=30m, session=24h, "
+        "summaries=60m, cache_cleanup=weekly, syllabus_limits=24h, polling_watchdog=5m"
     )
