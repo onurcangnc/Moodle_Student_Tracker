@@ -144,43 +144,56 @@ def _extract_syllabus_attendance_limit(course_name: str) -> int | None:
 
     short_code = _short_course_code(course_name)
 
-    # (query_text, course_filter)  — ordered best-first
-    searches = [
+    def _search_and_extract(queries: list[tuple[str, str | None]]) -> int | None:
+        """Search RAG and extract limit from results."""
+        seen_texts: list[str] = []
+        for query, cf in queries:
+            try:
+                hits = store.query(query, n_results=5, course_filter=cf)
+                for hit in hits or []:
+                    text = hit.get("text", "")
+                    if text and text not in seen_texts:
+                        seen_texts.append(text)
+            except Exception as exc:
+                logger.debug("Syllabus RAG query failed for %s: %s", course_name, exc)
+
+        combined = "\n".join(seen_texts)
+        for pattern in _ABSENCE_PATTERNS:
+            m = pattern.search(combined)
+            if m:
+                val = int(m.group(1))
+                if 4 <= val <= 50:
+                    return val
+        return None
+
+    # Step 1: Try filtered queries first (course-specific results only)
+    filtered_queries = [
         ("syllabus attendance absence limit hours miss lecture", short_code),
         ("devamsızlık saat limit hakkı miss", short_code),
         ("minimum requirements qualify final exam", short_code),
-        # "Course Details" docs often contain attendance policy (e.g., "Week 01 - Course Details")
         ("course details attendance absence hours miss", short_code),
-        # Week 1 lectures often have syllabus content
         ("week 1 attendance policy absence limit", short_code),
-        # Fallback: no filter, course code embedded in query text
+    ]
+    limit = _search_and_extract(filtered_queries)
+    if limit is not None:
+        logger.info(
+            "Syllabus attendance limit found for %s (code=%s): %d h",
+            course_name, short_code, limit,
+        )
+        return limit
+
+    # Step 2: Fallback to unfiltered queries (course code in query text)
+    fallback_queries = [
         (f"{short_code} syllabus attendance miss hours absence limit", None),
         (f"{short_code} course details minimum requirements absence", None),
     ]
-
-    seen_texts: list[str] = []
-    for query, cf in searches:
-        try:
-            hits = store.query(query, n_results=5, course_filter=cf)
-            for hit in hits or []:
-                text = hit.get("text", "")
-                if text and text not in seen_texts:
-                    seen_texts.append(text)
-        except Exception as exc:
-            logger.debug("Syllabus RAG query failed for %s: %s", course_name, exc)
-
-    combined = "\n".join(seen_texts)
-    for pattern in _ABSENCE_PATTERNS:
-        m = pattern.search(combined)
-        if m:
-            val = int(m.group(1))
-            # Sanity check: Bilkent semesters ~28-42 sessions; absence limits 4-50h
-            if 4 <= val <= 50:
-                logger.info(
-                    "Syllabus attendance limit found for %s (code=%s): %d h",
-                    course_name, short_code, val,
-                )
-                return val
+    limit = _search_and_extract(fallback_queries)
+    if limit is not None:
+        logger.info(
+            "Syllabus attendance limit found for %s (code=%s, fallback): %d h",
+            course_name, short_code, limit,
+        )
+        return limit
 
     return None
 
