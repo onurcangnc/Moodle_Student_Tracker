@@ -15,6 +15,7 @@ Job schedule:
   deadline_reminder  — 30 min  (upcoming deadline alerts)
   session_refresh    — 24 h    (re-login webmail + STARS once per day)
   summary_generation — 60 min  (KATMAN 2 source summaries)
+  material_sync      — 30 min  (Moodle → vector store, auto-index new materials)
 
 Architecture: Cache-first reads. User queries read from SQLite (instant).
 Background sync updates cache every 1 min (near real-time STARS data).
@@ -730,6 +731,54 @@ async def _sync_syllabus_limits(context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+# ─── Auto Material Sync ───────────────────────────────────────────────────────
+
+
+async def _auto_sync_materials(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Auto-sync Moodle materials to vector store every 30 minutes.
+
+    Duplicate control:
+    1. sync_state.json tracks synced_files (file path → metadata)
+    2. vector_store.add_chunks() skips duplicate chunk_ids
+
+    Only new files are downloaded and indexed — existing files are skipped.
+    """
+    sync_engine = STATE.sync_engine
+    moodle = STATE.moodle
+    if sync_engine is None or moodle is None:
+        return
+
+    # Prevent concurrent syncs
+    if STATE.sync_lock.locked():
+        logger.debug("Material sync skipped — another sync in progress")
+        return
+
+    async with STATE.sync_lock:
+        try:
+            logger.info("Auto material sync starting...")
+            start = time.time()
+
+            # Run sync in thread pool (blocking I/O)
+            new_chunks = await asyncio.to_thread(sync_engine.sync_all)
+
+            elapsed = time.time() - start
+            logger.info(
+                "Auto material sync completed in %.1fs — %s new chunks",
+                elapsed,
+                new_chunks if new_chunks else 0,
+            )
+
+            # Update state for status display
+            from datetime import datetime as dt
+
+            STATE.last_sync_time = dt.now().strftime("%Y-%m-%d %H:%M")
+            STATE.last_sync_new_files = new_chunks or 0
+
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            logger.error("Auto material sync failed: %s", exc)
+
+
 # Polling watchdog: if no Telegram update received for a long time, self-kill.
 # systemd Restart=always will restart the process.
 # 12 hours — single-user bot, nobody messages at night; short timeouts cause
@@ -838,6 +887,13 @@ def register_notification_jobs(app: Application) -> None:
         first=timedelta(minutes=5),  # Run soon after startup so limits are ready
         name="syllabus_limits_sync",
     )
+    # ═══ Auto Material Sync: 30-minute Moodle → vector store sync ═══
+    jq.run_repeating(
+        _auto_sync_materials,
+        interval=timedelta(minutes=30),
+        first=timedelta(minutes=2),  # Quick first sync to catch any new materials
+        name="material_sync",
+    )
     jq.run_repeating(
         _polling_watchdog,
         interval=timedelta(minutes=5),
@@ -848,5 +904,6 @@ def register_notification_jobs(app: Application) -> None:
     logger.info(
         "Notification jobs registered: stars_full_sync=1m, assignments=10m, emails=5m, "
         "grades=30m, attendance=60m, exam_reminder=1h, deadlines=30m, session=24h, "
-        "summaries=60m, cache_cleanup=weekly, syllabus_limits=24h, polling_watchdog=5m"
+        "summaries=60m, cache_cleanup=weekly, syllabus_limits=24h, material_sync=30m, "
+        "polling_watchdog=5m"
     )
