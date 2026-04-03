@@ -1642,8 +1642,34 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
         def normalize_numbers(text: str) -> str:
             return re.sub(r'\b0+(\d+)', r'\1', text.lower())
 
-        kw_normalized = normalize_numbers(keyword)
-        tokens = kw_normalized.split()
+        # Course alias expansion: "audit" -> "ctis-474", "ethics" -> "ctis 363"
+        COURSE_ALIASES = {
+            "audit": "ctis-474", "auditing": "ctis-474",
+            "ethics": "ctis 363", "etik": "ctis 363",
+            "edebiyat": "edeb 201", "turkish fiction": "edeb 201",
+            "civilization": "hciv 102", "medeniyet": "hciv 102",
+            "senior project": "ctis 456", "bitirme": "ctis 456",
+            "microservice": "ctis 465",
+        }
+
+        def expand_aliases(text: str) -> str:
+            result = text.lower()
+            for alias, code in COURSE_ALIASES.items():
+                if alias in result:
+                    result = result.replace(alias, code)
+            return result
+
+        # Strip common suffixes that don't appear in mail data
+        STRIP_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin"]
+
+        def strip_noise(text: str) -> str:
+            words = text.lower().split()
+            return " ".join(w for w in words if w not in STRIP_WORDS)
+
+        kw_expanded = expand_aliases(keyword)
+        kw_cleaned = strip_noise(kw_expanded)
+        kw_normalized = normalize_numbers(kw_cleaned)
+        tokens = [t for t in kw_normalized.split() if t]  # Filter empty
 
         def matches(m: dict) -> bool:
             searchable = " ".join([
@@ -1700,9 +1726,37 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
         import re
         return re.sub(r'\b0+(\d+)', r'\1', text.lower())
 
+    # Course alias expansion: "audit" -> "ctis-474", "ethics" -> "ctis 363"
+    COURSE_ALIASES = {
+        "audit": "ctis-474", "auditing": "ctis-474",
+        "ethics": "ctis 363", "etik": "ctis 363",
+        "edebiyat": "edeb 201", "turkish fiction": "edeb 201",
+        "civilization": "hciv 102", "medeniyet": "hciv 102",
+        "senior project": "ctis 456", "bitirme": "ctis 456",
+        "microservice": "ctis 465",
+    }
+
+    def expand_aliases(text: str) -> str:
+        """Expand course aliases to course codes."""
+        result = text.lower()
+        for alias, code in COURSE_ALIASES.items():
+            if alias in result:
+                result = result.replace(alias, code)
+        return result
+
+    # Strip common suffixes that don't appear in mail data
+    STRIP_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin"]
+
+    def strip_noise(text: str) -> str:
+        """Remove words that add noise to search."""
+        words = text.lower().split()
+        return " ".join(w for w in words if w not in STRIP_WORDS)
+
     # Split into tokens for multi-word search (all tokens must match)
-    kw_normalized = normalize_numbers(keyword)
-    tokens = kw_normalized.split()
+    kw_expanded = expand_aliases(keyword)
+    kw_cleaned = strip_noise(kw_expanded)
+    kw_normalized = normalize_numbers(kw_cleaned)
+    tokens = [t for t in kw_normalized.split() if t]  # Filter empty
 
     match = None
     for m in mails:
