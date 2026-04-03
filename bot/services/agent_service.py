@@ -1637,14 +1637,25 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
         return f"E-postalar alınamadı: {exc}"
 
     if keyword:
-        kw = keyword.lower()
-        mails = [
-            m for m in mails
-            if kw in m.get("from", "").lower()
-            or kw in m.get("subject", "").lower()
-            or kw in m.get("source", "").lower()
-            or kw in m.get("date", "").lower()
-        ]
+        # Normalize numbers: "06" → "6", "007" → "7" for flexible matching
+        import re
+        def normalize_numbers(text: str) -> str:
+            return re.sub(r'\b0+(\d+)', r'\1', text.lower())
+
+        kw_normalized = normalize_numbers(keyword)
+        tokens = kw_normalized.split()
+
+        def matches(m: dict) -> bool:
+            searchable = " ".join([
+                m.get("from", ""),
+                m.get("subject", ""),
+                m.get("source", ""),
+                m.get("date", ""),
+            ])
+            searchable_normalized = normalize_numbers(searchable)
+            return all(tok in searchable_normalized for tok in tokens)
+
+        mails = [m for m in mails if matches(m)]
 
     mails = mails[:count]
 
@@ -1684,13 +1695,28 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
         logger.error("Email detail fetch failed: %s", exc, exc_info=True)
         return f"Mail detayı alınamadı: {exc}"
 
-    kw = keyword.lower()
+    # Normalize numbers: "06" → "6", "007" → "7" for flexible matching
+    def normalize_numbers(text: str) -> str:
+        import re
+        return re.sub(r'\b0+(\d+)', r'\1', text.lower())
+
+    # Split into tokens for multi-word search (all tokens must match)
+    kw_normalized = normalize_numbers(keyword)
+    tokens = kw_normalized.split()
+
     match = None
     for m in mails:
-        if (kw in m.get("subject", "").lower()
-                or kw in m.get("from", "").lower()
-                or kw in m.get("source", "").lower()
-                or kw in m.get("date", "").lower()):
+        # Combine all searchable fields
+        searchable = " ".join([
+            m.get("subject", ""),
+            m.get("from", ""),
+            m.get("source", ""),
+            m.get("date", ""),
+        ])
+        searchable_normalized = normalize_numbers(searchable)
+
+        # All tokens must be present (AND logic)
+        if all(tok in searchable_normalized for tok in tokens):
             match = m
             break
 
