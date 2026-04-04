@@ -516,7 +516,10 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "get_assignments",
             "description": (
-                "Ödev/deadline. upcoming=yaklaşan, overdue=geciken, all=tümü."
+                "Ödev/deadline bilgisi. "
+                "Hoca adı sorulursa (ör: 'Tunahan hocanın ödevi') → keyword ile ders/hoca adını ara. "
+                "Ders kodu: HCIV, CTIS, EDEB. Hoca adları genelde ders adında parantez içinde: (T. Durmaz), (Erkan Uçar). "
+                "filter: upcoming=yaklaşan, overdue=geciken, all=tümü."
             ),
             "parameters": {
                 "type": "object",
@@ -525,6 +528,10 @@ TOOLS: list[dict[str, Any]] = [
                         "type": "string",
                         "enum": ["upcoming", "overdue", "all"],
                         "description": "upcoming (varsayılan), overdue, all",
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "Arama filtresi — hoca adı, ders kodu veya ödev adı (ör: 'Tunahan', 'HCIV', 'Video Project')",
                     },
                 },
                 "required": [],
@@ -1578,10 +1585,28 @@ async def _tool_get_assignments(args: dict, user_id: int) -> str:
         return "Moodle bağlantısı hazır değil."
 
     filter_mode = args.get("filter", "upcoming")
+    keyword = args.get("keyword", "").lower()
     now_ts = time.time()
 
+    # Instructor name aliases → course codes/names
+    INSTRUCTOR_ALIASES = {
+        "tunahan": ["durmaz", "hciv", "102"],
+        "durmaz": ["tunahan", "hciv", "102"],
+        "erkan": ["uçar", "ctis", "363", "ethics", "etik"],
+        "uçar": ["erkan", "ctis", "363"],
+        "adem": ["gergöy", "airs"],
+        "ecem": ["tanrıverdi", "dais"],
+    }
+
+    # Expand keyword with instructor aliases
+    search_terms = [keyword] if keyword else []
+    if keyword:
+        for alias, expansions in INSTRUCTOR_ALIASES.items():
+            if alias in keyword:
+                search_terms.extend(expansions)
+
     try:
-        if filter_mode == "all":
+        if filter_mode == "all" or keyword:
             assignments = await asyncio.to_thread(moodle.get_assignments)
         else:
             assignments = await asyncio.to_thread(moodle.get_upcoming_assignments, 14)
@@ -1595,14 +1620,28 @@ async def _tool_get_assignments(args: dict, user_id: int) -> str:
             if not a.submitted and a.due_date and a.due_date < now_ts
         ]
 
+    # Keyword filtering (instructor name, course code, assignment name)
+    if search_terms and assignments:
+        def matches_any(a) -> bool:
+            searchable = f"{a.course_name} {a.name}".lower()
+            return any(term in searchable for term in search_terms)
+        assignments = [a for a in assignments if matches_any(a)]
+
     if not assignments:
         labels = {"upcoming": "Yaklaşan", "overdue": "Süresi geçmiş", "all": "Hiç"}
+        if keyword:
+            return f"'{keyword}' ile eşleşen ödev bulunamadı."
         return f"{labels.get(filter_mode, 'Yaklaşan')} ödev bulunamadı."
 
     lines = []
     for a in assignments:
         status = "✅ Teslim edildi" if a.submitted else "⏳ Teslim edilmedi"
-        due = a.due_date if hasattr(a, "due_date") else "Bilinmiyor"
+        # Format due_date from Unix timestamp to readable date
+        if hasattr(a, "due_date") and a.due_date and a.due_date > 0:
+            due_dt = datetime.fromtimestamp(a.due_date)
+            due = due_dt.strftime("%d/%m/%Y %H:%M")
+        else:
+            due = "Son tarih yok"
         remaining = a.time_remaining if hasattr(a, "time_remaining") else ""
         line = f"• {a.course_name} — {a.name}\n  Tarih: {due} | {status}"
         if remaining and not a.submitted:
@@ -1652,12 +1691,31 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
             "microservice": "ctis 465",
         }
 
+        # Instructor name variations for mail search
+        INSTRUCTOR_NAMES = {
+            "tunahan": ["tunahan durmaz", "t. durmaz", "durmaz"],
+            "durmaz": ["tunahan durmaz", "t. durmaz", "tunahan"],
+            "erkan": ["erkan uçar", "e. uçar", "uçar", "ucar"],
+            "uçar": ["erkan uçar", "e. uçar", "erkan"],
+            "adem": ["adem gergöy", "a. gergöy", "gergöy", "gergoy"],
+            "ecem": ["ecem tanrıverdi", "e. tanrıverdi", "tanrıverdi"],
+        }
+
         def expand_aliases(text: str) -> str:
             result = text.lower()
             for alias, code in COURSE_ALIASES.items():
                 if alias in result:
                     result = result.replace(alias, code)
             return result
+
+        def get_instructor_variations(text: str) -> list[str]:
+            """Get all name variations for instructor search."""
+            text_lower = text.lower()
+            variations = []
+            for name, aliases in INSTRUCTOR_NAMES.items():
+                if name in text_lower:
+                    variations.extend(aliases)
+            return variations
 
         # Strip common suffixes that don't appear in mail data
         STRIP_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin"]
@@ -1670,6 +1728,7 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
         kw_cleaned = strip_noise(kw_expanded)
         kw_normalized = normalize_numbers(kw_cleaned)
         tokens = [t for t in kw_normalized.split() if t]  # Filter empty
+        instructor_variations = get_instructor_variations(keyword)
 
         def matches(m: dict) -> bool:
             searchable = " ".join([
@@ -1678,7 +1737,15 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
                 m.get("source", ""),
                 m.get("date", ""),
             ])
+            searchable_lower = searchable.lower()
             searchable_normalized = normalize_numbers(searchable)
+
+            # Check instructor name variations first
+            if instructor_variations:
+                if any(var in searchable_lower for var in instructor_variations):
+                    return True
+
+            # Fall back to token matching
             return all(tok in searchable_normalized for tok in tokens)
 
         mails = [m for m in mails if matches(m)]
@@ -1721,7 +1788,7 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
     def normalize_numbers(text: str) -> str:
         return re.sub(r'\b0+(\d+)', r'\1', text.lower())
 
-    # Course alias expansion: "audit" -> "ctis-474", "ethics" -> "ctis 363"
+    # Course alias expansion
     COURSE_ALIASES = {
         "audit": "ctis-474", "auditing": "ctis-474",
         "ethics": "ctis 363", "etik": "ctis 363",
@@ -1731,40 +1798,61 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
         "microservice": "ctis 465",
     }
 
+    # Instructor name variations
+    INSTRUCTOR_NAMES = {
+        "tunahan": ["tunahan durmaz", "t. durmaz", "durmaz"],
+        "durmaz": ["tunahan durmaz", "t. durmaz", "tunahan"],
+        "erkan": ["erkan uçar", "e. uçar", "uçar", "ucar"],
+        "uçar": ["erkan uçar", "e. uçar", "erkan"],
+        "adem": ["adem gergöy", "a. gergöy", "gergöy", "gergoy"],
+        "ecem": ["ecem tanrıverdi", "e. tanrıverdi", "tanrıverdi"],
+    }
+
     def expand_aliases(text: str) -> str:
-        """Expand course aliases to course codes."""
         result = text.lower()
         for alias, code in COURSE_ALIASES.items():
             if alias in result:
                 result = result.replace(alias, code)
         return result
 
-    # Strip common suffixes that don't appear in mail data
+    def get_instructor_variations(text: str) -> list[str]:
+        text_lower = text.lower()
+        variations = []
+        for name, aliases in INSTRUCTOR_NAMES.items():
+            if name in text_lower:
+                variations.extend(aliases)
+        return variations
+
     STRIP_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin"]
 
     def strip_noise(text: str) -> str:
-        """Remove words that add noise to search."""
         words = text.lower().split()
         return " ".join(w for w in words if w not in STRIP_WORDS)
 
-    # Split into tokens for multi-word search (all tokens must match)
     kw_expanded = expand_aliases(keyword)
     kw_cleaned = strip_noise(kw_expanded)
     kw_normalized = normalize_numbers(kw_cleaned)
-    tokens = [t for t in kw_normalized.split() if t]  # Filter empty
+    tokens = [t for t in kw_normalized.split() if t]
+    instructor_variations = get_instructor_variations(keyword)
 
     match = None
     for m in mails:
-        # Combine all searchable fields
         searchable = " ".join([
             m.get("subject", ""),
             m.get("from", ""),
             m.get("source", ""),
             m.get("date", ""),
         ])
+        searchable_lower = searchable.lower()
         searchable_normalized = normalize_numbers(searchable)
 
-        # All tokens must be present (AND logic)
+        # Check instructor name variations first
+        if instructor_variations:
+            if any(var in searchable_lower for var in instructor_variations):
+                match = m
+                break
+
+        # Fall back to token matching
         if all(tok in searchable_normalized for tok in tokens):
             match = m
             break
