@@ -8,7 +8,8 @@ Every job does two things:
 Job schedule:
   stars_full_sync    — 1 min   (keep-alive + ALL STARS data → cache, near real-time)
   assignment_check   — 10 min  (new assignments + cache refresh)
-  email_check        — 5 min   (new mails + cache refresh)
+  email_check        — 5 min   (new mails notification)
+  email_cache_sync   — 30 sec  (FULL IMAP → SQLite sync, agent queries instant)
   grades_sync        — 30 min  (new grades NOTIFICATION only — cache already fresh from full_sync)
   attendance_sync    — 60 min  (low attendance alert — cache already fresh from full_sync)
   exam_reminder      — 1 h     (1-day-before exam alerts with room info from mail)
@@ -18,7 +19,7 @@ Job schedule:
   material_sync      — 30 min  (Moodle → vector store, auto-index new materials)
 
 Architecture: Cache-first reads. User queries read from SQLite (instant).
-Background sync updates cache every 1 min (near real-time STARS data).
+Background sync updates cache every 30 sec for emails, 1 min for STARS.
 """
 
 from __future__ import annotations
@@ -300,13 +301,8 @@ async def _check_new_emails(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Notification: email check failed: %s", exc)
         return
 
-    # Cache refresh — always write recent 20 mails
-    try:
-        recent = webmail.get_recent_airs_dais(20)
-        stored = cache_db.store_emails(recent)
-        logger.debug("Email cache refreshed: %d mails stored", stored)
-    except Exception as exc:
-        logger.warning("Email cache refresh failed: %s", exc)
+    # Full sync — fetch all AIRS/DAIS and cache them
+    await _sync_email_cache(context)
 
     if not new_mails:
         return
@@ -320,6 +316,37 @@ async def _check_new_emails(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await _send(context, "\n".join(lines))
     logger.info("Email notification sent: %d new mails", len(new_mails))
+
+
+async def _sync_email_cache(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Full email cache sync — fetches ALL AIRS/DAIS mails from IMAP to SQLite.
+
+    Runs every 30 seconds. Only fetches body for NEW emails (not in cache).
+    """
+    webmail = STATE.webmail_client
+    if webmail is None or not webmail.authenticated:
+        return
+
+    try:
+        # Get existing UIDs from cache
+        cached = cache_db.get_emails(1000) or []
+        existing_uids = {m["uid"] for m in cached if m.get("uid")}
+
+        # Sync with IMAP — only fetches body for NEW emails
+        new_mails, all_current_uids = await asyncio.to_thread(
+            webmail.sync_all_emails, existing_uids
+        )
+
+        # Store new emails (mark as unread)
+        if new_mails:
+            stored = cache_db.store_emails(new_mails, mark_read=False)
+            logger.info("Email sync: %d new mails cached", stored)
+
+        # Note: We don't delete emails that disappeared from IMAP (user might have deleted)
+        # They'll expire via the normal cleanup job
+
+    except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
+        logger.warning("Email cache sync failed: %s", exc)
 
 
 async def _sync_grades(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -832,6 +859,13 @@ def register_notification_jobs(app: Application) -> None:
         first=timedelta(seconds=60),
         name="email_check",
     )
+    # ═══ Email Cache Sync: 30-second full IMAP sync → SQLite (instant agent queries) ═══
+    jq.run_repeating(
+        _sync_email_cache,
+        interval=timedelta(seconds=30),
+        first=timedelta(seconds=15),  # Start early so cache is ready
+        name="email_cache_sync",
+    )
     jq.run_repeating(
         _sync_grades,
         interval=timedelta(minutes=30),
@@ -903,7 +937,7 @@ def register_notification_jobs(app: Application) -> None:
 
     logger.info(
         "Notification jobs registered: stars_full_sync=1m, assignments=10m, emails=5m, "
-        "grades=30m, attendance=60m, exam_reminder=1h, deadlines=30m, session=24h, "
-        "summaries=60m, cache_cleanup=weekly, syllabus_limits=24h, material_sync=30m, "
-        "polling_watchdog=5m"
+        "email_cache=30s, grades=30m, attendance=60m, exam_reminder=1h, deadlines=30m, "
+        "session=24h, summaries=60m, cache_cleanup=weekly, syllabus_limits=24h, "
+        "material_sync=30m, polling_watchdog=5m"
     )

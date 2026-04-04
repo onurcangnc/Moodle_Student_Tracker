@@ -55,10 +55,13 @@ def init_db() -> None:
                 body_preview TEXT NOT NULL DEFAULT '',
                 body_full    TEXT NOT NULL DEFAULT '',
                 source       TEXT NOT NULL DEFAULT '',
+                is_read      INTEGER NOT NULL DEFAULT 0,
                 inserted_at  REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_emails_inserted
                 ON emails (inserted_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_emails_unread
+                ON emails (is_read, inserted_at DESC);
 
             CREATE TABLE IF NOT EXISTS data_cache (
                 cache_key  TEXT    NOT NULL,
@@ -68,6 +71,11 @@ def init_db() -> None:
                 PRIMARY KEY (cache_key, user_id)
             );
         """)
+        # Migration: add is_read column if missing (for existing DBs)
+        try:
+            conn.execute("ALTER TABLE emails ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
     _initialized = True
     logger.debug("Cache DB initialized at %s", _DB_PATH)
 
@@ -79,8 +87,13 @@ def _ensure_init() -> None:
 
 # ─── Email Cache ──────────────────────────────────────────────────────────────
 
-def store_emails(mails: list[dict]) -> int:
-    """Upsert emails into persistent store. Returns number of rows written."""
+def store_emails(mails: list[dict], mark_read: bool = True) -> int:
+    """Upsert emails into persistent store. Returns number of rows written.
+
+    Args:
+        mails: List of email dicts with uid, subject, from, date, body_preview, etc.
+        mark_read: If True, marks emails as read. If False, preserves is_read=0 for new.
+    """
     if not mails:
         return 0
     _ensure_init()
@@ -88,6 +101,7 @@ def store_emails(mails: list[dict]) -> int:
     rows = []
     for m in mails:
         uid = m.get("uid") or f"{m.get('subject','')}:{m.get('from','')}:{m.get('date','')}"
+        is_read = 1 if mark_read else m.get("is_read", 0)
         rows.append((
             str(uid),
             m.get("subject", ""),
@@ -96,14 +110,15 @@ def store_emails(mails: list[dict]) -> int:
             m.get("body_preview", ""),
             m.get("body_full", m.get("body", "")),
             m.get("source", ""),
+            is_read,
             now,
         ))
     try:
         with _conn() as conn:
             conn.executemany(
                 "INSERT OR REPLACE INTO emails "
-                "(uid, subject, from_addr, date, body_preview, body_full, source, inserted_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(uid, subject, from_addr, date, body_preview, body_full, source, is_read, inserted_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
         logger.debug("Stored %d emails to cache", len(rows))
@@ -127,7 +142,7 @@ def get_emails(limit: int = 20) -> list[dict] | None:
                 return None  # Empty DB — background job hasn't run yet
 
             rows = conn.execute(
-                "SELECT uid, subject, from_addr, date, body_preview, body_full, source "
+                "SELECT uid, subject, from_addr, date, body_preview, body_full, source, is_read "
                 "FROM emails ORDER BY inserted_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -141,12 +156,114 @@ def get_emails(limit: int = 20) -> list[dict] | None:
                 "body_preview": r[4],
                 "body_full":    r[5],
                 "source":       r[6],
+                "is_read":      bool(r[7]),
             }
             for r in rows
         ]
     except sqlite3.Error as exc:
         logger.error("Email cache read failed: %s", exc)
         return None
+
+
+def get_unread_emails() -> list[dict]:
+    """Return all unread emails from cache."""
+    _ensure_init()
+    try:
+        with _conn() as conn:
+            rows = conn.execute(
+                "SELECT uid, subject, from_addr, date, body_preview, body_full, source "
+                "FROM emails WHERE is_read = 0 ORDER BY inserted_at DESC",
+            ).fetchall()
+
+        return [
+            {
+                "uid":          r[0],
+                "subject":      r[1],
+                "from":         r[2],
+                "date":         r[3],
+                "body_preview": r[4],
+                "body_full":    r[5],
+                "source":       r[6],
+                "is_read":      False,
+            }
+            for r in rows
+        ]
+    except sqlite3.Error as exc:
+        logger.error("Email cache read (unread) failed: %s", exc)
+        return []
+
+
+def search_emails(keyword: str, limit: int = 20) -> list[dict]:
+    """Search emails by keyword in subject, from, source, or date.
+
+    Uses SQLite LIKE for simple matching. Returns empty list on error.
+    """
+    _ensure_init()
+    if not keyword:
+        return get_emails(limit) or []
+
+    try:
+        with _conn() as conn:
+            # Normalize: strip, lowercase for case-insensitive search
+            pattern = f"%{keyword.strip()}%"
+            rows = conn.execute(
+                """
+                SELECT uid, subject, from_addr, date, body_preview, body_full, source, is_read
+                FROM emails
+                WHERE subject LIKE ? COLLATE NOCASE
+                   OR from_addr LIKE ? COLLATE NOCASE
+                   OR source LIKE ? COLLATE NOCASE
+                   OR date LIKE ? COLLATE NOCASE
+                ORDER BY inserted_at DESC
+                LIMIT ?
+                """,
+                (pattern, pattern, pattern, pattern, limit),
+            ).fetchall()
+
+        return [
+            {
+                "uid":          r[0],
+                "subject":      r[1],
+                "from":         r[2],
+                "date":         r[3],
+                "body_preview": r[4],
+                "body_full":    r[5],
+                "source":       r[6],
+                "is_read":      bool(r[7]),
+            }
+            for r in rows
+        ]
+    except sqlite3.Error as exc:
+        logger.error("Email search failed: %s", exc)
+        return []
+
+
+def mark_emails_read(uids: list[str]) -> int:
+    """Mark specific emails as read. Returns count updated."""
+    if not uids:
+        return 0
+    _ensure_init()
+    try:
+        with _conn() as conn:
+            placeholders = ",".join("?" * len(uids))
+            cur = conn.execute(
+                f"UPDATE emails SET is_read = 1 WHERE uid IN ({placeholders})",
+                uids,
+            )
+            return cur.rowcount
+    except sqlite3.Error as exc:
+        logger.error("Email mark_read failed: %s", exc)
+        return 0
+
+
+def get_email_count() -> int:
+    """Return total email count in cache."""
+    _ensure_init()
+    try:
+        with _conn() as conn:
+            return conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+    except sqlite3.Error:
+        return 0
 
 
 def clean_old_emails(days: int = CLEANUP_DAYS) -> int:

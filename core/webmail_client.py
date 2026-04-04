@@ -401,3 +401,67 @@ class WebmailClient:
         self._authenticated = False
         self._email = ""
         self._password = ""
+
+    def sync_all_emails(self, existing_uids: set[str] | None = None) -> tuple[list[dict], list[str]]:
+        """Fetch ALL AIRS/DAIS emails for full cache sync.
+
+        Args:
+            existing_uids: Set of UIDs already in cache (skip fetching body for these).
+
+        Returns:
+            Tuple of (new_mails, all_current_uids).
+            - new_mails: List of email dicts for NEW emails only (need to store).
+            - all_current_uids: List of all current UIDs in mailbox (for pruning deleted).
+        """
+        if not self._authenticated:
+            return [], []
+
+        existing_uids = existing_uids or set()
+        new_mails = []
+        all_current_uids = []
+
+        try:
+            with self._connect() as imap:
+                # Collect all AIRS/DAIS UIDs
+                all_uid_label: dict[bytes, str] = {}
+                for label, searches in [
+                    ("AIRS", ['FROM "airs"', 'SUBJECT "AIRS"']),
+                    ("DAIS", ['FROM "dais"', 'SUBJECT "DAIS"']),
+                ]:
+                    for criteria in searches:
+                        try:
+                            status, data = imap.search(None, f"({criteria})")
+                            if status != "OK" or not data[0]:
+                                continue
+                            for uid in data[0].split():
+                                if uid not in all_uid_label:
+                                    all_uid_label[uid] = label
+                        except IMAP_OPERATION_EXCEPTIONS as exc:
+                            logger.warning("IMAP sync search failed for %s: %s", criteria, exc)
+
+                # Track all current UIDs
+                all_current_uids = [uid.decode("utf-8", errors="replace") for uid in all_uid_label]
+
+                # Fetch only NEW emails (not in existing cache)
+                for uid, label in all_uid_label.items():
+                    uid_str = uid.decode("utf-8", errors="replace")
+                    if uid_str in existing_uids:
+                        continue  # Already cached, skip
+
+                    mail_data = self._fetch_mail(imap, uid, body=True)
+                    if mail_data:
+                        mail_data["source"] = label
+                        mail_data["uid"] = uid_str
+                        mail_data["is_read"] = 0  # New mail = unread
+                        new_mails.append(mail_data)
+
+                logger.info(
+                    "Email sync: %d total, %d new, %d cached",
+                    len(all_current_uids), len(new_mails), len(existing_uids)
+                )
+
+        except IMAP_OPERATION_EXCEPTIONS as exc:
+            logger.error("IMAP sync_all failed: %s", exc, exc_info=True)
+            return [], []
+
+        return new_mails, all_current_uids

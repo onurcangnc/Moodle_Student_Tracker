@@ -540,7 +540,7 @@ TOOLS: list[dict[str, Any]] = [
                 "Bilkent DAIS & AIRS mailleri. "
                 "Sayı belirtilmişse (ör: 'Son 3 mail', '5 mailimi göster') → doğrudan count ile çağır. "
                 "'Tüm mailleri göster', 'hepsi', 'bütün' → count=20 ile çağır (SORU SORMA). "
-                "Sadece 'maillerimi göster' gibi belirsiz isteklerde → count=5 kullan. "
+                "Sadece 'maillerimi göster' gibi belirsiz isteklerde → count=5 kullan (scope=auto varsayılan, önce okunmamış bakar yoksa son mailler). "
                 "Hoca adı, ders kodu, konu veya tarih varsa keyword kullan (gönderici, konu, kaynak, tarih hepsinde arar). "
                 "Tarih araması: '11 şubat' → keyword='11 Şub', 'ocak mailleri' → keyword='Oca'. "
                 "Sonuç boşsa 'Yakın zamanda yok, istersen son maillerini gösterebilirim' de."
@@ -558,8 +558,8 @@ TOOLS: list[dict[str, Any]] = [
                     },
                     "scope": {
                         "type": "string",
-                        "enum": ["recent", "unread"],
-                        "description": "recent=son mailler (varsayılan). unread=okunmamış.",
+                        "enum": ["auto", "recent", "unread"],
+                        "description": "auto=önce okunmamış, yoksa son mailler (varsayılan). recent=sadece son mailler. unread=sadece okunmamış.",
                     },
                 },
                 "required": [],
@@ -1615,26 +1615,26 @@ async def _tool_get_assignments(args: dict, user_id: int) -> str:
 
 
 async def _tool_get_emails(args: dict, user_id: int) -> str:
-    """Get AIRS/DAIS emails."""
-    webmail = STATE.webmail_client
-    if webmail is None or not webmail.authenticated:
-        return "Webmail girişi yapılmamış. Mailleri görmek için önce /start ile webmail'e giriş yap."
+    """Get AIRS/DAIS emails from SQLite cache (instant, no IMAP)."""
+    # Check if cache is populated
+    email_count = cache_db.get_email_count()
+    if email_count == 0:
+        return "Mail cache henüz doldurulmadı. Birkaç saniye bekleyip tekrar dene."
 
     count = args.get("count", 5)
-    scope = args.get("scope", "recent")
+    scope = args.get("scope", "auto")  # auto: unread first, then recent
     keyword = args.get("keyword", "") or args.get("sender_filter", "")
 
-    # When filtering, fetch a larger pool so we don't miss matches
-    fetch_count = max(count, 20) if keyword else count
-
-    try:
-        if scope == "unread":
-            mails = await asyncio.to_thread(webmail.check_all_unread)
-        else:
-            mails = await asyncio.to_thread(webmail.get_recent_airs_dais, fetch_count)
-    except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
-        logger.error("Email fetch failed: %s", exc, exc_info=True)
-        return f"E-postalar alınamadı: {exc}"
+    # Fetch from SQLite cache — instant!
+    if scope == "unread":
+        mails = cache_db.get_unread_emails()
+    elif scope == "auto":
+        # Smart mode: unread first, if empty fall back to recent
+        mails = cache_db.get_unread_emails()
+        if not mails:
+            mails = cache_db.get_emails(max(count, 20) if keyword else count) or []
+    else:  # recent
+        mails = cache_db.get_emails(max(count, 20) if keyword else count) or []
 
     if keyword:
         # Normalize numbers: "06" → "6", "007" → "7" for flexible matching
@@ -1706,24 +1706,19 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
 
 
 async def _tool_get_email_detail(args: dict, user_id: int) -> str:
-    """Get full content of a specific email."""
-    webmail = STATE.webmail_client
-    if webmail is None or not webmail.authenticated:
-        return "Webmail girişi yapılmamış."
-
+    """Get full content of a specific email from SQLite cache."""
     keyword = args.get("keyword", "") or args.get("email_subject", "")
     if not keyword:
         return "Mail arama terimi belirtilmedi."
 
-    try:
-        mails = await asyncio.to_thread(webmail.get_recent_airs_dais, 20)
-    except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
-        logger.error("Email detail fetch failed: %s", exc, exc_info=True)
-        return f"Mail detayı alınamadı: {exc}"
+    # Fetch from SQLite cache — instant!
+    mails = cache_db.get_emails(50) or []
+    if not mails:
+        return "Mail cache henüz doldurulmadı. Birkaç saniye bekleyip tekrar dene."
 
     # Normalize numbers: "06" → "6", "007" → "7" for flexible matching
+    import re
     def normalize_numbers(text: str) -> str:
-        import re
         return re.sub(r'\b0+(\d+)', r'\1', text.lower())
 
     # Course alias expansion: "audit" -> "ctis-474", "ethics" -> "ctis 363"
@@ -1777,11 +1772,14 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
     if not match:
         return f"'{keyword}' ile eşleşen mail bulunamadı."
 
+    # Use body_full if available, otherwise body_preview
+    body = match.get("body_full") or match.get("body_preview", "")
+
     return (
         f"📧 *{match.get('subject', 'Konusuz')}*\n"
         f"Kimden: {match.get('from', '')}\n"
         f"Tarih: {match.get('date', '')}\n\n"
-        f"{match.get('body_preview', '')}"
+        f"{body}"
     )
 
 
