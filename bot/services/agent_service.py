@@ -1666,52 +1666,21 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
         mails = cache_db.get_emails(max(count, 20) if keyword else count) or []
 
     if keyword:
-        # Normalize numbers: "06" → "6", "007" → "7" for flexible matching
-        import re
-        def normalize_numbers(text: str) -> str:
-            return re.sub(r'\b0+(\d+)', r'\1', text.lower())
+        # Strip Turkish noise words (generic, works for any student)
+        NOISE_WORDS = {"hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin", "maili", "mailini", "ödevi"}
+        tokens = [w.lower() for w in keyword.split() if w.lower() not in NOISE_WORDS]
 
-        # Course alias expansion (these are generic, not user-specific)
-        COURSE_ALIASES = {
-            "audit": "ctis-474", "auditing": "ctis-474",
-            "ethics": "ctis 363", "etik": "ctis 363",
-            "edebiyat": "edeb 201", "turkish fiction": "edeb 201",
-            "civilization": "hciv 102", "medeniyet": "hciv 102",
-            "senior project": "ctis 456", "bitirme": "ctis 456",
-            "microservice": "ctis 465",
-        }
+        if tokens:
+            def matches(m: dict) -> bool:
+                searchable = " ".join([
+                    m.get("from", ""),
+                    m.get("subject", ""),
+                    m.get("source", ""),
+                    m.get("date", ""),
+                ]).lower()
+                return any(tok in searchable for tok in tokens)
 
-        def expand_aliases(text: str) -> str:
-            result = text.lower()
-            for alias, code in COURSE_ALIASES.items():
-                if alias in result:
-                    result = result.replace(alias, code)
-            return result
-
-        # Strip common noise words
-        STRIP_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin", "maili", "mailini"]
-
-        def strip_noise(text: str) -> str:
-            words = text.lower().split()
-            return " ".join(w for w in words if w not in STRIP_WORDS)
-
-        kw_expanded = expand_aliases(keyword)
-        kw_cleaned = strip_noise(kw_expanded)
-        kw_normalized = normalize_numbers(kw_cleaned)
-        tokens = [t for t in kw_normalized.split() if t]
-
-        def matches(m: dict) -> bool:
-            searchable = " ".join([
-                m.get("from", ""),
-                m.get("subject", ""),
-                m.get("source", ""),
-                m.get("date", ""),
-            ])
-            searchable_normalized = normalize_numbers(searchable)
-            # ANY token match (OR logic) - more flexible for name search
-            return any(tok in searchable_normalized for tok in tokens)
-
-        mails = [m for m in mails if matches(m)]
+            mails = [m for m in mails if matches(m)]
 
     mails = mails[:count]
 
@@ -1741,24 +1710,13 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
     if not keyword:
         return "Mail arama terimi belirtilmedi."
 
-    # Fetch from SQLite cache — instant!
     mails = cache_db.get_emails(50) or []
     if not mails:
         return "Mail cache henüz doldurulmadı. Birkaç saniye bekleyip tekrar dene."
 
-    import re
-    def normalize_numbers(text: str) -> str:
-        return re.sub(r'\b0+(\d+)', r'\1', text.lower())
-
-    # Strip noise words
-    STRIP_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin", "maili", "mailini"]
-    def strip_noise(text: str) -> str:
-        words = text.lower().split()
-        return " ".join(w for w in words if w not in STRIP_WORDS)
-
-    kw_cleaned = strip_noise(keyword)
-    kw_normalized = normalize_numbers(kw_cleaned)
-    tokens = [t for t in kw_normalized.split() if t]
+    # Strip Turkish noise words
+    NOISE_WORDS = {"hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin", "maili", "mailini"}
+    tokens = [w.lower() for w in keyword.split() if w.lower() not in NOISE_WORDS]
 
     match = None
     for m in mails:
@@ -1767,11 +1725,9 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
             m.get("from", ""),
             m.get("source", ""),
             m.get("date", ""),
-        ])
-        searchable_normalized = normalize_numbers(searchable)
+        ]).lower()
 
-        # ANY token match (OR logic)
-        if any(tok in searchable_normalized for tok in tokens):
+        if any(tok in searchable for tok in tokens):
             match = m
             break
 
