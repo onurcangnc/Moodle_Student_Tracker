@@ -517,8 +517,8 @@ TOOLS: list[dict[str, Any]] = [
             "name": "get_assignments",
             "description": (
                 "Ödev/deadline bilgisi. "
-                "Hoca adı sorulursa (ör: 'Tunahan hocanın ödevi') → keyword ile ders/hoca adını ara. "
-                "Ders kodu: HCIV, CTIS, EDEB. Hoca adları genelde ders adında parantez içinde: (T. Durmaz), (Erkan Uçar). "
+                "Ders adı formatı: 'CTIS 363 (E. Uçar)', 'HCIV 102 (T. Durmaz)' — hoca adı parantez içinde KISALTMA olarak var. "
+                "Hoca adı sorulursa → keyword olarak SOYADI kullan (ör: 'Tunahan hoca' → keyword='Durmaz'). "
                 "filter: upcoming=yaklaşan, overdue=geciken, all=tümü."
             ),
             "parameters": {
@@ -531,7 +531,7 @@ TOOLS: list[dict[str, Any]] = [
                     },
                     "keyword": {
                         "type": "string",
-                        "description": "Arama filtresi — hoca adı, ders kodu veya ödev adı (ör: 'Tunahan', 'HCIV', 'Video Project')",
+                        "description": "Arama: hoca SOYADI, ders kodu veya ödev adı (ör: 'Durmaz', 'HCIV', 'Video')",
                     },
                 },
                 "required": [],
@@ -545,12 +545,12 @@ TOOLS: list[dict[str, Any]] = [
             "name": "get_emails",
             "description": (
                 "Bilkent DAIS & AIRS mailleri. "
-                "Sayı belirtilmişse (ör: 'Son 3 mail', '5 mailimi göster') → doğrudan count ile çağır. "
-                "'Tüm mailleri göster', 'hepsi', 'bütün' → count=20 ile çağır (SORU SORMA). "
-                "Sadece 'maillerimi göster' gibi belirsiz isteklerde → count=5 kullan (scope=auto varsayılan, önce okunmamış bakar yoksa son mailler). "
-                "Hoca adı, ders kodu, konu veya tarih varsa keyword kullan (gönderici, konu, kaynak, tarih hepsinde arar). "
-                "Tarih araması: '11 şubat' → keyword='11 Şub', 'ocak mailleri' → keyword='Oca'. "
-                "Sonuç boşsa 'Yakın zamanda yok, istersen son maillerini gösterebilirim' de."
+                "Sayı belirtilmişse (ör: 'Son 3 mail') → count kullan. "
+                "'Tüm mailler' → count=20. Belirsizse → count=5 (scope=auto: önce okunmamış, yoksa son mailler). "
+                "Hoca adı sorulursa → keyword olarak AD veya SOYAD kullan (from alanında 'Tunahan Durmaz' şeklinde tam ad var). "
+                "Ders kodu, konu veya tarih varsa keyword kullan. "
+                "Tarih: '11 şubat' → keyword='11 Şub'. "
+                "Sonuç boşsa 'istersen son maillerine bakabilirim' de."
             ),
             "parameters": {
                 "type": "object",
@@ -561,7 +561,7 @@ TOOLS: list[dict[str, Any]] = [
                     },
                     "keyword": {
                         "type": "string",
-                        "description": "Arama filtresi — gönderici adı, ders kodu (EDEB, CTIS vb.), konu kelimesi veya tarih (ör: '11 Şub', 'Ocak')",
+                        "description": "Arama: gönderici ad/soyad, ders kodu, konu veya tarih (ör: 'Durmaz', 'CTIS', 'Video', '11 Şub')",
                     },
                     "scope": {
                         "type": "string",
@@ -1585,25 +1585,14 @@ async def _tool_get_assignments(args: dict, user_id: int) -> str:
         return "Moodle bağlantısı hazır değil."
 
     filter_mode = args.get("filter", "upcoming")
-    keyword = args.get("keyword", "").lower()
+    keyword = args.get("keyword", "").lower().strip()
     now_ts = time.time()
 
-    # Instructor name aliases → course codes/names
-    INSTRUCTOR_ALIASES = {
-        "tunahan": ["durmaz", "hciv", "102"],
-        "durmaz": ["tunahan", "hciv", "102"],
-        "erkan": ["uçar", "ctis", "363", "ethics", "etik"],
-        "uçar": ["erkan", "ctis", "363"],
-        "adem": ["gergöy", "airs"],
-        "ecem": ["tanrıverdi", "dais"],
-    }
-
-    # Expand keyword with instructor aliases
-    search_terms = [keyword] if keyword else []
+    # Strip common noise words that don't help search
+    NOISE_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin", "ödevi", "ödevini"]
     if keyword:
-        for alias, expansions in INSTRUCTOR_ALIASES.items():
-            if alias in keyword:
-                search_terms.extend(expansions)
+        tokens = keyword.split()
+        keyword = " ".join(w for w in tokens if w not in NOISE_WORDS)
 
     try:
         if filter_mode == "all" or keyword:
@@ -1620,12 +1609,13 @@ async def _tool_get_assignments(args: dict, user_id: int) -> str:
             if not a.submitted and a.due_date and a.due_date < now_ts
         ]
 
-    # Keyword filtering (instructor name, course code, assignment name)
-    if search_terms and assignments:
-        def matches_any(a) -> bool:
+    # Keyword filtering — partial match on course name or assignment name
+    if keyword and assignments:
+        search_tokens = keyword.split()
+        def matches(a) -> bool:
             searchable = f"{a.course_name} {a.name}".lower()
-            return any(term in searchable for term in search_terms)
-        assignments = [a for a in assignments if matches_any(a)]
+            return any(tok in searchable for tok in search_tokens)
+        assignments = [a for a in assignments if matches(a)]
 
     if not assignments:
         labels = {"upcoming": "Yaklaşan", "overdue": "Süresi geçmiş", "all": "Hiç"}
@@ -1681,7 +1671,7 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
         def normalize_numbers(text: str) -> str:
             return re.sub(r'\b0+(\d+)', r'\1', text.lower())
 
-        # Course alias expansion: "audit" -> "ctis-474", "ethics" -> "ctis 363"
+        # Course alias expansion (these are generic, not user-specific)
         COURSE_ALIASES = {
             "audit": "ctis-474", "auditing": "ctis-474",
             "ethics": "ctis 363", "etik": "ctis 363",
@@ -1691,16 +1681,6 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
             "microservice": "ctis 465",
         }
 
-        # Instructor name variations for mail search
-        INSTRUCTOR_NAMES = {
-            "tunahan": ["tunahan durmaz", "t. durmaz", "durmaz"],
-            "durmaz": ["tunahan durmaz", "t. durmaz", "tunahan"],
-            "erkan": ["erkan uçar", "e. uçar", "uçar", "ucar"],
-            "uçar": ["erkan uçar", "e. uçar", "erkan"],
-            "adem": ["adem gergöy", "a. gergöy", "gergöy", "gergoy"],
-            "ecem": ["ecem tanrıverdi", "e. tanrıverdi", "tanrıverdi"],
-        }
-
         def expand_aliases(text: str) -> str:
             result = text.lower()
             for alias, code in COURSE_ALIASES.items():
@@ -1708,17 +1688,8 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
                     result = result.replace(alias, code)
             return result
 
-        def get_instructor_variations(text: str) -> list[str]:
-            """Get all name variations for instructor search."""
-            text_lower = text.lower()
-            variations = []
-            for name, aliases in INSTRUCTOR_NAMES.items():
-                if name in text_lower:
-                    variations.extend(aliases)
-            return variations
-
-        # Strip common suffixes that don't appear in mail data
-        STRIP_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin"]
+        # Strip common noise words
+        STRIP_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin", "maili", "mailini"]
 
         def strip_noise(text: str) -> str:
             words = text.lower().split()
@@ -1727,8 +1698,7 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
         kw_expanded = expand_aliases(keyword)
         kw_cleaned = strip_noise(kw_expanded)
         kw_normalized = normalize_numbers(kw_cleaned)
-        tokens = [t for t in kw_normalized.split() if t]  # Filter empty
-        instructor_variations = get_instructor_variations(keyword)
+        tokens = [t for t in kw_normalized.split() if t]
 
         def matches(m: dict) -> bool:
             searchable = " ".join([
@@ -1737,16 +1707,9 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
                 m.get("source", ""),
                 m.get("date", ""),
             ])
-            searchable_lower = searchable.lower()
             searchable_normalized = normalize_numbers(searchable)
-
-            # Check instructor name variations first
-            if instructor_variations:
-                if any(var in searchable_lower for var in instructor_variations):
-                    return True
-
-            # Fall back to token matching
-            return all(tok in searchable_normalized for tok in tokens)
+            # ANY token match (OR logic) - more flexible for name search
+            return any(tok in searchable_normalized for tok in tokens)
 
         mails = [m for m in mails if matches(m)]
 
@@ -1783,57 +1746,19 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
     if not mails:
         return "Mail cache henüz doldurulmadı. Birkaç saniye bekleyip tekrar dene."
 
-    # Normalize numbers: "06" → "6", "007" → "7" for flexible matching
     import re
     def normalize_numbers(text: str) -> str:
         return re.sub(r'\b0+(\d+)', r'\1', text.lower())
 
-    # Course alias expansion
-    COURSE_ALIASES = {
-        "audit": "ctis-474", "auditing": "ctis-474",
-        "ethics": "ctis 363", "etik": "ctis 363",
-        "edebiyat": "edeb 201", "turkish fiction": "edeb 201",
-        "civilization": "hciv 102", "medeniyet": "hciv 102",
-        "senior project": "ctis 456", "bitirme": "ctis 456",
-        "microservice": "ctis 465",
-    }
-
-    # Instructor name variations
-    INSTRUCTOR_NAMES = {
-        "tunahan": ["tunahan durmaz", "t. durmaz", "durmaz"],
-        "durmaz": ["tunahan durmaz", "t. durmaz", "tunahan"],
-        "erkan": ["erkan uçar", "e. uçar", "uçar", "ucar"],
-        "uçar": ["erkan uçar", "e. uçar", "erkan"],
-        "adem": ["adem gergöy", "a. gergöy", "gergöy", "gergoy"],
-        "ecem": ["ecem tanrıverdi", "e. tanrıverdi", "tanrıverdi"],
-    }
-
-    def expand_aliases(text: str) -> str:
-        result = text.lower()
-        for alias, code in COURSE_ALIASES.items():
-            if alias in result:
-                result = result.replace(alias, code)
-        return result
-
-    def get_instructor_variations(text: str) -> list[str]:
-        text_lower = text.lower()
-        variations = []
-        for name, aliases in INSTRUCTOR_NAMES.items():
-            if name in text_lower:
-                variations.extend(aliases)
-        return variations
-
-    STRIP_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin"]
-
+    # Strip noise words
+    STRIP_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin", "maili", "mailini"]
     def strip_noise(text: str) -> str:
         words = text.lower().split()
         return " ".join(w for w in words if w not in STRIP_WORDS)
 
-    kw_expanded = expand_aliases(keyword)
-    kw_cleaned = strip_noise(kw_expanded)
+    kw_cleaned = strip_noise(keyword)
     kw_normalized = normalize_numbers(kw_cleaned)
     tokens = [t for t in kw_normalized.split() if t]
-    instructor_variations = get_instructor_variations(keyword)
 
     match = None
     for m in mails:
@@ -1843,24 +1768,16 @@ async def _tool_get_email_detail(args: dict, user_id: int) -> str:
             m.get("source", ""),
             m.get("date", ""),
         ])
-        searchable_lower = searchable.lower()
         searchable_normalized = normalize_numbers(searchable)
 
-        # Check instructor name variations first
-        if instructor_variations:
-            if any(var in searchable_lower for var in instructor_variations):
-                match = m
-                break
-
-        # Fall back to token matching
-        if all(tok in searchable_normalized for tok in tokens):
+        # ANY token match (OR logic)
+        if any(tok in searchable_normalized for tok in tokens):
             match = m
             break
 
     if not match:
         return f"'{keyword}' ile eşleşen mail bulunamadı."
 
-    # Use body_full if available, otherwise body_preview
     body = match.get("body_full") or match.get("body_preview", "")
 
     return (
