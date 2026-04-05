@@ -24,48 +24,27 @@ class TestMailSearch:
 
     @staticmethod
     def mail_matches(keyword: str, mail: dict) -> bool:
-        """Check if a mail matches the keyword (same logic as agent_service)."""
-        def normalize_numbers(text: str) -> str:
-            return re.sub(r'\b0+(\d+)', r'\1', text.lower())
+        """Check if a mail matches the keyword (same logic as agent_service).
 
-        # Course alias expansion
-        COURSE_ALIASES = {
-            "audit": "ctis-474", "auditing": "ctis-474",
-            "ethics": "ctis 363", "etik": "ctis 363",
-            "edebiyat": "edeb 201", "turkish fiction": "edeb 201",
-            "civilization": "hciv 102", "medeniyet": "hciv 102",
-            "senior project": "ctis 456", "bitirme": "ctis 456",
-            "microservice": "ctis 465",
-        }
+        NOTE: No hardcoded course aliases - LLM handles keyword extraction.
+        Only universal Turkish noise words are stripped.
+        """
+        # Strip Turkish noise words (universal, not user-specific)
+        NOISE_WORDS = {"hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin", "maili", "mailini", "ödevi"}
+        tokens = [w.lower() for w in keyword.split() if w.lower() not in NOISE_WORDS]
 
-        def expand_aliases(text: str) -> str:
-            result = text.lower()
-            for alias, code in COURSE_ALIASES.items():
-                if alias in result:
-                    result = result.replace(alias, code)
-            return result
-
-        # Strip noise words
-        STRIP_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin"]
-
-        def strip_noise(text: str) -> str:
-            words = text.lower().split()
-            return " ".join(w for w in words if w not in STRIP_WORDS)
-
-        kw_expanded = expand_aliases(keyword)
-        kw_cleaned = strip_noise(kw_expanded)
-        kw_normalized = normalize_numbers(kw_cleaned)
-        tokens = [t for t in kw_normalized.split() if t]
+        if not tokens:
+            return False
 
         searchable = " ".join([
             mail.get("subject", ""),
             mail.get("from", ""),
             mail.get("source", ""),
             mail.get("date", ""),
-        ])
-        searchable_normalized = normalize_numbers(searchable)
+        ]).lower()
 
-        return all(tok in searchable_normalized for tok in tokens)
+        # ANY token match (OR logic) - flexible for name/keyword search
+        return any(tok in searchable for tok in tokens)
 
     # ─── Number Normalization ─────────────────────────────────────────────────
 
@@ -92,10 +71,15 @@ class TestMailSearch:
     # ─── Multi-word Search (AND logic) ────────────────────────────────────────
 
     def test_audit_homework_6(self):
-        """User asks 'audit homework 6' - should match CTIS-474 Homework 06 via alias expansion."""
+        """User asks 'audit homework 6' - LLM should extract 'CTIS-474' or 'homework 6'.
+
+        NOTE: No hardcoded alias expansion. LLM handles keyword extraction.
+        'audit' alone won't match - LLM needs to provide course code or relevant terms.
+        """
         mail = {"subject": "CTIS-474 - Homework 06", "from": "Volkan Evrin", "source": "AIRS", "date": "2 Nisan 2026"}
-        # With alias expansion: "audit" -> "ctis-474", so it SHOULD match now
-        assert self.mail_matches("audit homework 6", mail)
+        # 'audit' alone won't match CTIS-474 - LLM should extract proper keyword
+        # But 'homework' will match
+        assert self.mail_matches("homework 6", mail)
 
     def test_ctis_474_homework_6(self):
         """'ctis 474 homework 6' should match."""
@@ -133,9 +117,9 @@ class TestMailSearch:
     def test_empty_keyword(self):
         """Empty keyword should match nothing."""
         mail = {"subject": "Test", "from": "Prof", "source": "AIRS", "date": "1 Apr"}
-        # Empty splits to empty list, all() of empty is True
-        # This is a potential bug - empty search matches everything
-        assert self.mail_matches("", mail)  # Currently True - document this behavior
+        # Empty splits to empty list, any() of empty is False
+        # Correct behavior - empty search matches nothing
+        assert not self.mail_matches("", mail)
 
     def test_no_match(self):
         """Completely unrelated search."""
@@ -350,25 +334,31 @@ class TestBugReproductions:
         """
         BUG: User said 'Audit homework 6 dan bahsediyorum' but bot searched for literal 'Audit homework 6'.
         ISSUE: 'Audit' is user's shorthand for 'CTIS 474 Information Systems Auditing'.
-        FIX: Course alias expansion - 'audit' -> 'ctis-474'
+
+        AGENTIC FIX: LLM extracts proper keyword from context. No hardcoded aliases.
+        - LLM sees tool description: "keyword should be course code or name"
+        - LLM extracts 'CTIS-474' or 'homework 6' from user's intent
+        - Tool performs simple string matching
         """
         mail = {"subject": "CTIS-474 - Homework 06", "from": "Volkan Evrin", "source": "AIRS", "date": "2 Nisan"}
-        # With alias expansion, 'audit homework 6' NOW matches!
-        assert TestMailSearch.mail_matches("audit homework 6", mail)
+        # 'audit' alone won't match - LLM must provide proper keyword
+        # But 'homework' will match (OR logic)
+        assert TestMailSearch.mail_matches("homework 6", mail)
 
-        # Direct code also works
+        # Direct code works
         assert TestMailSearch.mail_matches("ctis-474 homework 6", mail)
+        assert TestMailSearch.mail_matches("CTIS-474", mail)
 
     def test_bug_ctis_award_ceremony(self):
         """
         BUG: User asked for 'CTIS award ceremony' mail but it wasn't found.
-        Could be: mail doesn't exist, or search term mismatch.
+        FIX: With OR logic, 'ctis award ceremony' matches because 'ctis' and 'award' are in the mail.
+        This is the correct agentic behavior - LLM extracts keywords, any match is a hit.
         """
-        # If the mail exists with different wording:
         mail = {"subject": "CTIS Annual Awards 2026", "from": "Department", "source": "AIRS", "date": "1 Apr"}
-        # 'ceremony' is not in 'CTIS Annual Awards 2026'
-        assert not TestMailSearch.mail_matches("ctis award ceremony", mail)
-        # But 'ctis award' would match:
+        # OR logic: 'ctis' matches, 'award' matches → mail found (even though 'ceremony' doesn't)
+        assert TestMailSearch.mail_matches("ctis award ceremony", mail)
+        # 'ctis award' also matches:
         assert TestMailSearch.mail_matches("ctis award", mail)
 
     def test_bug_erkan_hoca_not_found(self):
@@ -385,49 +375,45 @@ class TestBugReproductions:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# COURSE ALIAS MAPPING TESTS
+# AGENTIC DESIGN TESTS - LLM handles keyword extraction, no hardcoded aliases
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestCourseAliases:
-    """Test course name/alias resolution for better UX."""
+class TestAgenticDesign:
+    """Verify agentic design - no user-specific hardcoded patterns.
 
-    COURSE_ALIASES = {
-        "audit": "CTIS 474",
-        "auditing": "CTIS 474",
-        "ethics": "CTIS 363",
-        "etik": "CTIS 363",
-        "edebiyat": "EDEB 201",
-        "turkish fiction": "EDEB 201",
-        "civilization": "HCIV 102",
-        "medeniyet": "HCIV 102",
-        "senior project": "CTIS 456",
-        "bitirme": "CTIS 456",
-        "microservice": "CTIS 465",
-    }
+    Course aliases (audit→CTIS474, ethics→CTIS363) are NOT hardcoded.
+    LLM extracts proper keywords from natural language via tool descriptions.
+    Tools perform simple string matching.
+    """
 
-    def resolve_alias(self, text: str) -> str | None:
-        """Resolve course alias to code."""
-        text_lower = text.lower()
-        for alias, code in self.COURSE_ALIASES.items():
-            if alias in text_lower:
-                return code
-        return None
+    def test_no_hardcoded_aliases_in_search(self):
+        """'audit' alone should NOT match CTIS-474 - LLM must provide course code."""
+        mail = {"subject": "CTIS-474 - Homework 06", "from": "Volkan", "source": "AIRS", "date": "2 Apr"}
+        # 'audit' is not in the mail - no alias expansion
+        assert not TestMailSearch.mail_matches("audit", mail)
+        # But 'CTIS' or 'ctis-474' works
+        assert TestMailSearch.mail_matches("CTIS", mail)
+        assert TestMailSearch.mail_matches("ctis-474", mail)
 
-    def test_audit_alias(self):
-        """'audit' should resolve to CTIS 474."""
-        assert self.resolve_alias("audit dersi") == "CTIS 474"
-        assert self.resolve_alias("auditing homework") == "CTIS 474"
+    def test_direct_course_code_works(self):
+        """Direct course codes should always work."""
+        mail = {"subject": "EDEB 201 Quiz Results", "from": "Prof", "source": "AIRS", "date": "1 Apr"}
+        assert TestMailSearch.mail_matches("EDEB", mail)
+        assert TestMailSearch.mail_matches("edeb 201", mail)
 
-    def test_ethics_alias(self):
-        """'ethics' should resolve to CTIS 363."""
-        assert self.resolve_alias("ethics quiz") == "CTIS 363"
-        assert self.resolve_alias("etik dersi") == "CTIS 363"
+    def test_instructor_name_works(self):
+        """Instructor names should work directly."""
+        mail = {"subject": "HCIV 102 Announcement", "from": "Tunahan Durmaz", "source": "AIRS", "date": "1 Apr"}
+        assert TestMailSearch.mail_matches("Durmaz", mail)
+        assert TestMailSearch.mail_matches("Tunahan", mail)
 
-    def test_turkish_aliases(self):
-        """Turkish aliases."""
-        assert self.resolve_alias("edebiyat notları") == "EDEB 201"
-        assert self.resolve_alias("medeniyet tarihi") == "HCIV 102"
-        assert self.resolve_alias("bitirme projesi") == "CTIS 456"
+    def test_noise_words_stripped(self):
+        """Turkish noise words are stripped (universal, not user-specific)."""
+        mail = {"subject": "CTIS 363 Quiz", "from": "E. Uçar", "source": "AIRS", "date": "1 Apr"}
+        # 'hoca' stripped, 'Uçar' matches
+        assert TestMailSearch.mail_matches("Uçar hoca", mail)
+        # 'dersi' stripped, 'CTIS' matches
+        assert TestMailSearch.mail_matches("CTIS dersi", mail)
 
 
 if __name__ == "__main__":
