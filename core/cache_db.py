@@ -204,20 +204,35 @@ def search_emails(keyword: str, limit: int = 20) -> list[dict]:
 
     try:
         with _conn() as conn:
-            # Normalize: strip, lowercase for case-insensitive search
-            pattern = f"%{keyword.strip()}%"
+            # Split keyword into tokens, each token must match at least one field
+            tokens = keyword.strip().split()
+            if not tokens:
+                return get_emails(limit) or []
+
+            # Build WHERE: each token must appear in ANY searchable field
+            conditions = []
+            params: list[str] = []
+            for tok in tokens:
+                pattern = f"%{tok}%"
+                conditions.append(
+                    "(subject LIKE ? COLLATE NOCASE"
+                    " OR from_addr LIKE ? COLLATE NOCASE"
+                    " OR source LIKE ? COLLATE NOCASE"
+                    " OR date LIKE ? COLLATE NOCASE"
+                    " OR body_preview LIKE ? COLLATE NOCASE)"
+                )
+                params.extend([pattern] * 5)
+
+            where_clause = " AND ".join(conditions)
             rows = conn.execute(
-                """
+                f"""
                 SELECT uid, subject, from_addr, date, body_preview, body_full, source, is_read
                 FROM emails
-                WHERE subject LIKE ? COLLATE NOCASE
-                   OR from_addr LIKE ? COLLATE NOCASE
-                   OR source LIKE ? COLLATE NOCASE
-                   OR date LIKE ? COLLATE NOCASE
+                WHERE {where_clause}
                 ORDER BY inserted_at DESC
                 LIMIT ?
                 """,
-                (pattern, pattern, pattern, pattern, limit),
+                (*params, limit),
             ).fetchall()
 
         return [

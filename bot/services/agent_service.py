@@ -590,6 +590,10 @@ TOOLS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "Arama terimi — konu, gönderici adı, ders kodu veya tarih (kısmi eşleşme yeterli)",
                     },
+                    "count": {
+                        "type": "integer",
+                        "description": "Kaç mailin detayı (varsayılan 5, birden fazla eşleşme varsa hepsini getirir)",
+                    },
                 },
                 "required": ["keyword"],
             },
@@ -769,6 +773,19 @@ Bölümler arası bağlantıları MUTLAKA belirt:
 Konu bazlı çalışma (dosya adı belirtilmemişse):
 - study_topic kullan — tüm kaynaklarda konuyu arar
 - depth: overview → detailed → deep adım adım derinleş
+
+## AGENTIC RAG — İTERATİF ARAMA (KRİTİK)
+Tek bir RAG sorgusuyla yetinme. Karmaşık sorularda İTERATİF çalış:
+- İlk sonuç yetersizse → farklı anahtar kelimeyle tekrar ara
+- Karşılaştırma sorusu ("A vs B") → her kavramı AYRI ara, sonra sentezle
+- Geniş konu ("güvenlik konuları") → önce study_topic(overview), sonra read_source(section) ile derinleş
+- Sonuçlarda referans edilen başka konu/bölüm varsa → o bölümü de çek
+- Birden fazla dosyada bilgi varsa → hepsinden topla, çapraz referans yap
+Örnek:
+  "Privacy ve encryption farkı" →
+  1. study_topic("privacy") → chunk'lar
+  2. study_topic("encryption") → chunk'lar
+  3. LLM: iki sonucu sentezle → karşılaştırmalı yanıt
 
 ## NOT VE DEVAMSIZLIK
 - Spesifik ders sorulursa → SADECE o ders
@@ -1655,32 +1672,17 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
     keyword = args.get("keyword", "") or args.get("sender_filter", "")
 
     # Fetch from SQLite cache — instant!
-    if scope == "unread":
+    if keyword:
+        # Direct DB search — no client-side filtering needed
+        mails = cache_db.search_emails(keyword, limit=max(count, 50))
+    elif scope == "unread":
         mails = cache_db.get_unread_emails()
     elif scope == "auto":
-        # Smart mode: unread first, if empty fall back to recent
         mails = cache_db.get_unread_emails()
         if not mails:
-            mails = cache_db.get_emails(max(count, 20) if keyword else count) or []
-    else:  # recent
-        mails = cache_db.get_emails(max(count, 20) if keyword else count) or []
-
-    if keyword:
-        # Strip Turkish noise words (generic, works for any student)
-        NOISE_WORDS = {"hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin", "maili", "mailini", "ödevi"}
-        tokens = [w.lower() for w in keyword.split() if w.lower() not in NOISE_WORDS]
-
-        if tokens:
-            def matches(m: dict) -> bool:
-                searchable = " ".join([
-                    m.get("from", ""),
-                    m.get("subject", ""),
-                    m.get("source", ""),
-                    m.get("date", ""),
-                ]).lower()
-                return any(tok in searchable for tok in tokens)
-
-            mails = [m for m in mails if matches(m)]
+            mails = cache_db.get_emails(count) or []
+    else:
+        mails = cache_db.get_emails(count) or []
 
     mails = mails[:count]
 
@@ -1705,43 +1707,29 @@ async def _tool_get_emails(args: dict, user_id: int) -> str:
 
 
 async def _tool_get_email_detail(args: dict, user_id: int) -> str:
-    """Get full content of a specific email from SQLite cache."""
+    """Get full content of matching emails from SQLite cache."""
     keyword = args.get("keyword", "") or args.get("email_subject", "")
     if not keyword:
         return "Mail arama terimi belirtilmedi."
 
-    mails = cache_db.get_emails(50) or []
+    count = args.get("count", 5)
+
+    # Direct DB search — same as get_emails
+    mails = cache_db.search_emails(keyword, limit=count)
     if not mails:
-        return "Mail cache henüz doldurulmadı. Birkaç saniye bekleyip tekrar dene."
-
-    # Strip Turkish noise words
-    NOISE_WORDS = {"hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin", "maili", "mailini"}
-    tokens = [w.lower() for w in keyword.split() if w.lower() not in NOISE_WORDS]
-
-    match = None
-    for m in mails:
-        searchable = " ".join([
-            m.get("subject", ""),
-            m.get("from", ""),
-            m.get("source", ""),
-            m.get("date", ""),
-        ]).lower()
-
-        if any(tok in searchable for tok in tokens):
-            match = m
-            break
-
-    if not match:
         return f"'{keyword}' ile eşleşen mail bulunamadı."
 
-    body = match.get("body_full") or match.get("body_preview", "")
+    lines = []
+    for m in mails:
+        body = m.get("body_full") or m.get("body_preview", "")
+        lines.append(
+            f"📧 *{m.get('subject', 'Konusuz')}*\n"
+            f"Kimden: {m.get('from', '')}\n"
+            f"Tarih: {m.get('date', '')}\n\n"
+            f"{body}"
+        )
 
-    return (
-        f"📧 *{match.get('subject', 'Konusuz')}*\n"
-        f"Kimden: {match.get('from', '')}\n"
-        f"Tarih: {match.get('date', '')}\n\n"
-        f"{body}"
-    )
+    return "\n\n---\n\n".join(lines)
 
 
 async def _tool_list_courses(args: dict, user_id: int) -> str:

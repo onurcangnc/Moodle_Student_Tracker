@@ -295,7 +295,9 @@ class WebmailClient:
             }
 
             if body:
-                result["body_preview"] = WebmailClient._extract_body(msg)
+                full_text = WebmailClient._extract_body(msg, max_len=0)
+                result["body_full"] = full_text
+                result["body_preview"] = full_text[:2000].strip() if full_text else ""
 
             return result
 
@@ -310,20 +312,24 @@ class WebmailClient:
 
     @staticmethod
     def _extract_body(msg: email.message.Message, max_len: int = 2000) -> str:
-        """Extract plain text body, truncated to max_len chars."""
+        """Extract plain text body, optionally truncated. max_len=0 means no limit."""
+        text = ""
         if msg.is_multipart():
             for part in msg.walk():
                 if part.get_content_type() == "text/plain":
                     payload = part.get_payload(decode=True)
                     if payload:
                         charset = part.get_content_charset() or "utf-8"
-                        return payload.decode(charset, errors="replace")[:max_len].strip()
+                        text = payload.decode(charset, errors="replace").strip()
+                        break
         else:
             payload = msg.get_payload(decode=True)
             if payload:
                 charset = msg.get_content_charset() or "utf-8"
-                return payload.decode(charset, errors="replace")[:max_len].strip()
-        return ""
+                text = payload.decode(charset, errors="replace").strip()
+        if max_len and len(text) > max_len:
+            text = text[:max_len].strip()
+        return text
 
     def fetch_stars_verification_code(self, max_age_seconds: int = 120) -> str | None:
         """Fetch the latest STARS 2FA verification code from email.

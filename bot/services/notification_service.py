@@ -7,13 +7,13 @@ Every job does two things:
 
 Job schedule:
   stars_full_sync    — 1 min   (keep-alive + ALL STARS data → cache, near real-time)
-  assignment_check   — 10 min  (new assignments + cache refresh)
+  assignment_check   — 24 h    (new assignments + cache refresh, daily)
   email_check        — 5 min   (new mails notification)
   email_cache_sync   — 30 sec  (FULL IMAP → SQLite sync, agent queries instant)
   grades_sync        — 30 min  (new grades NOTIFICATION only — cache already fresh from full_sync)
   attendance_sync    — 60 min  (low attendance alert — cache already fresh from full_sync)
   exam_reminder      — 1 h     (1-day-before exam alerts with room info from mail)
-  deadline_reminder  — 30 min  (upcoming deadline alerts)
+  deadline_reminder  — 24 h    (upcoming deadline alerts, daily)
   session_refresh    — 24 h    (re-login webmail + STARS once per day)
   summary_generation — 60 min  (KATMAN 2 source summaries)
   material_sync      — 30 min  (Moodle → vector store, auto-index new materials)
@@ -226,8 +226,13 @@ def _extract_syllabus_attendance_limit(course_name: str) -> int | None:
 
 
 def _count_absences(records: list[dict]) -> int:
-    """Count sessions where the student was absent."""
-    return sum(1 for r in records if not r.get("attended", True))
+    """Count absent hours (not sessions) for accurate syllabus-limit comparison."""
+    total = 0
+    for r in records:
+        hrs_total = r.get("hours_total", 1)
+        hrs_attended = r.get("hours_attended", hrs_total if r.get("attended", True) else 0)
+        total += hrs_total - hrs_attended
+    return total
 
 
 async def _send(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
@@ -849,7 +854,7 @@ def register_notification_jobs(app: Application) -> None:
 
     jq.run_repeating(
         _check_new_assignments,
-        interval=timedelta(seconds=CONFIG.assignment_check_interval),
+        interval=timedelta(hours=24),
         first=timedelta(seconds=30),
         name="assignment_check",
     )
@@ -893,7 +898,7 @@ def register_notification_jobs(app: Application) -> None:
     )
     jq.run_repeating(
         _check_deadline_reminders,
-        interval=timedelta(minutes=30),
+        interval=timedelta(hours=24),
         first=timedelta(minutes=2),
         name="deadline_reminder",
     )
