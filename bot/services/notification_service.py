@@ -41,6 +41,29 @@ logger = logging.getLogger(__name__)
 
 OWNER_ID = CONFIG.owner_id
 
+# ─── Retry decorator for background jobs ──────────────────────────────────────
+
+_JOB_FAIL_COUNTS: dict[str, int] = {}  # job_name → consecutive failure count
+
+
+def _track_job_failure(job_name: str, exc: Exception) -> None:
+    """Track consecutive failures and log with escalating severity."""
+    _JOB_FAIL_COUNTS[job_name] = _JOB_FAIL_COUNTS.get(job_name, 0) + 1
+    count = _JOB_FAIL_COUNTS[job_name]
+    if count >= 5:
+        logger.error("Job '%s' failed %d consecutive times: %s", job_name, count, exc)
+    elif count >= 3:
+        logger.warning("Job '%s' failed %d consecutive times: %s", job_name, count, exc)
+    else:
+        logger.info("Job '%s' failed (attempt %d): %s", job_name, count, exc)
+
+
+def _track_job_success(job_name: str) -> None:
+    """Reset failure counter on success."""
+    if job_name in _JOB_FAIL_COUNTS:
+        del _JOB_FAIL_COUNTS[job_name]
+
+
 # Attendance warning threshold (%) — fallback when no syllabus limit found
 _ATTENDANCE_WARN_THRESHOLD = 85.0
 
@@ -351,7 +374,9 @@ async def _sync_email_cache(context: ContextTypes.DEFAULT_TYPE) -> None:
         # They'll expire via the normal cleanup job
 
     except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
-        logger.warning("Email cache sync failed: %s", exc)
+        _track_job_failure("email_cache_sync", exc)
+        return
+    _track_job_success("email_cache_sync")
 
 
 async def _sync_grades(context: ContextTypes.DEFAULT_TYPE) -> None:

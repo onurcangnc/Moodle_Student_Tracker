@@ -177,7 +177,20 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await message.reply_text("Dokuman yuklemek icin once /upload komutunu kullanin.")
         return
 
+    # Input validation: file size (max 50MB) and allowed extensions
+    _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+    _ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".txt", ".md", ".png", ".jpg", ".jpeg"}
+
+    if message.document.file_size and message.document.file_size > _MAX_UPLOAD_BYTES:
+        await message.reply_text(f"Dosya çok büyük (max 50 MB). Boyut: {message.document.file_size // (1024*1024)} MB")
+        return
+
     raw_name = message.document.file_name or f"upload_{int(time.time())}.bin"
+    ext = Path(raw_name).suffix.lower()
+    if ext not in _ALLOWED_EXTENSIONS:
+        await message.reply_text(f"Desteklenmeyen dosya türü: {ext}. Desteklenen: {', '.join(sorted(_ALLOWED_EXTENSIONS))}")
+        return
+
     filename = raw_name.replace("/", "_").replace("\\", "_").replace("..", "_")
     upload_dir = core_config.downloads_dir
     upload_dir.mkdir(parents=True, exist_ok=True)

@@ -182,6 +182,8 @@ def refresh_external_sessions() -> None:
     result = stars.start_login(owner_id, stars_user, stars_pass)
     if result.get("status") == "sms_sent":
         for _attempt in range(4):
+            # NOTE: sync sleep is OK here — runs either at startup (before event loop)
+            # or via asyncio.to_thread() in notification_service (separate thread).
             time.sleep(5)
             code = webmail.fetch_stars_verification_code(max_age_seconds=60)
             if code:

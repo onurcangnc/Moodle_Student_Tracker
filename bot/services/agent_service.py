@@ -124,6 +124,24 @@ async def warmup_llm_connections() -> None:
 
 MAX_TOOL_ITERATIONS = 5
 
+# ─── Output Sanitization ─────────────────────────────────────────────────────
+
+# DeepSeek V3 sometimes leaks internal control tokens (DSML tags) in output.
+# These are not meant for the user and should be stripped.
+import re as _re
+_DEEPSEEK_LEAK_RE = _re.compile(r"<｜[A-Z]+｜[^>]*>")
+_CONTROL_TAG_RE = _re.compile(r"<\|[a-z_]+\|>")
+
+
+def _sanitize_llm_output(text: str) -> str:
+    """Strip internal model control tokens from LLM output."""
+    if not text:
+        return text
+    text = _DEEPSEEK_LEAK_RE.sub("", text)
+    text = _CONTROL_TAG_RE.sub("", text)
+    return text.strip()
+
+
 # ─── Instant Responses (LLM bypass for simple queries) ───────────────────────
 
 _INSTANT_RESPONSES: dict[str, str] = {
@@ -1948,7 +1966,7 @@ async def handle_agent_message(
         tool_calls = getattr(response_msg, "tool_calls", None)
         if not tool_calls:
             # LLM returned final text — send progressively for perceived speed
-            final_text = response_msg.content or ""
+            final_text = _sanitize_llm_output(response_msg.content or "")
 
             if message and final_text:
                 # Progressive send: show text appearing quickly
@@ -2028,7 +2046,7 @@ async def handle_agent_message(
 
         # Non-streaming fallback
         response_msg = await _call_llm_with_tools(messages, system_prompt, [])
-        final_text = response_msg.content if response_msg else "Yanıt üretilemedi."
+        final_text = _sanitize_llm_output(response_msg.content) if response_msg else "Yanıt üretilemedi."
     except Exception:
         final_text = "İşlem zaman aşımına uğradı. Lütfen tekrar deneyin."
 
