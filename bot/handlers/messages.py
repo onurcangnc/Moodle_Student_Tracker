@@ -8,147 +8,43 @@ import time
 from pathlib import Path
 
 from telegram import Message, Update
-from telegram.constants import ChatAction
 from telegram.error import TelegramError
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from bot.middleware.auth import admin_only
 from bot.services import document_service, user_service
-from bot.services.agent_service import handle_agent_message, handle_agent_message_streaming
+from bot.services.agent_service import handle_agent_message
 from bot.services.topic_cache import TOPIC_CACHE
 from core import config as core_config
 
 logger = logging.getLogger(__name__)
 
-_TELEGRAM_MAX_LEN = 4096
-_STREAM_EDIT_INTERVAL = 1.5  # seconds between Telegram edits (rate limit safe)
-
-
-def _split_message(text: str, max_len: int = _TELEGRAM_MAX_LEN) -> list[str]:
-    """Split a long message into chunks, preferring paragraph → line → word breaks."""
-    if len(text) <= max_len:
-        return [text]
-    chunks: list[str] = []
-    while len(text) > max_len:
-        split_at = text.rfind("\n\n", 0, max_len)
-        if split_at == -1:
-            split_at = text.rfind("\n", 0, max_len)
-        if split_at == -1:
-            split_at = text.rfind(" ", 0, max_len)
-        if split_at == -1:
-            split_at = max_len
-        chunks.append(text[:split_at].rstrip())
-        text = text[split_at:].lstrip()
-    if text:
-        chunks.append(text)
-    return chunks
-
 
 async def _reply_message(message: Message, text: str) -> None:
-    """Send response with Markdown fallback and automatic chunking for long messages."""
-    chunks = _split_message(text)
-    for chunk in chunks:
-        try:
-            await message.reply_text(chunk, parse_mode="Markdown")
-        except TelegramError:
-            try:
-                await message.reply_text(chunk)
-            except TelegramError as exc:
-                logger.error("Failed to send message chunk: %s", exc)
-                await message.reply_text("Yanıt gönderilirken hata oluştu.")
-
-
-async def _typing_keepalive(message: Message, stop_event: asyncio.Event) -> None:
-    """Re-send typing action every 4 seconds until stop_event is set."""
+    """Send response with Markdown fallback to plain text on parse errors."""
     try:
-        while not stop_event.is_set():
-            await message.reply_chat_action(ChatAction.TYPING)
-            await asyncio.sleep(4)
-    except Exception:
-        pass
-
-
-async def _stream_to_telegram(message: Message, stream) -> None:
-    """Consume a streaming async iterator and progressively edit a Telegram message.
-
-    Sends an initial placeholder, then edits it as text accumulates.
-    Handles __TOOL_START__/__TOOL_DONE__ sentinels for status updates.
-    """
-    sent_msg: Message | None = None
-    accumulated = ""
-    last_edit = 0.0
-    in_tool_phase = False
-
-    async for chunk in stream:
-        # Handle sentinels
-        if chunk == "__TOOL_START__":
-            in_tool_phase = True
-            if sent_msg is None:
-                sent_msg = await message.reply_text("🔄 Veri çekiliyor...")
-            continue
-        if chunk == "__TOOL_DONE__":
-            in_tool_phase = False
-            continue
-
-        accumulated += chunk
-
-        # First real text chunk — send or replace placeholder
-        if sent_msg is None:
-            try:
-                sent_msg = await message.reply_text(accumulated, parse_mode="Markdown")
-            except TelegramError:
-                sent_msg = await message.reply_text(accumulated)
-            last_edit = time.monotonic()
-            continue
-
-        # Throttle edits to respect Telegram rate limits
-        now = time.monotonic()
-        if now - last_edit >= _STREAM_EDIT_INTERVAL:
-            try:
-                await sent_msg.edit_text(accumulated, parse_mode="Markdown")
-            except TelegramError:
-                try:
-                    await sent_msg.edit_text(accumulated)
-                except TelegramError:
-                    pass  # skip this edit cycle
-            last_edit = now
-
-    # Final edit with complete text
-    if accumulated and sent_msg is not None:
-        try:
-            await sent_msg.edit_text(accumulated, parse_mode="Markdown")
-        except TelegramError:
-            try:
-                await sent_msg.edit_text(accumulated)
-            except TelegramError:
-                pass
-    elif accumulated and sent_msg is None:
-        # Stream produced text but we never sent a message
-        await _reply_message(message, accumulated)
-    elif not accumulated:
-        # No text produced at all
-        if sent_msg:
-            try:
-                await sent_msg.edit_text("Yanıt üretilemedi. Lütfen tekrar deneyin.")
-            except TelegramError:
-                pass
-        else:
-            await message.reply_text("Yanıt üretilemedi. Lütfen tekrar deneyin.")
+        await message.reply_text(text, parse_mode="Markdown")
+    except TelegramError:
+        await message.reply_text(text)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handle all text messages via streaming agentic LLM.
+    Handle all text messages via agentic LLM with function calling.
 
     Flow:
     1) rate limit check
-    2) stream response chunks → progressive Telegram message edits
+    2) route to agent_service.handle_agent_message()
+    3) agent decides which tools to call (RAG, assignments, grades, etc.)
+    4) send response (streaming or progressive)
     """
     message = update.effective_message
     user = update.effective_user
     if message is None or user is None or not message.text:
         return
 
+    from bot.state import STATE
+    STATE.last_update_received = time.monotonic()
     user_service.record_user_activity(user.id)
     if not user_service.check_rate_limit(user.id):
         await message.reply_text("Çok hızlı mesaj gönderdiniz. Lütfen bir dakika sonra tekrar deneyin.")
@@ -158,8 +54,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not query:
         return
 
-    stream = handle_agent_message_streaming(user_id=user.id, user_text=query)
-    await _stream_to_telegram(message, stream)
+    # Show "typing..." immediately so user knows bot is working
+    await message.chat.send_action("typing")
+
+    response = await handle_agent_message(user_id=user.id, user_text=query, message=message)
+    if response:  # streaming may have already sent the response
+        await _reply_message(message, response)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
