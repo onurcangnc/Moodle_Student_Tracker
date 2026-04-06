@@ -45,6 +45,7 @@ class StarsCache:
     exams: list = field(default_factory=list)
     letter_grades: list = field(default_factory=list)
     schedule: list = field(default_factory=list)
+    transcript: list = field(default_factory=list)
     fetched_at: float = 0
 
 
@@ -495,14 +496,25 @@ class StarsClient:
                 rows = table.find_all("tr")
                 for row in rows[1:]:  # skip header
                     cells = row.find_all("td")
-                    if len(cells) >= 2:
+                    if len(cells) >= 5:
+                        # 5-column layout: Title | Type | Date | Grade | Comment
+                        assessment = {
+                            "name": cells[0].get_text(strip=True),
+                            "type": cells[1].get_text(strip=True),
+                            "date": cells[2].get_text(strip=True),
+                            "grade": cells[3].get_text(strip=True),
+                        }
+                        course_data["assessments"].append(assessment)
+                    elif len(cells) >= 2:
+                        # Fallback for 2-3 column tables
                         assessment = {
                             "name": cells[0].get_text(strip=True),
                             "grade": cells[1].get_text(strip=True),
                         }
                         if len(cells) >= 3:
-                            assessment["weight"] = cells[2].get_text(strip=True)
+                            assessment["date"] = cells[2].get_text(strip=True)
                         course_data["assessments"].append(assessment)
+                    # Skip single-cell rows (category headers like "QME", "Midterm")
 
             courses.append(course_data)
 
@@ -748,13 +760,14 @@ class StarsClient:
         cache.exams = self.get_exams(user_id) or []
         cache.letter_grades = self.get_letter_grades(user_id) or []
         cache.schedule = self.get_schedule(user_id) or []
+        cache.transcript = self.get_transcript(user_id) or []
 
         self._cache[user_id] = cache
         logger.info(
-            f"STARS cache built: {len(cache.exams)} exams, "
-            f"{len(cache.grades)} course grades, "
-            f"{len(cache.attendance)} attendance records, "
-            f"{len(cache.schedule)} schedule entries"
+            "STARS cache built: %d exams, %d course grades, %d attendance records, "
+            "%d schedule entries, %d transcript entries",
+            len(cache.exams), len(cache.grades), len(cache.attendance),
+            len(cache.schedule), len(cache.transcript),
         )
         return cache
 
