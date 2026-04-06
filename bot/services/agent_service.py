@@ -617,7 +617,37 @@ TOOLS: list[dict[str, Any]] = [
             },
         },
     },
-    # ═══ E. Bot Management (3 tools) ═══
+    # ═══ E. Direct DB Query ═══
+    {
+        "type": "function",
+        "function": {
+            "name": "query_db",
+            "description": (
+                "SQLite cache DB'de READ-ONLY SQL sorgusu çalıştır. "
+                "Diğer tool'lar yetersiz kaldığında veya çapraz/karmaşık sorgularda kullan. "
+                "Tablolar:\n"
+                "  emails (uid, subject, from_addr, date, body_preview, body_full, source, is_read, inserted_at)\n"
+                "  data_cache (cache_key, user_id, json_data, updated_at) — "
+                "cache_key değerleri: grades, attendance, schedule, exams, assignments, transcript, "
+                "letter_grades, syllabus_limits, user_info, student_profile\n"
+                "Örnekler:\n"
+                "  SELECT subject, from_addr FROM emails WHERE from_addr LIKE '%Volkan%'\n"
+                "  SELECT json_data FROM data_cache WHERE cache_key='grades'\n"
+                "  SELECT COUNT(*) FROM emails WHERE source='AIRS'"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {
+                        "type": "string",
+                        "description": "SELECT sorgusu (sadece READ, max 50 satır)",
+                    },
+                },
+                "required": ["sql"],
+            },
+        },
+    },
+    # ═══ F. Bot Management (3 tools) ═══
     {
         "type": "function",
         "function": {
@@ -1816,6 +1846,52 @@ async def _tool_get_stats(args: dict, user_id: int) -> str:
 
 # ─── Tool Dispatcher ─────────────────────────────────────────────────────────
 
+async def _tool_query_db(args: dict, user_id: int) -> str:
+    """Execute read-only SQL query on cache DB."""
+    import sqlite3
+
+    sql = (args.get("sql") or "").strip()
+    if not sql:
+        return "SQL sorgusu belirtilmedi."
+
+    # Security: only allow SELECT statements
+    sql_upper = sql.upper().lstrip()
+    if not sql_upper.startswith("SELECT"):
+        return "Sadece SELECT sorguları desteklenir. INSERT/UPDATE/DELETE yasaktır."
+
+    # Block dangerous patterns
+    _BLOCKED = ["DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "CREATE", "ATTACH", "DETACH", "PRAGMA"]
+    for keyword in _BLOCKED:
+        if keyword in sql_upper:
+            return f"Güvenlik: '{keyword}' içeren sorgular yasaktır."
+
+    db_path = "data/cache.db"
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        conn.execute("PRAGMA query_only = ON")  # enforce read-only at DB level
+        cursor = conn.execute(sql)
+        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        rows = cursor.fetchmany(50)  # max 50 rows
+        conn.close()
+
+        if not rows:
+            return "Sorgu sonucu boş."
+
+        # Format as readable text
+        lines = [" | ".join(columns)]
+        lines.append("-" * len(lines[0]))
+        for row in rows:
+            lines.append(" | ".join(str(v)[:200] if v is not None else "NULL" for v in row))
+
+        result = "\n".join(lines)
+        if len(rows) == 50:
+            result += "\n... (50 satır limiti)"
+        return result
+
+    except sqlite3.Error as exc:
+        return f"SQL hatası: {exc}"
+
+
 TOOL_HANDLERS = {
     "get_source_map": _tool_get_source_map,
     "read_source": _tool_read_source,
@@ -1834,6 +1910,7 @@ TOOL_HANDLERS = {
     "list_courses": _tool_list_courses,
     "set_active_course": _tool_set_active_course,
     "get_stats": _tool_get_stats,
+    "query_db": _tool_query_db,
 }
 
 
