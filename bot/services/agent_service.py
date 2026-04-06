@@ -809,6 +809,10 @@ Tek bir RAG sorgusuyla yetinme. Karmaşık sorularda İTERATİF çalış:
 - Spesifik ders sorulursa → SADECE o ders
 - Genel sorulursa → tüm dersler
 - Devamsızlık limitine yaklaşıyorsa → ⚠️ UYAR
+- NOT GÖSTERİMİ: Tool'dan gelen veriyi OLDUĞU GİBİ göster. Her ödevi/sınavı tek tek listele, ÖZETLEME.
+  YANLIŞ: "Tüm ödevler tam puan 1/1"
+  DOĞRU: "Homework 01: 1/1, Homework 02: 1/1, Homework 03: 1/1..."
+- Mail detayı gösterilirken de tam içeriği göster, ÖZETLEME.
 
 ## MAİL — DAIS & AIRS
 - Sayı belirtilmişse ("Son 3 mail", "5 mailimi göster") → DOĞRUDAN get_emails(count=N) çağır
