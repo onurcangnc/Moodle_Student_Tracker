@@ -92,26 +92,33 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
+        self._definitions_cache: list[dict[str, Any]] | None = None
 
     def register(self, tool: BaseTool) -> None:
         """Register a tool instance."""
         if tool.name in self._tools:
             logger.warning("Tool '%s' already registered, overwriting", tool.name)
         self._tools[tool.name] = tool
+        self._definitions_cache = None  # Invalidate cache
         logger.debug("Tool registered: %s", tool.name)
 
     def register_all(self, tools: list[BaseTool]) -> None:
         """Register multiple tools at once."""
         for tool in tools:
-            self.register(tool)
+            self._tools[tool.name] = tool
+            logger.debug("Tool registered: %s", tool.name)
+        self._definitions_cache = None  # Invalidate cache once
 
     def get_definitions(self) -> list[dict[str, Any]]:
         """
-        Generate OpenAI function calling definitions.
+        Generate OpenAI function calling definitions (cached).
 
-        Replaces the old TOOLS constant.
+        Definitions are generated once and cached since tools don't
+        change at runtime. Cache is invalidated on register().
         """
-        return [tool.to_openai_schema() for tool in self._tools.values()]
+        if self._definitions_cache is None:
+            self._definitions_cache = [tool.to_openai_schema() for tool in self._tools.values()]
+        return self._definitions_cache
 
     def get_tool(self, name: str) -> BaseTool | None:
         """Get a tool by name."""
