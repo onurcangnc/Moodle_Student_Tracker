@@ -1664,14 +1664,8 @@ async def _tool_get_assignments(args: dict, user_id: int) -> str:
         return "Moodle bağlantısı hazır değil."
 
     filter_mode = args.get("filter", "upcoming")
-    keyword = args.get("keyword", "").lower().strip()
+    keyword = args.get("keyword", "").strip()  # LLM extracts proper keyword, no preprocessing
     now_ts = time.time()
-
-    # Strip common noise words that don't help search
-    NOISE_WORDS = ["hoca", "hocanın", "hocam", "öğretmen", "prof", "dersi", "dersinin", "ödevi", "ödevini"]
-    if keyword:
-        tokens = keyword.split()
-        keyword = " ".join(w for w in tokens if w not in NOISE_WORDS)
 
     try:
         if filter_mode == "all" or keyword:
@@ -1688,13 +1682,10 @@ async def _tool_get_assignments(args: dict, user_id: int) -> str:
             if not a.submitted and a.due_date and a.due_date < now_ts
         ]
 
-    # Keyword filtering — partial match on course name or assignment name
+    # Keyword filtering — simple substring match (LLM extracts proper identifier)
     if keyword and assignments:
-        search_tokens = keyword.split()
-        def matches(a) -> bool:
-            searchable = f"{a.course_name} {a.name}".lower()
-            return any(tok in searchable for tok in search_tokens)
-        assignments = [a for a in assignments if matches(a)]
+        kw_lower = keyword.lower()
+        assignments = [a for a in assignments if kw_lower in f"{a.course_name} {a.name}".lower()]
 
     if not assignments:
         labels = {"upcoming": "Yaklaşan", "overdue": "Süresi geçmiş", "all": "Hiç"}
