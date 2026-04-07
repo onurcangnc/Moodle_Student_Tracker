@@ -98,6 +98,19 @@ _ABSENCE_PATTERNS = [
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+def _load_known_assignment_ids() -> set[str]:
+    """Load persisted assignment IDs from cache (survives restart)."""
+    data = cache_db.get_json("known_assignment_ids", OWNER_ID)
+    if data and isinstance(data, list):
+        return set(data)
+    return set()
+
+
+def _save_known_assignment_ids(ids: set[str]) -> None:
+    """Persist assignment IDs to cache."""
+    cache_db.set_json("known_assignment_ids", OWNER_ID, list(ids))
+
+
 def _serialize_assignments(assignments: list) -> list[dict]:
     """Convert assignment objects → JSON-serializable dicts."""
     result = []
@@ -287,16 +300,22 @@ async def _check_new_assignments(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.debug("Assignments cached: %d entries", len(serialized))
 
     now = time.time()
-    # Detect truly new assignments (not yet seen this session, not expired)
+    # Load persisted IDs (survives bot restart)
+    known_ids = _load_known_assignment_ids()
+
+    # Detect truly new assignments (not yet seen, not expired)
     new_assignments = []
     for a in raw or []:
         # Skip expired assignments
         if hasattr(a, "due_date") and a.due_date > 0 and a.due_date < now:
             continue
         aid = f"{a.course_name}_{a.name}"
-        if aid not in STATE.known_assignment_ids:
-            STATE.known_assignment_ids.add(aid)
+        if aid not in known_ids:
+            known_ids.add(aid)
             new_assignments.append(a)
+
+    # Persist updated set (even if no new — handles expired cleanup)
+    _save_known_assignment_ids(known_ids)
 
     if not new_assignments:
         return
