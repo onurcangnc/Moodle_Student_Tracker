@@ -838,9 +838,9 @@ async def _auto_sync_materials(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # Polling watchdog: if no Telegram update received for a long time, self-kill.
 # systemd Restart=always will restart the process.
-# 12 hours — single-user bot, nobody messages at night; short timeouts cause
-# unnecessary restarts → STARS re-login → verification code spam.
-_WATCHDOG_TIMEOUT = 43200  # 12 hours
+# 6 hours — balance between early stuck detection and avoiding unnecessary restarts.
+# Too short → STARS re-login spam; too long → bot unresponsive for hours.
+_WATCHDOG_TIMEOUT = 21600  # 6 hours
 _WATCHDOG_GRACE = 600      # 10 minutes after startup before checking
 
 

@@ -416,5 +416,68 @@ class TestAgenticDesign:
         assert TestMailSearch.mail_matches("CTIS dersi", mail)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# COURSE FILTER MATCHING - Handles section number differences (-1, -2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestCourseFilterMatching:
+    """Test fuzzy course name matching that handles section number variations."""
+
+    @staticmethod
+    def _normalize_course_name(name: str) -> str:
+        """Strip section numbers like -1, -2 from course names."""
+        import re
+        return re.sub(r"-\d+(?=\s|$)", "", name).strip()
+
+    @staticmethod
+    def _course_matches(course_name: str, filter_term: str) -> bool:
+        """Same logic as agent_service._course_matches."""
+        course_lower = course_name.lower()
+        filter_lower = filter_term.lower()
+
+        if filter_lower in course_lower:
+            return True
+
+        course_norm = TestCourseFilterMatching._normalize_course_name(course_lower)
+        filter_norm = TestCourseFilterMatching._normalize_course_name(filter_lower)
+        if filter_norm in course_norm or course_norm in filter_norm:
+            return True
+
+        return False
+
+    def test_direct_substring_match(self):
+        """Simple substring match works."""
+        assert self._course_matches("CTIS 474 Information Systems Auditing", "audit")
+        assert self._course_matches("CTIS 474 Information Systems Auditing", "CTIS 474")
+        assert self._course_matches("CTIS 474 Information Systems Auditing", "Information")
+
+    def test_section_number_in_data(self):
+        """Data has section number (-1) but filter doesn't."""
+        assert self._course_matches("CTIS 474-1 Information Systems Auditing", "CTIS 474")
+        assert self._course_matches("CTIS 474-1 Information Systems Auditing", "audit")
+
+    def test_section_number_in_filter(self):
+        """Filter has section number but data doesn't."""
+        assert self._course_matches("CTIS 474 Information Systems Auditing", "CTIS 474-1")
+
+    def test_both_have_section_numbers(self):
+        """Both have section numbers - should match."""
+        assert self._course_matches("CTIS 474-1 Information Systems Auditing", "CTIS 474-1")
+
+    def test_different_section_numbers(self):
+        """Different section numbers still match via normalization."""
+        assert self._course_matches("CTIS 474-1 Information Systems Auditing", "CTIS 474-2")
+
+    def test_no_match(self):
+        """Completely different course should not match."""
+        assert not self._course_matches("CTIS 474 Information Systems Auditing", "EDEB")
+        assert not self._course_matches("CTIS 474 Information Systems Auditing", "Ethics")
+
+    def test_partial_code_match(self):
+        """Partial course code match."""
+        assert self._course_matches("CTIS 363 Ethical and Social Issues", "CTIS")
+        assert self._course_matches("EDEB 201 Introduction to Turkish Fiction", "EDEB 201")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

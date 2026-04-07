@@ -1084,6 +1084,37 @@ def _resolve_course(args: dict, user_id: int, key: str = "course_filter") -> str
     return name
 
 
+def _normalize_course_name(name: str) -> str:
+    """Strip section numbers like -1, -2 from course names for fuzzy matching."""
+    import re
+    # "CTIS 474-1 Information Systems" → "CTIS 474 Information Systems"
+    # "CTIS 474-1" → "CTIS 474" (no trailing text)
+    return re.sub(r"-\d+(?=\s|$)", "", name).strip()
+
+
+def _course_matches(course_name: str, filter_term: str) -> bool:
+    """Fuzzy course name matching that handles section number differences.
+
+    Matches if:
+    - filter_term is substring of course_name (case-insensitive)
+    - OR normalized versions match (strips -1, -2 section suffixes)
+    """
+    course_lower = course_name.lower()
+    filter_lower = filter_term.lower()
+
+    # Direct substring match
+    if filter_lower in course_lower:
+        return True
+
+    # Normalized match (strips section numbers)
+    course_norm = _normalize_course_name(course_lower)
+    filter_norm = _normalize_course_name(filter_lower)
+    if filter_norm in course_norm or course_norm in filter_norm:
+        return True
+
+    return False
+
+
 async def _tool_get_source_map(args: dict, user_id: int) -> str:
     """KATMAN 1 — Metadata aggregation + KATMAN 2 summaries."""
     course_name = _resolve_course(args, user_id)
@@ -1423,8 +1454,7 @@ async def _tool_get_grades(args: dict, user_id: int) -> str:
 
     course_filter = args.get("course_filter", "")
     if course_filter:
-        cf_lower = course_filter.lower()
-        grades = [g for g in grades if cf_lower in g.get("course", "").lower()]
+        grades = [g for g in grades if _course_matches(g.get("course", ""), course_filter)]
         if not grades:
             return f"'{course_filter}' ile eşleşen kurs notu bulunamadı."
 
@@ -1465,8 +1495,7 @@ async def _tool_get_attendance(args: dict, user_id: int) -> str:
 
     course_filter = args.get("course_filter", "")
     if course_filter:
-        cf_lower = course_filter.lower()
-        attendance = [a for a in attendance if cf_lower in a.get("course", "").lower()]
+        attendance = [a for a in attendance if _course_matches(a.get("course", ""), course_filter)]
         if not attendance:
             return f"'{course_filter}' ile eşleşen kurs devamsızlığı bulunamadı."
 
@@ -1537,8 +1566,7 @@ async def _tool_get_exams(args: dict, user_id: int) -> str:
 
     course_filter = args.get("course_filter", "")
     if course_filter:
-        cf_lower = course_filter.lower()
-        exams = [e for e in exams if cf_lower in e.get("course", "").lower()]
+        exams = [e for e in exams if _course_matches(e.get("course", ""), course_filter)]
         if not exams:
             return f"'{course_filter}' ile eşleşen sınav bulunamadı."
 
