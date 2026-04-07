@@ -1084,60 +1084,17 @@ def _resolve_course(args: dict, user_id: int, key: str = "course_filter") -> str
     return name
 
 
-def _tokenize_course(name: str) -> set[str]:
-    """Extract meaningful tokens from course name for fuzzy matching.
-
-    Handles: "CTIS 474-1 Information Systems Auditing" →
-    {'ctis', '474', 'information', 'systems', 'auditing', 'ctis474'}
-    """
-    import re
-    lower = name.lower()
-    # Strip section numbers (-1, -2) and punctuation
-    clean = re.sub(r"-\d+(?=\s|$)", "", lower)
-    clean = re.sub(r"[^\w\s]", " ", clean)
-    tokens = set(clean.split())
-    # Also add concatenated code (CTIS474) for "CTIS 474" style
-    # Find pattern: letters followed by space then numbers
-    code_match = re.search(r"([a-z]+)\s+(\d+)", clean)
-    if code_match:
-        tokens.add(code_match.group(1) + code_match.group(2))
-    return {t for t in tokens if len(t) >= 2}  # Skip single chars
-
-
 def _course_matches(course_name: str, filter_term: str) -> bool:
-    """Generalized course matching for agentic LLM outputs.
+    """Simple case-insensitive substring match for agentic LLM outputs.
 
-    Handles various user/LLM input formats:
-    - "audit" matches "Information Systems Auditing"
-    - "CTIS 474" matches "CTIS 474-1 Information Systems Auditing"
-    - "CTIS474" matches "CTIS 474" (no space)
-    - "474" matches any course with 474 in code
-    - "Information Systems" matches partial name
+    The LLM handles understanding user intent and extracts proper identifiers.
+    This tool just does simple filtering - no complex pattern matching needed.
 
-    Strategy: token overlap - if ANY significant filter token
-    appears in course tokens, it's a match.
+    Examples (LLM extracts right side from user query):
+    - User: "Auditte kaç saat" → LLM: "Auditing" or "CTIS 474"
+    - User: "tarih dersi" → LLM: "HCIV" or "History"
     """
-    course_lower = course_name.lower()
-    filter_lower = filter_term.lower()
-
-    # Fast path: direct substring match
-    if filter_lower in course_lower:
-        return True
-
-    # Token-based matching
-    course_tokens = _tokenize_course(course_name)
-    filter_tokens = _tokenize_course(filter_term)
-
-    # Match if any filter token is in course tokens OR is substring of any course token
-    for ft in filter_tokens:
-        if ft in course_tokens:
-            return True
-        # Substring check for partial matches ("audit" in "auditing")
-        for ct in course_tokens:
-            if ft in ct or ct in ft:
-                return True
-
-    return False
+    return filter_term.lower() in course_name.lower()
 
 
 async def _tool_get_source_map(args: dict, user_id: int) -> str:

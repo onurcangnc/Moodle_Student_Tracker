@@ -417,129 +417,71 @@ class TestAgenticDesign:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# COURSE FILTER MATCHING - Generalized token-based matching for agentic LLM outputs
+# COURSE FILTER MATCHING - Simple substring match (LLM handles understanding)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestCourseFilterMatching:
-    """Test generalized course matching for various LLM output formats."""
-
-    @staticmethod
-    def _tokenize_course(name: str) -> set[str]:
-        """Same logic as agent_service._tokenize_course."""
-        import re
-        lower = name.lower()
-        clean = re.sub(r"-\d+(?=\s|$)", "", lower)
-        clean = re.sub(r"[^\w\s]", " ", clean)
-        tokens = set(clean.split())
-        code_match = re.search(r"([a-z]+)\s+(\d+)", clean)
-        if code_match:
-            tokens.add(code_match.group(1) + code_match.group(2))
-        return {t for t in tokens if len(t) >= 2}
+    """Test simple course matching - LLM extracts proper identifiers, tool just filters."""
 
     @staticmethod
     def _course_matches(course_name: str, filter_term: str) -> bool:
-        """Same logic as agent_service._course_matches."""
-        course_lower = course_name.lower()
-        filter_lower = filter_term.lower()
+        """Same logic as agent_service._course_matches - simple substring."""
+        return filter_term.lower() in course_name.lower()
 
-        if filter_lower in course_lower:
-            return True
+    # ─── LLM Extracts Proper Identifier ───────────────────────────────────────
 
-        course_tokens = TestCourseFilterMatching._tokenize_course(course_name)
-        filter_tokens = TestCourseFilterMatching._tokenize_course(filter_term)
+    def test_llm_extracts_partial_name(self):
+        """LLM extracts 'Audit' from user saying 'audit dersi'."""
+        assert self._course_matches("CTIS 474-1 Information Systems Auditing", "Audit")
+        assert self._course_matches("CTIS 474-1 Information Systems Auditing", "auditing")
 
-        for ft in filter_tokens:
-            if ft in course_tokens:
-                return True
-            for ct in course_tokens:
-                if ft in ct or ct in ft:
-                    return True
-        return False
-
-    # ─── Direct Substring ─────────────────────────────────────────────────────
-
-    def test_direct_substring_match(self):
-        """Simple substring match works."""
-        assert self._course_matches("CTIS 474 Information Systems Auditing", "audit")
-        assert self._course_matches("CTIS 474 Information Systems Auditing", "CTIS 474")
-        assert self._course_matches("CTIS 474 Information Systems Auditing", "Information")
-
-    # ─── Section Numbers ──────────────────────────────────────────────────────
-
-    def test_section_number_in_data(self):
-        """Data has section number (-1) but filter doesn't."""
+    def test_llm_extracts_course_code(self):
+        """LLM extracts 'CTIS 474' from context or user saying code."""
         assert self._course_matches("CTIS 474-1 Information Systems Auditing", "CTIS 474")
-        assert self._course_matches("CTIS 474-1 Information Systems Auditing", "audit")
-
-    def test_section_number_in_filter(self):
-        """Filter has section number but data doesn't."""
-        assert self._course_matches("CTIS 474 Information Systems Auditing", "CTIS 474-1")
-
-    def test_different_section_numbers(self):
-        """Different section numbers still match via normalization."""
-        assert self._course_matches("CTIS 474-1 Information Systems Auditing", "CTIS 474-2")
-
-    # ─── Code Format Variations ───────────────────────────────────────────────
-
-    def test_no_space_course_code(self):
-        """'CTIS474' matches 'CTIS 474'."""
-        assert self._course_matches("CTIS 474 Information Systems Auditing", "CTIS474")
-        assert self._course_matches("CTIS 474-1 Information Systems Auditing", "ctis474")
-
-    def test_just_course_number(self):
-        """Just '474' matches course with that number."""
-        assert self._course_matches("CTIS 474 Information Systems Auditing", "474")
+        assert self._course_matches("CTIS 474-1 Information Systems Auditing", "CTIS")
         assert self._course_matches("CTIS 474-1 Information Systems Auditing", "474")
 
-    def test_just_department_code(self):
-        """Just 'CTIS' matches all CTIS courses."""
-        assert self._course_matches("CTIS 474 Information Systems Auditing", "CTIS")
-        assert self._course_matches("CTIS 363 Ethical and Social Issues", "CTIS")
+    def test_llm_extracts_full_name(self):
+        """LLM can extract full or partial course name."""
+        assert self._course_matches("EDEB 201 Introduction to Turkish Fiction", "Turkish Fiction")
+        assert self._course_matches("EDEB 201 Introduction to Turkish Fiction", "EDEB 201")
 
-    # ─── Partial Name Matching ────────────────────────────────────────────────
+    def test_case_insensitive(self):
+        """Matching is case-insensitive."""
+        assert self._course_matches("CTIS 474 Information Systems Auditing", "ctis")
+        assert self._course_matches("CTIS 474 Information Systems Auditing", "INFORMATION")
 
-    def test_partial_word_match(self):
-        """'audit' matches 'auditing' (substring within token)."""
-        assert self._course_matches("CTIS 474 Information Systems Auditing", "audit")
-        assert self._course_matches("EDEB 201 Introduction to Turkish Fiction", "fiction")
-        assert self._course_matches("EDEB 201 Introduction to Turkish Fiction", "turkish")
+    # ─── Real Agentic Scenarios ───────────────────────────────────────────────
 
-    def test_multi_word_partial(self):
-        """'Information Systems' matches."""
-        assert self._course_matches("CTIS 474 Information Systems Auditing", "Information Systems")
+    def test_audit_scenario(self):
+        """User: 'Auditte kaç saat' → LLM extracts 'Audit' or 'CTIS 474'."""
+        course = "CTIS 474-1 Information Systems Auditing"
+        # LLM should extract one of these from context
+        assert self._course_matches(course, "Audit")
+        assert self._course_matches(course, "CTIS 474")
+        assert self._course_matches(course, "Information Systems")
 
-    # ─── Real User Scenarios ──────────────────────────────────────────────────
+    def test_ethics_scenario(self):
+        """User: 'Ethics notlarım' → LLM extracts 'Ethical' or 'CTIS 363'."""
+        course = "CTIS 363 Ethical and Social Issues"
+        assert self._course_matches(course, "Ethical")
+        assert self._course_matches(course, "CTIS 363")
+        assert self._course_matches(course, "Social Issues")
 
-    def test_user_says_audit(self):
-        """User: 'Auditte kaç saat devamsızlığım var' → LLM extracts 'audit'."""
-        assert self._course_matches("CTIS 474-1 Information Systems Auditing", "audit")
+    def test_history_scenario(self):
+        """User: 'Tarih dersi' → LLM extracts 'History' or 'HCIV'."""
+        course = "HCIV 102 History of Civilization II"
+        assert self._course_matches(course, "History")
+        assert self._course_matches(course, "HCIV")
+        assert self._course_matches(course, "Civilization")
 
-    def test_user_says_ethics(self):
-        """User: 'Ethics dersinden notlarım' → LLM extracts 'ethical' or 'CTIS 363'."""
-        # Note: "ethics" doesn't substring-match "ethical" - LLM should extract actual word
-        assert self._course_matches("CTIS 363 Ethical and Social Issues", "ethical")
-        assert self._course_matches("CTIS 363 Ethical and Social Issues", "CTIS 363")
-        assert self._course_matches("CTIS 363 Ethical and Social Issues", "social")
+    # ─── No Match (LLM won't extract wrong identifier) ────────────────────────
 
-    def test_user_says_turkish_fiction(self):
-        """User: 'Türk edebiyatı dersi' → LLM extracts 'turkish fiction' or 'EDEB'."""
-        assert self._course_matches("EDEB 201 Introduction to Turkish Fiction", "turkish")
-        assert self._course_matches("EDEB 201 Introduction to Turkish Fiction", "fiction")
-        assert self._course_matches("EDEB 201 Introduction to Turkish Fiction", "EDEB")
-
-    def test_user_says_history(self):
-        """User: 'tarih dersi' → LLM extracts 'history' or 'civilization'."""
-        assert self._course_matches("HCIV 102 History of Civilization II", "history")
-        assert self._course_matches("HCIV 102 History of Civilization II", "civilization")
-        assert self._course_matches("HCIV 102 History of Civilization II", "HCIV")
-
-    # ─── No Match Cases ───────────────────────────────────────────────────────
-
-    def test_no_match_different_course(self):
-        """Completely different course should not match."""
+    def test_no_match(self):
+        """Different course identifiers don't match."""
         assert not self._course_matches("CTIS 474 Information Systems Auditing", "EDEB")
-        assert not self._course_matches("CTIS 474 Information Systems Auditing", "history")
-        assert not self._course_matches("CTIS 474 Information Systems Auditing", "201")
+        assert not self._course_matches("CTIS 474 Information Systems Auditing", "History")
+        assert not self._course_matches("CTIS 474 Information Systems Auditing", "Fiction")
 
 
 if __name__ == "__main__":
