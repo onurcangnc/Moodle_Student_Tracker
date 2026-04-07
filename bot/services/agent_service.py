@@ -1084,33 +1084,58 @@ def _resolve_course(args: dict, user_id: int, key: str = "course_filter") -> str
     return name
 
 
-def _normalize_course_name(name: str) -> str:
-    """Strip section numbers like -1, -2 from course names for fuzzy matching."""
+def _tokenize_course(name: str) -> set[str]:
+    """Extract meaningful tokens from course name for fuzzy matching.
+
+    Handles: "CTIS 474-1 Information Systems Auditing" →
+    {'ctis', '474', 'information', 'systems', 'auditing', 'ctis474'}
+    """
     import re
-    # "CTIS 474-1 Information Systems" → "CTIS 474 Information Systems"
-    # "CTIS 474-1" → "CTIS 474" (no trailing text)
-    return re.sub(r"-\d+(?=\s|$)", "", name).strip()
+    lower = name.lower()
+    # Strip section numbers (-1, -2) and punctuation
+    clean = re.sub(r"-\d+(?=\s|$)", "", lower)
+    clean = re.sub(r"[^\w\s]", " ", clean)
+    tokens = set(clean.split())
+    # Also add concatenated code (CTIS474) for "CTIS 474" style
+    # Find pattern: letters followed by space then numbers
+    code_match = re.search(r"([a-z]+)\s+(\d+)", clean)
+    if code_match:
+        tokens.add(code_match.group(1) + code_match.group(2))
+    return {t for t in tokens if len(t) >= 2}  # Skip single chars
 
 
 def _course_matches(course_name: str, filter_term: str) -> bool:
-    """Fuzzy course name matching that handles section number differences.
+    """Generalized course matching for agentic LLM outputs.
 
-    Matches if:
-    - filter_term is substring of course_name (case-insensitive)
-    - OR normalized versions match (strips -1, -2 section suffixes)
+    Handles various user/LLM input formats:
+    - "audit" matches "Information Systems Auditing"
+    - "CTIS 474" matches "CTIS 474-1 Information Systems Auditing"
+    - "CTIS474" matches "CTIS 474" (no space)
+    - "474" matches any course with 474 in code
+    - "Information Systems" matches partial name
+
+    Strategy: token overlap - if ANY significant filter token
+    appears in course tokens, it's a match.
     """
     course_lower = course_name.lower()
     filter_lower = filter_term.lower()
 
-    # Direct substring match
+    # Fast path: direct substring match
     if filter_lower in course_lower:
         return True
 
-    # Normalized match (strips section numbers)
-    course_norm = _normalize_course_name(course_lower)
-    filter_norm = _normalize_course_name(filter_lower)
-    if filter_norm in course_norm or course_norm in filter_norm:
-        return True
+    # Token-based matching
+    course_tokens = _tokenize_course(course_name)
+    filter_tokens = _tokenize_course(filter_term)
+
+    # Match if any filter token is in course tokens OR is substring of any course token
+    for ft in filter_tokens:
+        if ft in course_tokens:
+            return True
+        # Substring check for partial matches ("audit" in "auditing")
+        for ct in course_tokens:
+            if ft in ct or ct in ft:
+                return True
 
     return False
 
