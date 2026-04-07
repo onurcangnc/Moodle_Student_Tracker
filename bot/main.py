@@ -32,6 +32,8 @@ from core.sync_engine import SyncEngine
 from core.vector_store import VectorStore
 from core.webmail_client import WebmailClient
 from core import cache_db
+from bot.services.tools import create_default_registry
+from bot.services.llm_router import LLMRouter
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -222,8 +224,13 @@ def _initialize_components() -> None:
     STATE.vector_store = vector_store
     STATE.llm = llm
     STATE.sync_engine = sync_engine
-    STATE.stars_client = StarsClient()
-    STATE.webmail_client = WebmailClient()
+    STATE.stars = StarsClient()
+    STATE.webmail = WebmailClient()
+
+    # Initialize tool registry and LLM router (SOLID refactoring)
+    STATE.tool_registry = create_default_registry()
+    STATE.llm_router = LLMRouter()
+    logger.info("Tool registry and LLM router initialized")
 
     # Initial login for webmail + STARS (also runs hourly via notification job)
     refresh_external_sessions()
