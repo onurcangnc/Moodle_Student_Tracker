@@ -527,23 +527,38 @@ async def _sync_attendance(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Attendance warning sent: %d courses", len(warnings))
 
 
+_STARS_CONSECUTIVE_FAILS = 0
+_STARS_BACKOFF_MAX = 30  # max 30 minutes between retries when STARS is down
+
+
 async def _stars_full_sync(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Unified STARS sync: keep-alive + fetch ALL data + cache.
     Runs every 1 minute for near real-time data.
 
-    This replaces separate jobs: keep_alive, sync_schedule, sync_exams.
-    Grades/attendance sync jobs still run for NOTIFICATIONS only.
+    Exponential backoff: if STARS is unreachable, skips runs to avoid
+    flooding the server with requests (1m → 2m → 4m → 8m → ... → 30m max).
+    Resets to 1m on first success.
     """
+    global _STARS_CONSECUTIVE_FAILS
+
     stars = STATE.stars_client
     if stars is None or not stars.is_authenticated(OWNER_ID):
         return
+
+    # Backoff: skip this run if we haven't waited long enough
+    if _STARS_CONSECUTIVE_FAILS > 0:
+        skip_runs = min(2 ** _STARS_CONSECUTIVE_FAILS, _STARS_BACKOFF_MAX)
+        # Job runs every 1 min, so skip N runs = wait N minutes
+        if _STARS_CONSECUTIVE_FAILS % skip_runs != 0:
+            return  # silently skip — not time to retry yet
 
     try:
         # 1. Keep session alive
         alive = await asyncio.to_thread(stars.keep_alive, OWNER_ID)
         if not alive:
-            logger.warning("STARS keep-alive failed in full_sync")
+            _STARS_CONSECUTIVE_FAILS += 1
+            _track_job_failure("stars_full_sync", Exception("keep-alive returned False"))
             return
 
         # 2. Fetch all data at once
@@ -551,6 +566,10 @@ async def _stars_full_sync(context: ContextTypes.DEFAULT_TYPE) -> None:
         if not cache:
             logger.warning("STARS fetch_all_data returned None")
             return
+
+        # Success — reset backoff
+        _STARS_CONSECUTIVE_FAILS = 0
+        _track_job_success("stars_full_sync")
 
         # 3. Write everything to SQLite cache
         cache_db.set_json("schedule", OWNER_ID, cache.schedule)
@@ -566,7 +585,8 @@ async def _stars_full_sync(context: ContextTypes.DEFAULT_TYPE) -> None:
             len(cache.grades), len(cache.attendance), len(cache.exams), len(cache.schedule),
         )
     except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-        logger.warning("STARS full sync error: %s", exc)
+        _STARS_CONSECUTIVE_FAILS += 1
+        _track_job_failure("stars_full_sync", exc)
 
 
 async def _sync_exams(context: ContextTypes.DEFAULT_TYPE) -> None:
