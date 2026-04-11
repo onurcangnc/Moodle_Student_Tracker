@@ -7,9 +7,9 @@ Every job does two things:
 
 Job schedule:
   stars_full_sync    — 1 min   (keep-alive + ALL STARS data → cache, near real-time)
-  assignment_check   — 24 h    (new assignments + cache refresh, daily)
-  email_check        — 5 min   (new mails notification)
-  email_cache_sync   — 30 sec  (FULL IMAP → SQLite sync, agent queries instant)
+  assignment_check   — 30 min  (new assignments + cache refresh)
+  email_check        — 5 min   (legacy UNSEEN check, backup)
+  email_cache_sync   — 30 sec  (FULL IMAP → SQLite sync + new mail notifications)
   grades_sync        — 30 min  (new grades NOTIFICATION only — cache already fresh from full_sync)
   attendance_sync    — 60 min  (low attendance alert — cache already fresh from full_sync)
   exam_reminder      — 1 h     (1-day-before exam alerts with room info from mail)
@@ -369,6 +369,8 @@ async def _sync_email_cache(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Full email cache sync — fetches ALL AIRS/DAIS mails from IMAP to SQLite.
 
     Runs every 30 seconds. Only fetches body for NEW emails (not in cache).
+    Also sends notifications for newly discovered emails (cache-based dedup,
+    not IMAP UNSEEN — survives restarts and avoids race conditions).
     """
     webmail = STATE.webmail_client
     if webmail is None or not webmail.authenticated:
@@ -389,8 +391,18 @@ async def _sync_email_cache(context: ContextTypes.DEFAULT_TYPE) -> None:
             stored = cache_db.store_emails(new_mails, mark_read=False)
             logger.info("Email sync: %d new mails cached", stored)
 
-        # Note: We don't delete emails that disappeared from IMAP (user might have deleted)
-        # They'll expire via the normal cleanup job
+        # Send notification for new emails (skip first sync when cache was empty)
+        if new_mails and existing_uids:
+            lines = ["📧 *Yeni Mail Bildirimi*\n"]
+            for m in new_mails[:5]:
+                subject = m.get("subject", "Konusuz")
+                source = m.get("source", "")
+                from_addr = m.get("from", "")
+                lines.append(f"• [{source}] *{subject}*\n  Kimden: {from_addr}")
+            if len(new_mails) > 5:
+                lines.append(f"\n... ve {len(new_mails) - 5} mail daha")
+            await _send(context, "\n".join(lines))
+            logger.info("Email notification sent: %d new mails", len(new_mails))
 
     except (ConnectionError, RuntimeError, OSError, ValueError, TypeError) as exc:
         _track_job_failure("email_cache_sync", exc)
@@ -918,7 +930,7 @@ def register_notification_jobs(app: Application) -> None:
 
     jq.run_repeating(
         _check_new_assignments,
-        interval=timedelta(hours=24),
+        interval=timedelta(minutes=30),
         first=timedelta(seconds=30),
         name="assignment_check",
     )

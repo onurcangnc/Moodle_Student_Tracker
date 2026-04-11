@@ -259,7 +259,7 @@ class WebmailClient:
     def _fetch_mail(imap, uid: bytes, body: bool = True) -> dict | None:
         """Fetch single mail headers + optional body preview."""
         try:
-            fetch_parts = "(RFC822)" if body else "(BODY.PEEK[HEADER])"
+            fetch_parts = "(BODY.PEEK[])" if body else "(BODY.PEEK[HEADER])"
             status, data = imap.fetch(uid, fetch_parts)
             if status != "OK" or not data or not data[0]:
                 return None
