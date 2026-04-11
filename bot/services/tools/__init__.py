@@ -72,14 +72,18 @@ class BaseTool(ABC):
 
     def to_openai_schema(self) -> dict[str, Any]:
         """Generate OpenAI function calling format."""
-        return {
+        schema: dict[str, Any] = {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
             },
         }
+        params = self.parameters
+        # OpenAI rejects object schemas with empty properties — omit parameters entirely
+        if params.get("properties"):
+            schema["function"]["parameters"] = params
+        return schema
 
 
 class ToolRegistry:

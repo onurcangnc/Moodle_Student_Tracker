@@ -147,7 +147,7 @@ class LLMRouter:
             logger.debug("LiteLLM response from: %s", response.model)
             return response.choices[0].message
         except Exception as exc:
-            logger.error("LiteLLM call failed: %s", exc)
+            logger.error("LiteLLM call failed: %s — %s", type(exc).__name__, exc, exc_info=True)
             return None
 
     async def stream(

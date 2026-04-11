@@ -628,7 +628,7 @@ class MoodleClient:
         cutoff = now + (days * 86400)
 
         all_assignments = self.get_assignments()
-        upcoming = [a for a in all_assignments if not a.submitted and 0 < a.due_date <= cutoff]
+        upcoming = [a for a in all_assignments if not a.submitted and now <= a.due_date <= cutoff]
         return upcoming
 
     def get_upcoming_events(self, days: int = 30) -> list[dict]:
