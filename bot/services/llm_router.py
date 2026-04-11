@@ -94,8 +94,10 @@ class LLMRouter:
         self._router = Router(
             model_list=model_list,
             routing_strategy="latency-based-routing",
-            num_retries=2,
+            num_retries=0,
             timeout=30,
+            allowed_fails=3,
+            cooldown_time=60,
             enable_pre_call_checks=True,
         )
         logger.info("LiteLLM router initialized with %d models", len(model_list))
@@ -119,11 +121,8 @@ class LLMRouter:
         """
         Call LLM with function calling via LiteLLM Router.
 
-        Args:
-            messages: Conversation messages
-            system_prompt: System prompt
-            tools: OpenAI function calling tools (optional)
-            max_tokens: Max tokens for response
+        Retries across providers: if the first provider fails, the router's
+        latency stats get updated and a different provider is selected next.
 
         Returns:
             LLM response message or None on failure
@@ -142,13 +141,22 @@ class LLMRouter:
             kwargs["tool_choice"] = "auto"
             kwargs["parallel_tool_calls"] = True
 
-        try:
-            response = await router.acompletion(**kwargs)
-            logger.debug("LiteLLM response from: %s", response.model)
-            return response.choices[0].message
-        except Exception as exc:
-            logger.error("LiteLLM call failed: %s — %s", type(exc).__name__, exc, exc_info=True)
-            return None
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = await router.acompletion(**kwargs)
+                logger.debug("LiteLLM response from: %s", response.model)
+                return response.choices[0].message
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "LLM attempt %d/3 failed: %s — %s",
+                    attempt + 1, type(exc).__name__, exc,
+                )
+                # After failure, router updates latency stats and picks a different provider
+
+        logger.error("All LLM providers failed: %s", last_exc, exc_info=True)
+        return None
 
     async def stream(
         self,
