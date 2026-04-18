@@ -2,165 +2,230 @@
 
 ![Bilkent + Moodle](images/1.png)
 
-Bilkent Moodle ders materyallerini indeksleyip **Telegram uzerinden sohbet tabanli ogretim** yapan RAG (Retrieval-Augmented Generation) botu.
-
-Ogrenci bir kurs secer, sorusunu yazar; bot ilgili ders materyallerini **hybrid arama** (FAISS + BM25) ile bulur ve LLM uzerinden pedagojik bir cevap uretir. Materyalde olmayan bilgiyi uydurma yerine ogrenciyi dogru konulara yonlendirir.
+Bilkent ogrencisi icin **agentic AI asistan**. Moodle, STARS, webmail ve ders materyallerini tek Telegram botunda birlestirir. LLM, gercek zamanli cache'lenmis veriden okuyarak notlar, devamsizlik, sinavlar, yaklasan odevler ve ders materyalleri hakkinda sub-saniye yanit uretir; materyale dayali RAG ile pedagojik ogretim yapar.
 
 ---
 
-## Ozellikler
+## Aktif Ozellikler
 
-### Aktif
+### Akademik veri erisimi (LLM tool'lari)
 
-- **Chat-first ogretim** — kurs sec, soru sor, materyalden ogren
-- **Hybrid RAG** — FAISS (semantik) + BM25 (keyword), Reciprocal Rank Fusion ile birlestirme
-- **Teaching / Guidance modu** — yeterli materyal varsa ogretir, yoksa konulara yonlendirir
-- **Coklu kurs destegi** — kullanici bazli aktif kurs secimi
-- **Moodle senkronizasyonu** — materyalleri Moodle API'den otomatik ceker ve indeksler
-- **Admin dokuman yukleme** — Telegram uzerinden PDF/DOCX/PPTX yukleyerek indeksleme
-- **Multi-provider LLM** — Gemini, OpenAI, GLM arasinda task bazli model routing
-- **Konusma hafizasi** — kullanici bazli son mesajlar baglam olarak kullanilir
-- **Rate limiting** — kullanici bazli istek sinirlamasi
-- **Healthcheck** — HTTP `/health` endpointi (uptime, chunk sayisi, aktif kullanici)
-- **Docker & systemd** — her iki deployment yontemi desteklenir
+- **Notlar** — `get_grades` (STARS cache)
+- **Devamsizlik + syllabus limiti** — `get_attendance`, syllabus'tan max limit + kalan hak hesabi
+- **Ders programi** — `get_schedule` (STARS)
+- **Sinav takvimi** — `get_exams` (STARS + `exam_reminder` job'u 1h'de bir yaklasan sinavi bildirir)
+- **Transkript + harf notu** — `get_transcript`, `get_letter_grades` (cache + live fallback)
+- **Odevler** — `get_assignments`, upcoming/overdue/all filtreleri (Moodle cache)
+- **Ders materyalleri** — `get_moodle_materials` (Moodle course topics cache)
+- **Kurslar** — `list_courses`, `set_active_course`
 
-### Planlanan (core modulleri hazir, handler baglantisi yapilacak)
+### Egitim & RAG
 
-- **STARS entegrasyonu** — notlar, devamsizlik, sinav takvimi sorgulama
-- **Webmail ozeti** — Bilkent mail kutusundan hoca maillerini ozetleme
-- **Odev takibi** — yaklasan deadline bildirimleri ve manuel sorgulama
-- **Arka plan bildirimleri** — STARS degisiklik, yeni odev, yeni mail notification
+- **Hybrid RAG** — FAISS (semantik) + BM25 (Snowball TR/EN stemming) → Reciprocal Rank Fusion (k=60)
+- **Ders uzerinden ogretim** — `study_topic`, `rag_search`, `get_source_map`, `read_source`
+- **Adaptive threshold** — `max(top_score * 0.60, 0.20)`, top 10 chunk
+- **Multi-lang embedding** — `paraphrase-multilingual-MiniLM-L12-v2` (384 dim, 50+ dil)
+- **Hybrid PDF extraction** — text page'ler pymupdf4llm, scanned page'ler direkt OCR
+
+### Haberlesme
+
+- **Webmail** — `get_emails`, `get_email_detail` (IMAP cache + subject/from/body substring search)
+- **Auto bildirim** — yeni mail (30s cadence, cache-diff), yeni odev (10m cadence), deadline reminder (24h)
+- **Mail ozeti** — LLM uzerinden hoca duyurusu ozetleme
+
+### Sistem
+
+- **Arka plan senkronizasyon** — 15 background job; STARS 1m, email 30s, assignments 10m, materials 30m
+- **Session persistence** — STARS session'lari diske yazilir; restart sonrasi `keep_alive` ile dogrulama, SMS 2FA atlanir
+- **Polling watchdog** — Telegram API probe (5m cadence); 30dk stuck detect ederek self-kill → systemd restart
+- **Multi-provider LLM** — LiteLLM Router (OpenAI + Gemini + DeepSeek), latency-based, cross-provider fallback
+- **Healthcheck** — HTTP `/health` (uptime, chunk, aktif kullanici)
+- **Rate limiting** — kullanici bazli sliding window
 
 ---
 
 ## Mimari
 
-### Genel Yapi
+### Katmanli yapi
 
-Bot **katmanli mimari** (layered architecture) kullanir. Her katman sadece altindaki katmanla iletisim kurar:
+Uc katman, bagimlilik yonu kesinlikle yukaridan asagi:
 
 ```
-                          Telegram API
-                              |
-                       bot/main.py
-                       (Application wiring)
-                              |
-               +--------------+--------------+
-               |                             |
-      bot/handlers/                   bot/middleware/
-      commands.py                     auth.py
-      messages.py                     error_handler.py
-               |
-      bot/services/
-      rag_service.py ---------> core/vector_store.py  (FAISS + BM25)
-      llm_service.py ---------> core/llm_engine.py    (Multi-provider LLM)
-      user_service.py            core/llm_providers.py  (Adapter pattern)
-      document_service.py        core/moodle_client.py  (Moodle REST API)
-      topic_cache.py             core/sync_engine.py    (Materyal pipeline)
-      conversation_memory.py     core/document_processor.py (PDF/DOCX/PPTX)
+Telegram (PTB)
+     v
+bot/handlers/        ← message/command routing
+     v
+bot/services/        ← agent orchestration, background jobs, RAG
+     v
+core/                ← dis sistem facade'leri + SQLite repository + FAISS
 ```
-
-### Katmanlar
 
 | Katman | Dizin | Sorumluluk |
 |--------|-------|------------|
-| **Handlers** | `bot/handlers/` | Telegram komut ve mesaj routing |
-| **Services** | `bot/services/` | Is mantigi — RAG retrieval, LLM cagri, kullanici state |
-| **Middleware** | `bot/middleware/` | Yetkilendirme (admin gate), global hata yakalama |
-| **Config** | `bot/config.py` | Typed `AppConfig` dataclass, tum `.env` degiskenleri |
-| **State** | `bot/state.py` | Paylasimli `BotState` container (singleton) |
-| **Core** | `core/` | Domain logic — vektor deposu, LLM engine, Moodle client |
+| Handlers | `bot/handlers/` | Telegram update routing, rate limit check |
+| Services | `bot/services/` | Agent loop, tool dispatch, notification jobs |
+| Tools | `bot/services/tools/` | LLM'in cagirabildigi 18 tool (`BaseTool` implement) |
+| Core | `core/` | STARS/Moodle/IMAP facade, SQLite cache, FAISS+BM25 vector store |
+| State | `bot/state.py` | `ServiceContainer` singleton (DI container) |
 
-### Design Patterns
+`core/` paketi `bot/`'a hic import yapmaz — uygulama katmani cekirdegin ustunde.
 
-| Pattern | Kullanim | Dosya |
-|---------|----------|-------|
-| **Adapter** | Her LLM provider icin ortak interface (`LLMAdapter` ABC) | `core/llm_providers.py` |
-| **Strategy** | Task-based model routing (`TaskRouter`) | `core/llm_providers.py` |
-| **Facade** | `LLMEngine` — RAG + memory + prompt yonetimini tek interface altinda toplar | `core/llm_engine.py` |
-| **Singleton** | `CONFIG`, `STATE` — uygulama genelinde tek instance | `bot/config.py`, `bot/state.py` |
-| **Service Layer** | Handler → Service → Core katman ayirimi | `bot/services/` |
-| **Chain of Responsibility** | Fallback model zinciri (primary → fallback chain) | `core/llm_providers.py` |
-| **Observer** | `post_init` hook ile Telegram command menu guncelleme | `bot/handlers/commands.py` |
+### Cache-First Data Flow (CQRS benzeri)
+
+**Yazma yolu** (background jobs → SQLite):
+```
+STARS scraper  ─┐
+Moodle API     ─┼─▶ notification_service jobs ─▶ asyncio.to_thread
+IMAP           ─┘                               ─▶ cache_db.set_json("key", user_id, data)
+                                                ─▶ data/cache.db (WAL mode)
+```
+
+**Okuma yolu** (LLM tool → SQLite):
+```
+user message ─▶ agent_service loop ─▶ tool.execute() ─▶ cache_db.get_json() ─▶ sub-ms response
+                    (LLM picks tool)                    (cache miss: live fallback)
+```
+
+Yaziclar ve okuyucular ayrisik: tool'lar asla canli STARS scrape tetiklemez, sonuclar her zaman job-interval sinirindaki tazelikle gelir.
+
+### Agentic AI loop
+
+```
+[user message]
+      v
+[load conversation history]                     (SQLite memory)
+      v
+[build ServiceContainer + tool definitions]     (OpenAI function calling schema)
+      v
+┌──── iteration 1..5 ────────────────────────┐
+│ LLM.chat(messages, tools=definitions)       │
+│      │                                       │
+│      ▼                                       │
+│ [parallel tool calls via asyncio.gather]    │
+│      │                                       │
+│      ▼                                       │
+│ append tool results to messages              │
+└─────────────────────────────────────────────┘
+      v
+[final response]
+      v
+[persist to conversation history]
+```
+
+- Max 5 iterasyon (`agent_service.py` `MAX_TOOL_ITERATIONS`)
+- Parallel tool calls — asyncio.gather ile ayni iteration'da coklu tool
+- Keyword routing YOK — tool secimi tamamen LLM'e birakildi
+- Cross-provider fallback — bir provider 503 dedi ise diger provider denenir
 
 ---
 
-## Mesaj Akisi
+## Design Patterns
+
+| Pattern | Kullanim | Dosya |
+|---------|----------|-------|
+| **Tool Registry** | `BaseTool` ABC + `ToolRegistry` dispatcher; LLM'e OpenAI function calling schema uretir | [bot/services/tools/__init__.py](bot/services/tools/__init__.py) |
+| **Dependency Injection** | `ServiceContainer` dataclass — typed field'lar, `STATE` singleton, tool'lara `services` parametresi olarak injekt edilir | [bot/state.py](bot/state.py) |
+| **Repository** | `cache_db` SQLite abstraction — `set_json/get_json`, `store_emails/search_emails`, 2 tablo (data_cache, emails) | [core/cache_db.py](core/cache_db.py) |
+| **Strategy** | LiteLLM Router — ayni `model_name="fast"` altinda farkli provider'lar, latency-based pick | [bot/services/llm_router.py](bot/services/llm_router.py) |
+| **Facade** | `MoodleClient`, `StarsClient`, `WebmailClient` — dis sistem karmasikligi tek sinif arkasinda | [core/moodle_client.py](core/moodle_client.py), [core/stars_client.py](core/stars_client.py), [core/webmail_client.py](core/webmail_client.py) |
+| **Cache-Aside** | Tool'lar once DB'den okur, miss'te canli API'ye fallback | [bot/services/tools/moodle.py](bot/services/tools/moodle.py) (`get_assignments`, `get_moodle_materials`) |
+| **Template Method** | `BaseTool.execute(args, user_id, services)` her concrete tool'da override | [bot/services/tools/__init__.py](bot/services/tools/__init__.py) |
+| **Observer / Pub-Sub** | PTB `JobQueue` — 15 background job, her biri bagimsiz interval; cache yazicilar + event-driven notification'lar | [bot/services/notification_service.py](bot/services/notification_service.py) |
+| **Singleton** | `CONFIG`, `STATE` — runtime boyunca tek instance | [bot/config.py](bot/config.py), [bot/state.py](bot/state.py) |
+| **Adapter** | `OpenAIAdapter`, `GeminiAdapter`, `DeepSeekAdapter` — ayni `LLMAdapter` kontratini implement eder | [core/llm_providers.py](core/llm_providers.py) |
+
+---
+
+## LLM Tool'lari (18 adet)
+
+| Kategori | Tool | Veri kaynagi |
+|----------|------|--------------|
+| Akademik | `get_schedule`, `get_grades`, `get_attendance`, `get_exams` | SQLite (STARS cache) |
+| Akademik | `get_transcript`, `get_letter_grades` | SQLite + STARS live fallback |
+| Moodle | `get_moodle_materials`, `get_assignments` | SQLite + Moodle live fallback |
+| Moodle | `list_courses`, `set_active_course` | Moodle live |
+| Haberlesme | `get_emails`, `get_email_detail` | SQLite (IMAP cache) |
+| Icerik | `study_topic`, `rag_search`, `get_source_map`, `read_source` | In-memory vector store (FAISS + BM25) |
+| Sistem | `get_stats`, `query_db` | Vector store metadata, read-only SQL |
+
+%92 DB/memory read, %8 canli dis API cagrisi (yalnizca cache miss fallback'lerinde).
+
+---
+
+## Arka Plan Job'lari
+
+| Job | Cadence | Ne yapar |
+|-----|---------|----------|
+| `stars_full_sync` | 1m | STARS'tan schedule, grades, attendance, exams, transcript, letter_grades cekip SQLite'a yazar + `keep_alive` |
+| `email_cache_sync` | 30s | IMAP'tan tum maili cekip SQLite'a yazar, yeni mail'leri cache-diff ile tespit + bildirim |
+| `email_check` | 5m | Legacy UNSEEN backup kontrol |
+| `assignment_check` | 10m | Moodle'dan tum assignment'lari cekip cache'ler, 14 gun icindeki yeni olanlari bildirir |
+| `grades_sync` | 30m | Yeni not bildirimi |
+| `attendance_sync` | 60m | Yeni devamsizlik bildirimi |
+| `exam_reminder` | 1h | Yaklasan sinavlari bildirir |
+| `deadline_reminder` | 30m | Yaklasan deadline'lari bildirir |
+| `summary_generation` | 60m | Eksik dosyalar icin LLM ozeti (KATMAN 2) |
+| `syllabus_limits_sync` | 24h | Syllabus'tan max devamsizlik limiti RAG ile cikarim |
+| `material_sync` | 30m | Moodle → vector store + `moodle_materials` SQLite cache |
+| `session_refresh` | 24h | STARS + webmail session tazeleme (disk-persisted, genelde keep_alive yeterli) |
+| `poll_healthcheck` | 5m | `bot.get_me()` probe — watchdog counter'i gunceller |
+| `polling_watchdog` | 5m | 30 dakikadir basarili probe yoksa self-kill |
+| `cache_cleanup` | weekly | 365 gunden eski mailleri SQLite'tan siler |
+
+### Dayaniklilik
+
+- **Polling watchdog**: API probe ile olculur (user aktivitesinden bagimsiz), 30 dakika stuck detect esigi
+- **STARS session persistence**: `data/stars_sessions.json` — restart'ta SMS 2FA atlanir
+- **Exponential backoff**: STARS kapali ise sync interval 1m → 30m'ye kadar uzar
+- **Cross-provider LLM fallback**: bir provider 503 verirse baska provider denenir
+- **Sync lock**: `STATE.sync_lock` — material sync concurrent calismaz
+
+---
+
+## Mesaj Akisi (Teaching / Guidance)
 
 ```
-Kullanici mesaji
-    |
-    v
-[Rate limit kontrolu] ---x---> "Cok hizli mesaj gonderdiniz"
-    |
-    v
-[Aktif kurs kontrolu] ---x---> "Kurs secin: /courses"
-    |
-    v
-[Konusma gecmisi yukle]
-    |
-    v
-[Hybrid RAG arama]
-  FAISS (semantik) + BM25 (keyword)
-  --> Reciprocal Rank Fusion (k=60)
-  --> Adaptive threshold: max(top_score * 0.60, 0.20)
-    |
-    v
-[Yeterli materyal var mi?]
-  (chunk sayisi >= RAG_MIN_CHUNKS
-   ve similarity >= RAG_SIMILARITY_THRESHOLD)
-   /              \
-  Evet            Hayir
-  |                 |
-  v                 v
-Teaching          Guidance
-Mode              Mode
-  |                 |
-  v                 v
-LLM: materyale    LLM: mevcut konulari
-dayali pedagojik  oner + ornek sorular
-cevap uretir      ile yonlendirir
-  |                 |
-  +--------+--------+
-           |
-           v
-  [Konusma gecmisine kaydet]
-           |
-           v
-  [Markdown ile Telegram'a gonder]
+user message
+   v
+[rate limit] --x-- "Cok hizli mesaj"
+   v
+[load conversation history]
+   v
+[agent loop: LLM + tools]
+   |
+   +-- materyal sorusu? → hybrid RAG (FAISS + BM25, RRF)
+   |                        |
+   |                        +-- yeterli chunk? → Teaching mode (pedagojik cevap + kaynak tag)
+   |                        +-- yetersiz?     → Guidance mode (yonlendirme + ornek sorular)
+   |
+   +-- akademik veri sorusu? → tool cache'den cek, dogrudan cevap
+   v
+[markdown formatted response]
+   v
+[persist to history]
 ```
-
-### Teaching Mode
-
-Materyal yeterli oldugunda bot, hocanin terminolojisini koruyarak materyale dayali pedagojik cevap uretir. Kaynak dosya adlari `[dosya.pdf]` etiketiyle belirtilir. Materyalde olmayan bilgiyi uydurma yerine "bu konu materyalde yer almiyor" der.
 
 ![Teaching mode ornegi](images/5.png)
-
-### Guidance Mode
-
-Materyal yetersiz oldugunda bot, teknik detay vermeden ogrenciyi mevcut konulara yonlendirir ve daha spesifik soru ornekleri sunar.
 
 ---
 
 ## Ekran Goruntuleri
 
-| Ogretim Modu | Materyal Secimi |
+| Ogretim | Kurs secimi |
 |:---:|:---:|
 | ![Adim adim ogretim](images/moodle1.png) | ![Kaynak secimi](images/moodle3.png) |
 
-| RAG ile Ders Anlatimi | Yaklasan Sinavlar |
+| RAG cevabi | Sinav takvimi |
 |:---:|:---:|
-| ![RAG cevap](images/moodle2.png) | ![Sinav takvimi](images/3.png) |
+| ![RAG](images/moodle2.png) | ![Sinav](images/3.png) |
 
-| Devamsizlik Bilgisi | Notlar |
+| Devamsizlik | Notlar |
 |:---:|:---:|
-| ![Devamsizlik](images/4.png) | ![Not durumu](images/6.jpeg) |
+| ![Devamsizlik](images/4.png) | ![Not](images/6.jpeg) |
 
-| Mail Ozetleri | Edebiyat Dersi Ogretimi |
+| Mail ozet | Edebiyat ders anlatimi |
 |:---:|:---:|
-| ![Mail ozet](images/2.jpeg) | ![Edebiyat](images/5.png) |
-
-> **Not:** Devamsizlik, notlar ve mail ozetleri ekran goruntuleri botun onceki surumundendir. Bu ozellikler `core/` katmaninda mevcuttur ve gelecek surumde yeniden aktif edilecektir.
+| ![Mail](images/2.jpeg) | ![Edebiyat](images/5.png) |
 
 ---
 
@@ -168,123 +233,79 @@ Materyal yetersiz oldugunda bot, teknik detay vermeden ogrenciyi mevcut konulara
 
 ```
 Moodle_Student_Tracker/
-|-- bot/                           # Telegram bot runtime
-|   |-- main.py                    # Uygulama giris noktasi, component wiring
-|   |-- config.py                  # AppConfig dataclass (.env okuma)
-|   |-- state.py                   # BotState container (paylasimli runtime state)
-|   |-- logging_config.py          # Structured logging
-|   |-- exceptions.py              # Ozel exception tipleri
-|   |-- handlers/
-|   |   |-- commands.py            # /start, /help, /courses, /upload, /stats
-|   |   +-- messages.py            # Text mesaj → RAG akisi + dokuman upload
-|   |-- services/
-|   |   |-- rag_service.py         # Hybrid retrieval (FAISS + BM25 → RRF)
-|   |   |-- llm_service.py         # Teaching / Guidance LLM cagrilari
-|   |   |-- user_service.py        # Kurs secimi, rate limit, konusma hafizasi
-|   |   |-- document_service.py    # Dokuman indeksleme
-|   |   |-- topic_cache.py         # Kurs konu onbellegi
-|   |   +-- conversation_memory.py # Kisa sureli konusma hafizasi
-|   |-- middleware/
-|   |   |-- auth.py                # Admin yetkilendirme (owner_id + admin_ids)
-|   |   +-- error_handler.py       # Global exception handler
-|   +-- utils/
-|       |-- formatters.py          # Mesaj formatlama
-|       +-- validators.py          # Girdi dogrulama
-|-- core/                          # Domain logic (Telegram'dan bagimsiz)
-|   |-- vector_store.py            # FAISS + BM25 hybrid index
-|   |-- llm_engine.py              # Multi-provider LLM + RAG + memory
-|   |-- llm_providers.py           # Provider adapter'lari (OpenAI, Gemini, GLM)
-|   |-- moodle_client.py           # Moodle REST API client
-|   |-- sync_engine.py             # Moodle → lokal senkronizasyon pipeline
-|   |-- document_processor.py      # PDF, DOCX, PPTX cikarma + chunking
-|   |-- memory.py                  # Persistent konusma hafiza yoneticisi
-|   |-- stars_client.py            # Bilkent STARS entegrasyonu (OAuth + SMS 2FA)
-|   |-- webmail_client.py          # Bilkent webmail IMAP client
-|   +-- config.py                  # Core konfigurasyon
-|-- tests/
-|   |-- unit/                      # 76 birim testi
-|   |-- integration/               # Entegrasyon testleri
-|   +-- e2e/                       # Uctan uca testler
-|-- scripts/
-|   |-- deploy.sh                  # Lokal deploy (lint, test, push, SSH trigger)
-|   |-- deploy-remote.sh           # Sunucu deploy (git pull, pip, restart)
-|   +-- moodle-bot.service         # Systemd unit dosyasi (hardened)
-|-- data/                          # Runtime veri (index, cache, indirilen dosyalar)
-|-- images/                        # Dokumantasyon ekran goruntuleri
-|-- Dockerfile                     # Python 3.11-slim container
-|-- docker-compose.yml             # Health check + persistent volume
-|-- Makefile                       # install, test, lint, deploy, health
-|-- pyproject.toml                 # Ruff + pytest konfigurasyon
-|-- requirements.txt               # Production bagimliliklari
-|-- requirements-dev.txt           # Gelistirme bagimliliklari (pytest, ruff)
-|-- .env.example                   # Ornek konfigurasyon sablonu
-+-- LICENSE                        # MIT
+├── bot/
+│   ├── main.py                       # Uygulama giris, ServiceContainer wiring
+│   ├── config.py                     # AppConfig (env → typed dataclass)
+│   ├── state.py                      # ServiceContainer singleton (DI)
+│   ├── handlers/
+│   │   ├── commands.py
+│   │   └── messages.py
+│   └── services/
+│       ├── agent_service.py          # Agentic loop (5 iter, parallel tools)
+│       ├── llm_router.py             # LiteLLM Router (multi-provider)
+│       ├── rag_service.py            # Hybrid retrieval wrapper
+│       ├── notification_service.py   # 15 background jobs + polling watchdog
+│       ├── user_service.py           # rate limit, aktif kurs
+│       ├── summary_service.py        # Dosya ozetleri (KATMAN 2)
+│       └── tools/
+│           ├── __init__.py           # BaseTool ABC + ToolRegistry
+│           ├── helpers.py            # course_matches (course code extraction)
+│           ├── academic.py           # get_schedule/grades/attendance/exams/...
+│           ├── moodle.py             # get_assignments, get_moodle_materials, ...
+│           ├── communication.py      # get_emails, get_email_detail
+│           ├── content.py            # study_topic, rag_search, read_source, ...
+│           └── system.py             # get_stats, query_db
+├── core/
+│   ├── cache_db.py                   # SQLite repository (data_cache, emails)
+│   ├── vector_store.py               # FAISS + BM25 hybrid
+│   ├── moodle_client.py              # Moodle REST facade
+│   ├── stars_client.py               # STARS OAuth + SMS 2FA + session persistence
+│   ├── webmail_client.py             # IMAP facade
+│   ├── sync_engine.py                # Moodle → vector store pipeline
+│   ├── document_processor.py         # PDF (hybrid text+OCR), DOCX, PPTX
+│   ├── llm_engine.py                 # LLM orchestration
+│   ├── llm_providers.py              # OpenAI/Gemini/DeepSeek adapters
+│   └── memory.py                     # Conversation history
+├── tests/
+│   ├── unit/                         # Unit tests
+│   ├── integration/
+│   └── scenarios/                    # Production readiness tests
+├── scripts/
+│   ├── deploy.sh
+│   └── moodle-bot.service            # Systemd (hardened)
+├── data/                             # Runtime (cache.db, chromadb, stars_sessions.json, ...)
+├── docker-compose.yml
+├── Dockerfile
+├── Makefile
+├── pyproject.toml                    # ruff + pytest
+├── requirements.txt
+└── .env.example
 ```
 
 ---
 
 ## Hizli Baslangic
 
-### 1. Projeyi klonla
-
 ```bash
 git clone https://github.com/onurcangnc/Moodle_Student_Tracker.git
 cd Moodle_Student_Tracker
-```
-
-### 2. Sanal ortam olustur
-
-```bash
-python3 -m venv venv
-source venv/bin/activate        # Linux/Mac
-# venv\Scripts\activate         # Windows
-```
-
-### 3. Bagimliliklari kur
-
-```bash
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-# veya
-make install
+cp .env.example .env  # duzenle
+python -m bot.main
 ```
 
-### 4. .env dosyasini yapilandir
-
-```bash
-cp .env.example .env
-```
-
-Minimum gerekli alanlar:
+### Minimum .env alanlari
 
 | Degisken | Aciklama |
 |----------|----------|
-| `MOODLE_URL` | Bilkent Moodle URL (donem bazli) |
-| `MOODLE_USERNAME` | Moodle kullanici adi |
-| `MOODLE_PASSWORD` | Moodle sifresi |
-| `TELEGRAM_BOT_TOKEN` | @BotFather'dan alinan token |
-| `TELEGRAM_OWNER_ID` | Bot sahibinin Telegram chat ID'si |
-| `OPENAI_API_KEY` veya `GEMINI_API_KEY` | En az bir LLM API anahtari |
+| `MOODLE_URL`, `MOODLE_USERNAME`, `MOODLE_PASSWORD` | Moodle |
+| `STARS_USERNAME`, `STARS_PASSWORD` | STARS (SMS 2FA icin webmail de gerekli) |
+| `WEBMAIL_EMAIL`, `WEBMAIL_PASSWORD` | Bilkent webmail (IMAP) |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OWNER_ID` | Bot auth |
+| `OPENAI_API_KEY` veya `GEMINI_API_KEY` veya `DEEPSEEK_API_KEY` | En az bir provider |
 
-Detayli kurulum icin [SETUP.md](SETUP.md) dosyasina bakin.
-
-### 5. Calistir
-
-```bash
-python -m bot.main
-# veya
-make run
-```
-
-Basarili cikti:
-
-```
-INFO | Initializing bot components...
-INFO | Vector store loaded. 3661 chunks.
-INFO | BM25 index built: 3661 chunks in 1.22s
-INFO | Moodle connection established (courses=5)
-INFO | Healthcheck endpoint listening on 0.0.0.0:9090/health
-INFO | Bot started
-```
+Detayli kurulum: [SETUP.md](SETUP.md)
 
 ---
 
@@ -292,114 +313,70 @@ INFO | Bot started
 
 | Komut | Aciklama | Yetki |
 |-------|----------|-------|
-| `/start` | Karsilama mesaji ve kullanim rehberi | Herkes |
-| `/help` | Adim adim kullanim kilavuzu | Herkes |
-| `/courses` | Yuklu kurslari listeler | Herkes |
-| `/courses <ad>` | Belirtilen kursu aktif kurs olarak secer | Herkes |
-| `/upload` | Dokuman yukleme modunu acar (sonraki dosya indekslenir) | Admin |
-| `/stats` | Bot istatistikleri (chunk, kurs, dosya sayisi) | Admin |
-
-**Kullanim akisi:** `/courses` → kurs sec → mesaj yaz → materyale dayali cevap al.
+| `/start` | Karsilama + kullanim | Herkes |
+| `/help` | Rehber | Herkes |
+| `/courses` | Kurs listesi / secimi | Herkes |
+| `/upload` | Dokuman indeksleme modu | Admin |
+| `/stats` | Chunk, kurs, dosya sayisi | Admin |
+| `/sync` | Materyal senkronizasyonu tetikle | Admin |
 
 ---
 
-## Konfigurasyon
+## Konfigurasyon (secili alanlar)
 
-Tum konfigurasyon `.env` dosyasindan okunur. Tam sablon: [.env.example](.env.example)
+### LLM routing
 
-### Temel
+LiteLLM Router — ayni `model_name="fast"` alti multi-provider, latency-based pick:
 
-| Degisken | Varsayilan | Aciklama |
-|----------|------------|----------|
-| `MOODLE_URL` | — | Bilkent Moodle URL (donem bazli degisir) |
-| `MOODLE_USERNAME` | — | Moodle kullanici adi |
-| `MOODLE_PASSWORD` | — | Moodle sifresi |
-| `TELEGRAM_BOT_TOKEN` | — | @BotFather'dan alinan token |
-| `TELEGRAM_OWNER_ID` | — | Bot sahibinin Telegram chat ID |
-| `TELEGRAM_ADMIN_IDS` | — | Ek admin ID'leri (virgul ayirmali) |
+| Env | Rol |
+|-----|-----|
+| `OPENAI_API_KEY` | gpt-4.1-mini |
+| `GEMINI_API_KEY` | gemini-2.5-flash |
+| `DEEPSEEK_API_KEY` | deepseek/deepseek-chat |
 
-### LLM Model Routing
+Bir provider 503 verdiginde `num_retries=0` + app-level 3 retry → her denemede farkli provider.
 
-Bot her gorevi farkli modele yonlendirebilir. Varsayilan routing:
-
-| Degisken | Varsayilan | Gorev |
-|----------|------------|-------|
-| `MODEL_CHAT` | `gemini-2.5-flash` | Ana sohbet (RAG) |
-| `MODEL_STUDY` | `gemini-2.5-flash` | Derin ogretim modu |
-| `MODEL_EXTRACTION` | `gpt-4.1-nano` | Hafiza cikarma |
-| `MODEL_SUMMARY` | `gemini-2.5-flash` | Haftalik ozet |
-
-Desteklenen modeller: Gemini 2.5 Flash/Pro, GPT-4.1 nano/mini, GPT-5 mini, GLM 4.5/4.7, Claude Haiku/Sonnet/Opus.
-
-### RAG Parametreleri
+### RAG
 
 | Degisken | Varsayilan | Aciklama |
 |----------|------------|----------|
-| `RAG_SIMILARITY_THRESHOLD` | `0.65` | Minimum benzerlik skoru |
-| `RAG_MIN_CHUNKS` | `2` | Teaching mode icin minimum chunk |
-| `RAG_TOP_K` | `5` | Her aramada dondurulecek chunk sayisi |
-| `EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | Embedding modeli (384 dim, 50+ dil) |
-| `CHUNK_SIZE` | `1000` | Chunk boyutu (karakter) |
-| `CHUNK_OVERLAP` | `200` | Chunk overlapi |
+| `RAG_SIMILARITY_THRESHOLD` | `0.60` | Adaptive taban |
+| `RAG_MIN_CHUNKS` | `2` | Teaching esigi |
+| `RAG_TOP_K` | `5` | Fusion sonrasi |
+| `EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | 384 dim |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `200` | karakter |
 
 ### Operasyonel
 
-| Degisken | Varsayilan | Aciklama |
-|----------|------------|----------|
-| `RATE_LIMIT_MAX` | `30` | Pencere basina max istek |
-| `RATE_LIMIT_WINDOW` | `60` | Rate limit penceresi (saniye) |
-| `MEMORY_MAX_MESSAGES` | `5` | Konusma hafizasindaki max mesaj |
-| `MEMORY_TTL_MINUTES` | `30` | Hafiza TTL (dakika) |
-| `HEALTHCHECK_PORT` | `9090` | Health endpoint portu |
-| `LOG_LEVEL` | `INFO` | Log seviyesi |
+| Degisken | Varsayilan |
+|----------|------------|
+| `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW` | `30` / `60` |
+| `HEALTHCHECK_PORT` | `9090` |
+| `LOG_LEVEL` | `INFO` |
 
 ---
 
 ## Deployment
 
-### Systemd (onerilen)
+### Systemd
 
 ```bash
-# Service dosyasini kopyala
-sudo cp scripts/moodle-bot.service /etc/systemd/system/moodle-bot.service
-
-# Baslatma
-sudo systemctl daemon-reload
-sudo systemctl enable moodle-bot
-sudo systemctl start moodle-bot
-
-# Log takibi
+sudo cp scripts/moodle-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now moodle-bot
 journalctl -u moodle-bot -f
 ```
 
 ### Docker
 
 ```bash
-# .env dosyasini ayarla
-cp .env.example .env
-# .env icerigini doldur
-
-# Build ve calistir
 docker compose up -d
-
-# Log takibi
 docker compose logs -f
 ```
 
-### Health Check
+### Healthcheck
 
 ```bash
 curl http://localhost:9090/health
-```
-
-```json
-{
-  "status": "ok",
-  "uptime_seconds": 3600,
-  "version": "abc1234",
-  "chunks_loaded": 3661,
-  "active_users_24h": 5
-}
 ```
 
 ---
@@ -407,29 +384,11 @@ curl http://localhost:9090/health
 ## Gelistirme
 
 ```bash
-# Gelistirme bagimliklarini kur
-make dev
-
-# Lint
-make lint
-
-# Format
-make format
-
-# Unit testleri calistir (76 test)
-make test
-
-# Tum testleri calistir
-make test-all
-
-# Coverage raporu
-make test-cov
-
-# Cache temizle
-make clean
-
-# Sunucuya deploy
-make deploy
+make install          # requirements + dev
+make lint / format    # ruff
+make test             # unit tests
+make test-cov         # coverage
+make deploy           # push + SSH trigger
 ```
 
 ---
@@ -440,21 +399,26 @@ make deploy
 |---------|-----------|
 | Runtime | Python >= 3.10 |
 | Telegram | python-telegram-bot 21.x (asyncio) |
-| LLM | OpenAI, Google Gemini, GLM, Anthropic (task-based routing) |
-| Embedding | sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`, 384 dim) |
-| Semantic Search | FAISS-CPU |
-| Keyword Search | rank-bm25 (Snowball TR/EN stemming via PyStemmer) |
-| Search Fusion | Reciprocal Rank Fusion (k=60) |
-| PDF Extraction | PyMuPDF + pymupdf4llm + Tesseract OCR (hybrid: text + scanned pages) |
+| LLM gateway | LiteLLM Router (latency-based) |
+| LLM | OpenAI, Gemini, DeepSeek (multi-provider) |
+| Embedding | sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`) |
+| Semantic search | FAISS-CPU |
+| Keyword search | rank-bm25 + Snowball stemming (PyStemmer) |
+| Fusion | Reciprocal Rank Fusion (k=60) |
+| PDF | PyMuPDF + pymupdf4llm + Tesseract OCR (hybrid) |
 | DOCX/PPTX | python-docx, python-pptx |
-| Chunking | langchain-text-splitters (`RecursiveCharacterTextSplitter`) |
-| Config | python-dotenv, typed dataclass |
-| Lint/Format | ruff |
-| Test | pytest, pytest-asyncio, pytest-cov (76 unit tests) |
-| Deploy | Docker, systemd, Makefile |
+| Chunking | langchain-text-splitters |
+| HTTP | httpx (async, connection pool) |
+| IMAP | imaplib (session-per-operation) |
+| STARS | requests + BeautifulSoup + OAuth 1.0 |
+| Cache | SQLite (WAL mode) |
+| Config | python-dotenv + typed dataclass |
+| Lint | ruff |
+| Test | pytest, pytest-asyncio, pytest-cov |
+| Deploy | Docker, systemd |
 
 ---
 
 ## Lisans
 
-MIT License. Detaylar icin [LICENSE](LICENSE) dosyasina bakin.
+MIT — [LICENSE](LICENSE)
