@@ -283,31 +283,37 @@ async def _send(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
 # ─── Jobs ─────────────────────────────────────────────────────────────────────
 
 async def _check_new_assignments(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Check Moodle for new assignments → notify + cache."""
+    """Check Moodle for new assignments → notify + cache.
+
+    Caches the full assignment list (not just upcoming) so tools can filter
+    by upcoming/overdue/all without hitting the Moodle API.
+    """
     moodle = STATE.moodle
     if moodle is None:
         return
 
     try:
-        raw = moodle.get_upcoming_assignments(days=14)
+        raw = await asyncio.to_thread(moodle.get_assignments)
     except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
         logger.error("Notification: assignment check failed: %s", exc)
         return
 
-    # Cache refresh — always write even if no new assignments
+    # Cache all assignments — tools filter by due_date client-side
     serialized = _serialize_assignments(raw)
     cache_db.set_json("assignments", OWNER_ID, serialized)
-    logger.debug("Assignments cached: %d entries", len(serialized))
+    logger.info("Assignments cached: %d entries (all courses)", len(serialized))
 
     now = time.time()
     # Load persisted IDs (survives bot restart)
     known_ids = _load_known_assignment_ids()
 
-    # Detect truly new assignments (not yet seen, not expired)
+    # Detect truly new upcoming assignments (not yet seen, not expired, due within 14d)
+    notify_window = now + 14 * 86400
     new_assignments = []
     for a in raw or []:
-        # Skip expired assignments
-        if hasattr(a, "due_date") and a.due_date > 0 and a.due_date < now:
+        if not hasattr(a, "due_date") or not a.due_date or a.due_date <= 0:
+            continue
+        if a.due_date < now or a.due_date > notify_window:
             continue
         aid = f"{a.course_name}_{a.name}"
         if aid not in known_ids:
@@ -842,6 +848,39 @@ async def _sync_syllabus_limits(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ─── Auto Material Sync ───────────────────────────────────────────────────────
 
 
+async def _sync_moodle_materials_cache(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Snapshot each course's topic/resource listing to SQLite.
+
+    get_moodle_materials tool reads from this cache so a single course
+    query doesn't block on a live Moodle call (100-500ms). Refreshed
+    alongside the vector store sync every 30 minutes.
+    """
+    moodle = STATE.moodle
+    if moodle is None:
+        return
+    try:
+        courses = await asyncio.to_thread(moodle.get_courses)
+    except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+        logger.warning("Moodle materials cache: courses fetch failed: %s", exc)
+        return
+
+    materials: dict[str, dict] = {}
+    for c in courses or []:
+        try:
+            text = await asyncio.to_thread(moodle.get_course_topics_text, c)
+        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+            logger.warning("Moodle topics fetch failed for %s: %s", getattr(c, "fullname", "?"), exc)
+            continue
+        materials[str(getattr(c, "id", ""))] = {
+            "fullname": getattr(c, "fullname", ""),
+            "shortname": getattr(c, "shortname", ""),
+            "text": text or "",
+        }
+
+    cache_db.set_json("moodle_materials", OWNER_ID, materials)
+    logger.info("Moodle materials cached: %d courses", len(materials))
+
+
 async def _auto_sync_materials(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Auto-sync Moodle materials to vector store every 30 minutes.
@@ -851,6 +890,9 @@ async def _auto_sync_materials(context: ContextTypes.DEFAULT_TYPE) -> None:
     2. vector_store.add_chunks() skips duplicate chunk_ids
 
     Only new files are downloaded and indexed — existing files are skipped.
+
+    Also refreshes the SQLite moodle_materials cache used by the
+    get_moodle_materials tool.
     """
     sync_engine = STATE.sync_engine
     moodle = STATE.moodle
@@ -876,6 +918,9 @@ async def _auto_sync_materials(context: ContextTypes.DEFAULT_TYPE) -> None:
                 elapsed,
                 new_chunks if new_chunks else 0,
             )
+
+            # Refresh the per-course topic cache alongside the vector sync.
+            await _sync_moodle_materials_cache(context)
 
             # Update state for status display
             from datetime import datetime as dt

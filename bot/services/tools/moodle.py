@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from bot.services import user_service
 from bot.services.tools import BaseTool
 from bot.services.tools.helpers import resolve_course
+from core import cache_db
 
 if TYPE_CHECKING:
     from bot.state import ServiceContainer
@@ -52,44 +53,59 @@ class GetMoodleMaterialsTool(BaseTool):
         }
 
     async def execute(self, args: dict, user_id: int, services: ServiceContainer) -> str:
-        moodle = services.moodle
-        if moodle is None:
-            return "Moodle bağlantısı hazır değil."
-
         course_name = resolve_course(args, user_id)
+        cached: dict = cache_db.get_json("moodle_materials", user_id) or {}
 
-        try:
-            courses = await asyncio.to_thread(moodle.get_courses)
-        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-            logger.error("Moodle courses fetch failed: %s", exc, exc_info=True)
-            return f"Moodle'a bağlanılamadı: {exc}"
+        def _find_in_cache() -> tuple[str, str] | None:
+            if not cached:
+                return None
+            if course_name:
+                cn_lower = course_name.lower()
+                for m in cached.values():
+                    full = (m.get("fullname") or "").lower()
+                    short = (m.get("shortname") or "").lower()
+                    if cn_lower in full or cn_lower in short:
+                        return m.get("fullname", ""), m.get("text", "")
+                return None
+            first = next(iter(cached.values()), None)
+            if first:
+                return first.get("fullname", ""), first.get("text", "")
+            return None
 
-        target = None
-        if course_name:
-            cn_lower = course_name.lower()
-            for c in courses:
-                if cn_lower in c.fullname.lower() or cn_lower in c.shortname.lower():
-                    target = c
-                    break
+        hit = _find_in_cache()
+        if hit is None:
+            # Cache miss → live Moodle fetch (then next sync picks it up)
+            moodle = services.moodle
+            if moodle is None:
+                return "Moodle bağlantısı hazır değil."
+            try:
+                courses = await asyncio.to_thread(moodle.get_courses)
+            except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+                logger.error("Moodle courses fetch failed: %s", exc, exc_info=True)
+                return f"Moodle'a bağlanılamadı: {exc}"
+            target = None
+            if course_name:
+                cn_lower = course_name.lower()
+                for c in courses:
+                    if cn_lower in c.fullname.lower() or cn_lower in c.shortname.lower():
+                        target = c
+                        break
+            if not target and courses:
+                target = courses[0]
+            if not target:
+                return "Kurs bulunamadı."
+            try:
+                text = await asyncio.to_thread(moodle.get_course_topics_text, target)
+            except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+                logger.error("Moodle topics fetch failed: %s", exc, exc_info=True)
+                return f"Moodle içeriği alınamadı: {exc}"
+            hit = (target.fullname, text or "")
 
-        if not target and courses:
-            target = courses[0]
-
-        if not target:
-            return "Kurs bulunamadı."
-
-        try:
-            text = await asyncio.to_thread(moodle.get_course_topics_text, target)
-        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-            logger.error("Moodle topics fetch failed: %s", exc, exc_info=True)
-            return f"Moodle içeriği alınamadı: {exc}"
-
+        fullname, text = hit
         if not text:
-            return f"'{target.fullname}' kursunda içerik bulunamadı."
-
+            return f"'{fullname}' kursunda içerik bulunamadı."
         if len(text) > 3000:
             text = text[:3000] + "\n\n[... kısaltıldı ...]"
-
         return text
 
 
@@ -126,32 +142,59 @@ class GetAssignmentsTool(BaseTool):
         }
 
     async def execute(self, args: dict, user_id: int, services: ServiceContainer) -> str:
-        moodle = services.moodle
-        if moodle is None:
-            return "Moodle bağlantısı hazır değil."
-
         filter_mode = args.get("filter", "upcoming")
         keyword = args.get("keyword", "").strip()
         now_ts = time.time()
 
-        try:
-            if filter_mode == "all" or keyword:
-                assignments = await asyncio.to_thread(moodle.get_assignments)
-            else:
-                assignments = await asyncio.to_thread(moodle.get_upcoming_assignments, 14)
-        except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
-            logger.error("Assignment fetch failed: %s", exc, exc_info=True)
-            return f"Ödev bilgileri alınamadı: {exc}"
+        # Cache-first: the _check_new_assignments job refreshes this every
+        # 10 min with the full assignment list, so tools don't need to hit
+        # Moodle's API on every query.
+        assignments = cache_db.get_json("assignments", user_id) or []
 
-        if filter_mode == "overdue":
+        if not assignments:
+            # Cache miss (fresh bot, cache cleanup, or Moodle outage).
+            # Fall back to a live fetch.
+            moodle = services.moodle
+            if moodle is None:
+                return "Moodle bağlantısı hazır değil."
+            try:
+                live = await asyncio.to_thread(moodle.get_assignments)
+            except (ConnectionError, RuntimeError, OSError, ValueError) as exc:
+                logger.error("Assignment fetch failed: %s", exc, exc_info=True)
+                return f"Ödev bilgileri alınamadı: {exc}"
             assignments = [
-                a for a in (assignments or [])
-                if not a.submitted and a.due_date and a.due_date < now_ts
+                {
+                    "name": getattr(a, "name", ""),
+                    "course_name": getattr(a, "course_name", ""),
+                    "submitted": getattr(a, "submitted", False),
+                    "due_date": getattr(a, "due_date", None),
+                    "time_remaining": getattr(a, "time_remaining", ""),
+                }
+                for a in (live or [])
+            ]
+
+        # Apply filters client-side on the cached list.
+        notify_window = now_ts + 14 * 86400
+        if filter_mode == "upcoming":
+            assignments = [
+                a for a in assignments
+                if (a.get("due_date") or 0) > now_ts
+                and (a.get("due_date") or 0) <= notify_window
+            ]
+        elif filter_mode == "overdue":
+            assignments = [
+                a for a in assignments
+                if not a.get("submitted")
+                and (a.get("due_date") or 0) > 0
+                and (a.get("due_date") or 0) < now_ts
             ]
 
         if keyword and assignments:
             kw_lower = keyword.lower()
-            assignments = [a for a in assignments if kw_lower in f"{a.course_name} {a.name}".lower()]
+            assignments = [
+                a for a in assignments
+                if kw_lower in f"{a.get('course_name', '')} {a.get('name', '')}".lower()
+            ]
 
         if not assignments:
             labels = {"upcoming": "Yaklaşan", "overdue": "Süresi geçmiş", "all": "Hiç"}
@@ -161,15 +204,15 @@ class GetAssignmentsTool(BaseTool):
 
         lines = []
         for a in assignments:
-            status = "✅ Teslim edildi" if a.submitted else "⏳ Teslim edilmedi"
-            if hasattr(a, "due_date") and a.due_date and a.due_date > 0:
-                due_dt = datetime.fromtimestamp(a.due_date)
-                due = due_dt.strftime("%d/%m/%Y %H:%M")
+            status = "✅ Teslim edildi" if a.get("submitted") else "⏳ Teslim edilmedi"
+            due_date = a.get("due_date") or 0
+            if due_date > 0:
+                due = datetime.fromtimestamp(due_date).strftime("%d/%m/%Y %H:%M")
             else:
                 due = "Son tarih yok"
-            remaining = a.time_remaining if hasattr(a, "time_remaining") else ""
-            line = f"• {a.course_name} — {a.name}\n  Tarih: {due} | {status}"
-            if remaining and not a.submitted:
+            remaining = a.get("time_remaining", "")
+            line = f"• {a.get('course_name', '')} — {a.get('name', '')}\n  Tarih: {due} | {status}"
+            if remaining and not a.get("submitted"):
                 line += f" | Kalan: {remaining}"
             if filter_mode == "overdue":
                 line += " | ⚠️ Süresi geçmiş!"
