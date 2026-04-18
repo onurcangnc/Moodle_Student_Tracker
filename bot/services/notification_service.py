@@ -887,32 +887,46 @@ async def _auto_sync_materials(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.error("Auto material sync failed: %s", exc)
 
 
-# Polling watchdog: if no Telegram update received for a long time, self-kill.
-# systemd Restart=always will restart the process.
-# 6 hours — balance between early stuck detection and avoiding unnecessary restarts.
-# Too short → STARS re-login spam; too long → bot unresponsive for hours.
-_WATCHDOG_TIMEOUT = 21600  # 6 hours
+# Polling watchdog. Instead of tracking user-initiated messages (false
+# positives when the single user is asleep/in class for 6+ hours), we run
+# a lightweight Telegram API healthcheck that actively probes the bot's
+# connectivity regardless of user activity.
+_WATCHDOG_TIMEOUT = 1800   # 30 minutes without a successful API probe = stuck
 _WATCHDOG_GRACE = 600      # 10 minutes after startup before checking
+_HEALTHCHECK_INTERVAL = 300  # 5 minutes between probes
+
+
+async def _poll_healthcheck(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Probe Telegram API to confirm polling pipeline is alive.
+
+    Calls get_me() — cheap API call that exercises the same httpx client
+    and auth token as polling. Success means the bot is reachable and the
+    event loop isn't blocked; updates the watchdog counter so the next
+    check sees a healthy bot even if no user message arrived.
+    """
+    try:
+        await asyncio.wait_for(context.bot.get_me(), timeout=15)
+        STATE.last_poll_healthcheck = time.monotonic()
+    except Exception as exc:
+        logger.warning("Poll healthcheck failed: %s (%s)", exc, type(exc).__name__)
 
 
 async def _polling_watchdog(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Kill the process if Telegram polling appears stuck."""
+    """Kill the process if Telegram API probes stop succeeding."""
     now = time.monotonic()
     uptime = now - STATE.started_at_monotonic
 
-    # Don't check during startup grace period
     if uptime < _WATCHDOG_GRACE:
         return
 
-    last = STATE.last_update_received
-    # If never received any update, use startup time as baseline
+    last = STATE.last_poll_healthcheck
     if last == 0.0:
         last = STATE.started_at_monotonic
 
     silence = now - last
     if silence > _WATCHDOG_TIMEOUT:
         logger.critical(
-            "WATCHDOG: No Telegram update for %.0f seconds — killing process for restart",
+            "WATCHDOG: No successful Telegram API probe for %.0f seconds — killing process for restart",
             silence,
         )
         await _send(context, "⚠️ Bot polling stuck — otomatik restart yapılıyor...")
@@ -1010,6 +1024,12 @@ def register_notification_jobs(app: Application) -> None:
         name="material_sync",
     )
     jq.run_repeating(
+        _poll_healthcheck,
+        interval=timedelta(seconds=_HEALTHCHECK_INTERVAL),
+        first=timedelta(minutes=2),
+        name="poll_healthcheck",
+    )
+    jq.run_repeating(
         _polling_watchdog,
         interval=timedelta(minutes=5),
         first=timedelta(minutes=10),
@@ -1020,5 +1040,5 @@ def register_notification_jobs(app: Application) -> None:
         "Notification jobs registered: stars_full_sync=1m, assignments=10m, emails=5m, "
         "email_cache=30s, grades=30m, attendance=60m, exam_reminder=1h, deadlines=30m, "
         "session=24h, summaries=60m, cache_cleanup=weekly, syllabus_limits=24h, "
-        "material_sync=30m, polling_watchdog=5m"
+        "material_sync=30m, poll_healthcheck=5m, polling_watchdog=5m"
     )

@@ -78,6 +78,7 @@ class ServiceContainer:
     started_at_monotonic: float = 0.0
     startup_version: str = "unknown"
     last_update_received: float = 0.0
+    last_poll_healthcheck: float = 0.0
 
     # ─── Backwards Compatibility Properties ──────────────────────────────────────
     @property
