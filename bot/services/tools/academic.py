@@ -178,15 +178,28 @@ class GetAttendanceTool(BaseTool):
         }
 
     async def execute(self, args: dict, user_id: int, services: ServiceContainer) -> str:
+        import logging
+        log = logging.getLogger(__name__)
+
         attendance = cache_db.get_json("attendance", user_id)
 
         if not attendance:
+            log.warning("get_attendance: cache empty for user_id=%s", user_id)
             return "Devamsızlık bilgisi bulunamadı. STARS session süresi dolmuş olabilir — /start ile tekrar giriş yap."
 
         course_filter = args.get("course_filter", "")
+        log.info(
+            "get_attendance: user_id=%s filter=%r cached_courses=%s",
+            user_id, course_filter, [a.get("course", "")[:40] for a in attendance],
+        )
+
         if course_filter:
             attendance = [a for a in attendance if course_matches(a.get("course", ""), course_filter)]
             if not attendance:
+                log.warning(
+                    "get_attendance: filter %r matched 0 courses (cache had entries)",
+                    course_filter,
+                )
                 return f"'{course_filter}' ile eşleşen kurs devamsızlığı bulunamadı."
 
         syllabus_limits: dict[str, int] = cache_db.get_json("syllabus_limits", user_id) or {}
