@@ -1,18 +1,10 @@
 # Credentials & secrets
 .env
-data/.moodle_token
 
-# Data (large, user-specific)
-data/downloads/
-data/chromadb/
-data/memory.db
-data/sync_state.json
-data/study_sessions.json
-data/profile.md
-data/cache.db
-data/file_summaries.json
-data/source_summaries/
-data/conversation_history.json
+# Runtime data (indexes, caches, downloaded files, session cookies, etc.)
+# Everything under data/ is generated at runtime and user/host specific.
+# Nothing in this directory should be committed.
+data/
 
 # Logs
 logs/
