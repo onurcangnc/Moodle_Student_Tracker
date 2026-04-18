@@ -171,7 +171,12 @@ class GetAttendanceTool(BaseTool):
             "properties": {
                 "course_filter": {
                     "type": "string",
-                    "description": "Ders adı (opsiyonel)",
+                    "description": (
+                        "Ders adı — boşluklu ve tireli format kullan "
+                        "(ör: 'EDEB 201-2', 'CTIS 474', 'HCIV 102'). "
+                        "Kısmi eşleşme de çalışır (ör. 'EDEB' veya 'edeb 201' "
+                        "'EDEB 201-2' dersine denk gelir)."
+                    ),
                 },
             },
             "required": [],
