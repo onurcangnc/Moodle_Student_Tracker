@@ -21,7 +21,7 @@ __all__ = ["get_communication_tools"]
 
 
 class GetEmailsTool(BaseTool):
-    """Get AIRS/DAIS emails from SQLite cache."""
+    """Get cached emails (AIRS, DAIS, instructor mailing lists, etc.) from SQLite."""
 
     @property
     def name(self) -> str:
@@ -30,8 +30,11 @@ class GetEmailsTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "AIRS/DAIS e-postaları. scope: 'unread' (okunmamış), 'auto' (önce okunmamış, yoksa son), 'recent'. "
-            "keyword: gönderen veya konu filtresi. 'maillerim', 'AIRS duyuruları' gibi isteklerde çağır."
+            "Cache'deki tüm e-postalar (AIRS, DAIS, hocaların mailing list duyuruları, ders mailleri dahil). "
+            "scope: 'unread' (okunmamış), 'auto' (önce okunmamış, yoksa son), 'recent'. "
+            "keyword: konu, gönderen veya mail içeriğinde substring araması yapar. "
+            "'maillerim', 'son duyurular', 'X hocadan gelen mailler', 'ödev maili', 'ders maili' "
+            "gibi her türlü mail isteğinde çağır."
         )
 
     @property
@@ -50,7 +53,7 @@ class GetEmailsTool(BaseTool):
                 },
                 "keyword": {
                     "type": "string",
-                    "description": "Gönderen veya konu filtresi (opsiyonel)",
+                    "description": "Konu, gönderen veya mail içeriğinde (body dahil) substring filtresi (opsiyonel)",
                 },
             },
             "required": [],
@@ -79,7 +82,7 @@ class GetEmailsTool(BaseTool):
         mails = mails[:count]
 
         if not mails:
-            return "AIRS/DAIS e-postası bulunamadı."
+            return "Eşleşen e-posta bulunamadı."
 
         lines = []
         for m in mails:
@@ -108,8 +111,9 @@ class GetEmailDetailTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Mail detayını getirir. keyword: arama terimi (konu veya gönderen). "
-            "'X mailinin detayı', 'şu maili oku' gibi isteklerde çağır."
+            "Mail detayını (tam içerik) getirir. keyword: konu, gönderen veya body içeriğinde "
+            "substring araması yapar. 'X mailinin detayı', 'şu maili oku', 'içinde Y geçen mail' "
+            "gibi isteklerde çağır."
         )
 
     @property
@@ -119,7 +123,7 @@ class GetEmailDetailTool(BaseTool):
             "properties": {
                 "keyword": {
                     "type": "string",
-                    "description": "Arama terimi (konu veya gönderen)",
+                    "description": "Konu, gönderen veya mail içeriğinde (body dahil) substring araması",
                 },
                 "count": {
                     "type": "integer",

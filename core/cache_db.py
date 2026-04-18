@@ -194,46 +194,59 @@ def get_unread_emails() -> list[dict]:
 
 
 def search_emails(keyword: str, limit: int = 20) -> list[dict]:
-    """Search emails by keyword in subject, from, source, or date.
+    """Search emails by keyword across subject, from, source, date, and body.
 
-    Uses SQLite LIKE for simple matching. Returns empty list on error.
+    Matches the full keyword as a single LIKE substring, then falls back to
+    OR-combined token matching if nothing is found. Searches body_full so
+    content buried deep in long messages is still discoverable.
     """
     _ensure_init()
     if not keyword:
         return get_emails(limit) or []
 
+    keyword = keyword.strip()
+    if not keyword:
+        return get_emails(limit) or []
+
+    fields = ("subject", "from_addr", "source", "date", "body_preview", "body_full")
+    field_clause = " OR ".join(f"{f} LIKE ? COLLATE NOCASE" for f in fields)
+
     try:
         with _conn() as conn:
-            # Split keyword into tokens, each token must match at least one field
-            tokens = keyword.strip().split()
-            if not tokens:
-                return get_emails(limit) or []
-
-            # Build WHERE: each token must appear in ANY searchable field
-            conditions = []
-            params: list[str] = []
-            for tok in tokens:
-                pattern = f"%{tok}%"
-                conditions.append(
-                    "(subject LIKE ? COLLATE NOCASE"
-                    " OR from_addr LIKE ? COLLATE NOCASE"
-                    " OR source LIKE ? COLLATE NOCASE"
-                    " OR date LIKE ? COLLATE NOCASE"
-                    " OR body_preview LIKE ? COLLATE NOCASE)"
-                )
-                params.extend([pattern] * 5)
-
-            where_clause = " AND ".join(conditions)
+            # Pass 1: match the entire keyword as a single substring.
+            full_pattern = f"%{keyword}%"
             rows = conn.execute(
                 f"""
                 SELECT uid, subject, from_addr, date, body_preview, body_full, source, is_read
                 FROM emails
-                WHERE {where_clause}
+                WHERE {field_clause}
                 ORDER BY inserted_at DESC
                 LIMIT ?
                 """,
-                (*params, limit),
+                (*[full_pattern] * len(fields), limit),
             ).fetchall()
+
+            # Pass 2: fall back to OR-combined per-token match (any token in any field).
+            if not rows:
+                tokens = [t for t in keyword.split() if t]
+                if len(tokens) > 1:
+                    token_conditions = []
+                    params: list[str] = []
+                    for tok in tokens:
+                        pattern = f"%{tok}%"
+                        token_conditions.append(f"({field_clause})")
+                        params.extend([pattern] * len(fields))
+                    where_clause = " OR ".join(token_conditions)
+                    rows = conn.execute(
+                        f"""
+                        SELECT uid, subject, from_addr, date, body_preview, body_full, source, is_read
+                        FROM emails
+                        WHERE {where_clause}
+                        ORDER BY inserted_at DESC
+                        LIMIT ?
+                        """,
+                        (*params, limit),
+                    ).fetchall()
 
         return [
             {
