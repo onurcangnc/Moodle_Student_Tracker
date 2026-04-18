@@ -5,10 +5,13 @@ OAuth 1.0 + SMS 2FA authentication, HTML parsing via BeautifulSoup.
 Sessions expire after ~1 hour.
 """
 
+import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
@@ -16,6 +19,8 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger("core.stars_client")
 
 BASE = "https://stars.bilkent.edu.tr"
+
+_SESSION_STORE = Path(os.getenv("STARS_SESSION_STORE", "data/stars_sessions.json"))
 
 
 @dataclass
@@ -53,6 +58,64 @@ class StarsClient:
     def __init__(self):
         self._sessions: dict[int, StarsSession] = {}
         self._cache: dict[int, StarsCache] = {}  # user_id → cached data
+        self._load_sessions_from_disk()
+
+    # ── Session Persistence ───────────────────────────────────────────────
+    # STARS 2FA requires an SMS each login. To avoid re-prompting on every
+    # process restart we snapshot the httpx cookie jar + auth_time to disk
+    # after each successful login/keep-alive and restore them on startup.
+    # The restored session must be verified with keep_alive() — cookies may
+    # have been invalidated server-side while the process was down.
+
+    def _load_sessions_from_disk(self) -> None:
+        if not _SESSION_STORE.exists():
+            return
+        try:
+            data = json.loads(_SESSION_STORE.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning("STARS session store unreadable: %s", exc)
+            return
+        for uid_str, blob in data.items():
+            try:
+                user_id = int(uid_str)
+            except ValueError:
+                continue
+            ss = StarsSession()
+            ss.authenticated = True
+            ss.auth_time = float(blob.get("auth_time", 0))
+            ss.student_id = blob.get("student_id", "")
+            for c in blob.get("cookies", []):
+                ss.session.cookies.set(
+                    c["name"], c["value"],
+                    domain=c.get("domain"), path=c.get("path", "/"),
+                )
+            self._sessions[user_id] = ss
+            logger.info(
+                "STARS session restored from disk for user %s (age=%.0fs)",
+                user_id, time.time() - ss.auth_time,
+            )
+
+    def _save_sessions_to_disk(self) -> None:
+        try:
+            _SESSION_STORE.parent.mkdir(parents=True, exist_ok=True)
+            payload = {}
+            for user_id, ss in self._sessions.items():
+                if not ss.authenticated:
+                    continue
+                payload[str(user_id)] = {
+                    "auth_time": ss.auth_time,
+                    "student_id": ss.student_id,
+                    "cookies": [
+                        {"name": c.name, "value": c.value,
+                         "domain": c.domain, "path": c.path}
+                        for c in ss.session.cookies
+                    ],
+                }
+            tmp = _SESSION_STORE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            os.replace(tmp, _SESSION_STORE)
+        except OSError as exc:
+            logger.warning("STARS session persist failed: %s", exc)
 
     # ── Auth helpers ──────────────────────────────────────────────────────
 
@@ -171,6 +234,7 @@ class StarsClient:
                 ss.authenticated = True
                 ss.auth_time = time.time()
                 ss._phase = "ready"
+                self._save_sessions_to_disk()
                 return {"status": "ok"}
 
             # Check for error messages in page
@@ -265,6 +329,7 @@ class StarsClient:
                 ss.auth_time = time.time()
                 ss._phase = "ready"
                 logger.info(f"STARS authenticated for user {user_id}")
+                self._save_sessions_to_disk()
                 return {"status": "ok"}
 
             # If we landed on login page, log the page to understand why
@@ -286,6 +351,7 @@ class StarsClient:
                 ss.authenticated = True
                 ss.auth_time = time.time()
                 ss._phase = "ready"
+                self._save_sessions_to_disk()
                 return {"status": "ok"}
 
             return {"status": "error", "message": "Doğrulama sonrası yönlendirme başarısız."}
@@ -304,6 +370,7 @@ class StarsClient:
         ss = self._sessions.pop(user_id, None)
         if ss:
             ss.session.close()
+        self._save_sessions_to_disk()
 
     def keep_alive(self, user_id: int) -> bool:
         """Ping STARS to extend the server-side session without triggering 2FA.
@@ -326,12 +393,14 @@ class StarsClient:
             ):
                 ss.auth_time = time.time()  # Reset client-side expiry timer
                 logger.info("STARS keep-alive OK for user %s (session extended)", user_id)
+                self._save_sessions_to_disk()
                 return True
             logger.info(
                 "STARS keep-alive: session expired for user %s (redirected to %s)",
                 user_id, r.url,
             )
             ss.authenticated = False
+            self._save_sessions_to_disk()  # persist the cleared state
             return False
         except requests.RequestException as exc:
             logger.warning("STARS keep-alive error for user %s: %s", user_id, exc)

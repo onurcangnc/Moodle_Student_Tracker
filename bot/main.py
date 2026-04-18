@@ -177,8 +177,13 @@ def refresh_external_sessions() -> None:
         return
 
     if stars.is_authenticated(owner_id):
-        logger.info("STARS session still active for owner %s — skipping re-login", owner_id)
-        return
+        # Restart case: cookies restored from disk, but server may have
+        # invalidated the session while the process was down. Probe with
+        # keep_alive — if the session is still live, skip the SMS login.
+        if stars.keep_alive(owner_id):
+            logger.info("STARS session restored & verified for owner %s — skipping re-login", owner_id)
+            return
+        logger.info("STARS session cookies stale for owner %s — full re-login", owner_id)
 
     logger.info("STARS login attempt for owner %s...", owner_id)
     result = stars.start_login(owner_id, stars_user, stars_pass)
